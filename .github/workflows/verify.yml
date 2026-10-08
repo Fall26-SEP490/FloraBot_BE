@@ -1,0 +1,90 @@
+name: Backend verification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  firmware-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unprovisioned ESP32 images and validate partitions
+        run: docker build --target firmware-artifacts --output type=local,dest=artifacts/firmware ./firmware/esp32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-unprovisioned
+          path: artifacts/firmware/
+  firmware-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify firmware protocol, recovery journal and QoS 1 transport
+        run: docker build --target native-test -t florabot-firmware-core-tests ./firmware/esp32
+  mqtt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision local TLS and isolated device accounts
+        shell: pwsh
+        run: ./scripts/initialize-mqtt.ps1
+      - run: docker compose up -d mosquitto
+      - name: Verify TLS and topic isolation
+        shell: pwsh
+        run: ./scripts/test-mqtt.ps1
+      - name: Verify signed simulator commands and restart deduplication
+        shell: pwsh
+        run: ./scripts/test-device-simulator.ps1
+      - name: Stop CI broker
+        if: always()
+        run: docker compose down
+  ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify advisor on Python 3.12
+        run: docker build --target test -t florabot-ai-tests ./ai
+  api-and-database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Start isolated database, cache and event bus
+        run: docker compose up -d --wait postgres valkey rabbitmq
+      - name: Verify unchanged source SQL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          ./scripts/initialize-db.ps1 -Verify *>&1 | Tee-Object artifacts/db-verification.log
+          $passes = (Select-String -Path artifacts/db-verification.log -Pattern 'NOTICE:\s+PASS').Count
+          if ($passes -ne 326) { throw "Expected 326 original SQL checks, received $passes" }
+      - name: Initialize disposable integration databases
+        shell: pwsh
+        run: |
+          ./scripts/initialize-db.ps1 -ApiTests
+          ./scripts/initialize-db.ps1 -JobsTests
+      - run: dotnet restore
+      - run: dotnet format FloraBot.slnx --verify-no-changes --no-restore
+      - run: dotnet test --no-restore --logger trx --results-directory artifacts
+      - name: Verify paid order through actual MQTT and settlement
+        shell: pwsh
+        run: |
+          ./scripts/initialize-mqtt.ps1
+          ./scripts/test-paid-mqtt-cycle.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-verification
+          path: artifacts/
+      - name: Stop CI services
+        if: always()
+        run: |
+          docker compose -f docker-compose.mqtt-test.yml down
+          docker compose down
