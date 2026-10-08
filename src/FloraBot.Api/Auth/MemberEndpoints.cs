@@ -44,15 +44,15 @@ public static class MemberEndpoints
             var id = Guid.Parse(http.User.FindFirstValue("sub")!);
             var user = await db.Users.AsNoTracking().SingleAsync(x => x.Id == id, ct);
             return Results.Ok(new MemberProfile(id, user.FullName, user.Email, user.LoyaltyPoints));
-        }).RequireAuthorization("Member").Produces<MemberProfile>();
+        }).RequireAuthorization("MemberIdentity").Produces<MemberProfile>();
 
         app.MapPost("/api/member/profile", async (MemberProfileUpdate input, NpgsqlDataSource source, HttpContext http, CancellationToken ct) =>
         {
             if (!ValidName(input.FullName)) return Invalid("Họ tên cần từ 2 đến 100 ký tự.");
-            await using var command = source.CreateCommand("UPDATE identity.users SET full_name=@name WHERE id=@id AND role='CUSTOMER' AND status='ACTIVE'");
+            await using var command = source.CreateCommand("UPDATE identity.users SET full_name=@name WHERE id=@id AND role IN ('CUSTOMER','SELLER') AND status='ACTIVE'");
             command.Parameters.AddWithValue("id", Guid.Parse(http.User.FindFirstValue("sub")!)); command.Parameters.AddWithValue("name", input.FullName.Trim());
-            await command.ExecuteNonQueryAsync(ct); return Results.NoContent();
-        }).RequireAuthorization("Member");
+            return await command.ExecuteNonQueryAsync(ct) == 1 ? Results.NoContent() : Results.Unauthorized();
+        }).RequireAuthorization("MemberIdentity");
 
         app.MapPost("/api/member/password", async (PasswordChange input, FloraDbContext db, NpgsqlDataSource source, HttpContext http, CancellationToken ct) =>
         {
@@ -63,7 +63,7 @@ public static class MemberEndpoints
             try { valid = user.PasswordHash is not null && BCrypt.Net.BCrypt.Verify(input.CurrentPassword, user.PasswordHash); } catch (BCrypt.Net.SaltParseException) { }
             if (!valid) return Invalid("Mật khẩu hiện tại chưa đúng.");
             return await ReplacePassword(source, id, user.PasswordHash!, input.NewPassword, ct);
-        }).RequireAuthorization("Member").RequireRateLimiting("auth");
+        }).RequireAuthorization("MemberIdentity").RequireRateLimiting("auth");
 
         app.MapPost("/api/auth/forgot-password", async (PasswordResetRequest input, FloraDbContext db, EmailSettings settings, TransactionalEmailSender sender, IDataProtectionProvider protection, IConfiguration config, IHostEnvironment environment, CancellationToken ct) =>
         {
@@ -73,7 +73,7 @@ public static class MemberEndpoints
             if (settings.Provider == EmailProvider.Disabled || !Uri.TryCreate(origin, UriKind.Absolute, out var baseUri) ||
                 (baseUri.Scheme != "https" && !(environment.IsDevelopment() && baseUri.IsLoopback)) || !string.IsNullOrEmpty(baseUri.UserInfo))
                 return Results.Problem(statusCode: 503, detail: "Dịch vụ khôi phục mật khẩu chưa sẵn sàng. Vui lòng liên hệ đội ngũ FloraBot.");
-            var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Email == email && x.Role == "CUSTOMER" && x.Status == "ACTIVE", ct);
+            var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Email == email && (x.Role == "CUSTOMER" || x.Role == "SELLER") && x.Status == "ACTIVE", ct);
             if (user is not null)
             {
                 var ticket = protection.CreateProtector("member-password-reset-v1").Protect(JsonSerializer.Serialize(new ResetTicket(user.Id, TokenService.CredentialVersion(user), DateTimeOffset.UtcNow.AddMinutes(20))));
@@ -91,7 +91,7 @@ public static class MemberEndpoints
             try { ticket = JsonSerializer.Deserialize<ResetTicket>(protection.CreateProtector("member-password-reset-v1").Unprotect(input.Token)); }
             catch (Exception ex) when (ex is CryptographicException or JsonException or FormatException) { return Invalid("Liên kết không hợp lệ hoặc đã hết hạn."); }
             if (ticket is null || ticket.ExpiresAt <= DateTimeOffset.UtcNow) return Invalid("Liên kết không hợp lệ hoặc đã hết hạn.");
-            var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ticket.UserId && x.Role == "CUSTOMER" && x.Status == "ACTIVE", ct);
+            var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ticket.UserId && (x.Role == "CUSTOMER" || x.Role == "SELLER") && x.Status == "ACTIVE", ct);
             if (user?.PasswordHash is null || TokenService.CredentialVersion(user) != ticket.Version) return Invalid("Liên kết không hợp lệ hoặc đã được dùng.");
             return await ReplacePassword(source, user.Id, user.PasswordHash, input.NewPassword, ct);
         }).AllowAnonymous().RequireRateLimiting("auth");
@@ -99,7 +99,7 @@ public static class MemberEndpoints
 
     private static async Task<IResult> ReplacePassword(NpgsqlDataSource source, Guid id, string oldHash, string password, CancellationToken ct)
     {
-        await using var command = source.CreateCommand("UPDATE identity.users SET password_hash=@hash WHERE id=@id AND role='CUSTOMER' AND status='ACTIVE' AND password_hash=@old");
+        await using var command = source.CreateCommand("UPDATE identity.users SET password_hash=@hash WHERE id=@id AND role IN ('CUSTOMER','SELLER') AND status='ACTIVE' AND password_hash=@old");
         command.Parameters.AddWithValue("id", id); command.Parameters.AddWithValue("old", oldHash);
         command.Parameters.AddWithValue("hash", BCrypt.Net.BCrypt.HashPassword(password, workFactor: 12));
         return await command.ExecuteNonQueryAsync(ct) == 1 ? Results.NoContent() : Results.Conflict();

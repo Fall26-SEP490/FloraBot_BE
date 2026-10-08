@@ -28,7 +28,7 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
         var actor = user.FindFirstValue("sub");
         var sellerRoute = http.Request.RouteValues["sellerId"]?.ToString();
         var kioskRoute = http.Request.RouteValues["kioskId"]?.ToString();
-        if (scope != "receipt" && user.IsInRole("SELLER") && sellerRoute != user.FindFirstValue("seller_id")) return Results.NotFound();
+        if (scope != "receipt" && user.IsInRole("SELLER") && !user.HasClaim(c => c.Type == "kiosk_id") && sellerRoute != user.FindFirstValue("seller_id")) return Results.NotFound();
         if (kioskRoute is not null && kioskRoute != user.FindFirstValue("kiosk_id")) return Results.Forbid();
         var args = input.EnumerateObject().Where(p => p.Value.ValueKind != JsonValueKind.Null).ToDictionary(p => p.Name, p => p.Value.Clone());
         foreach (var parameter in Definitions[name].Params)
@@ -37,7 +37,7 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
                 args[parameter.Name] = JsonSerializer.SerializeToElement(actor);
             if (parameter.Name == "p_seller" && sellerRoute is not null) args[parameter.Name] = JsonSerializer.SerializeToElement(sellerRoute);
             if (parameter.Name == "p_kiosk" && kioskRoute is not null) args[parameter.Name] = JsonSerializer.SerializeToElement(kioskRoute);
-            if (parameter.Name == "p_customer") args[parameter.Name] = JsonSerializer.SerializeToElement(user.IsInRole("CUSTOMER") ? actor : null);
+            if (parameter.Name == "p_customer") args[parameter.Name] = JsonSerializer.SerializeToElement(user.IsInRole("CUSTOMER") || (user.IsInRole("SELLER") && kioskRoute is not null) ? actor : null);
         }
         if (name is "reconcile_gateway" or "reconcile_daily")
         {

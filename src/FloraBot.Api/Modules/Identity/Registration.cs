@@ -1,4 +1,8 @@
 using System.Text.RegularExpressions;
+using System.Security.Claims;
+using FloraBot.Api.Auth;
+using FloraBot.Api.Data;
+using Microsoft.EntityFrameworkCore;
 using FloraBot.Api.Realtime;
 using Npgsql;
 using NpgsqlTypes;
@@ -7,6 +11,7 @@ namespace FloraBot.Api.Modules.Identity;
 
 public sealed record RegisterSellerRequest(string ShopName, string Phone, string Area, Guid PackageId, string? Website = null);
 public sealed record RegistrationResponse(Guid Id, string Status);
+public sealed record OpenMemberShopRequest(string ShopName, string Phone, string Address);
 
 public static partial class Registration
 {
@@ -14,6 +19,25 @@ public static partial class Registration
     private static partial Regex PhonePattern();
     public static void MapRegistration(this WebApplication app)
     {
+        app.MapPost("/api/member/shop", async (OpenMemberShopRequest input, HttpContext http, NpgsqlDataSource data, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(input.ShopName) || input.ShopName.Trim().Length is < 2 or > 120 || input.ShopName.Any(char.IsControl) ||
+                input.Phone is null || !PhonePattern().IsMatch(input.Phone) || string.IsNullOrWhiteSpace(input.Address) || input.Address.Trim().Length > 200 || input.Address.Any(char.IsControl))
+                return Results.Problem(statusCode: 400, detail: "Nhập tên shop 2–120 ký tự, số điện thoại Việt Nam và địa chỉ tối đa 200 ký tự.");
+            var userId = Guid.Parse(http.User.FindFirstValue("sub")!);
+            await using var command = data.CreateCommand("SELECT flow.open_member_shop(@user,@shop,@phone,@address)");
+            command.Parameters.AddWithValue("user", userId);
+            command.Parameters.AddWithValue("shop", input.ShopName.Trim());
+            command.Parameters.AddWithValue("phone", input.Phone);
+            command.Parameters.AddWithValue("address", input.Address.Trim());
+            try { await command.ExecuteScalarAsync(ct); }
+            catch (PostgresException ex) when (ex.SqlState == "42501") { return Results.Forbid(); }
+            catch (PostgresException ex) when (ex.SqlState == "22023") { return Results.BadRequest(); }
+            catch (PostgresException ex) when (ex.SqlState == "23505") { return Results.Problem(statusCode: 409, detail: "Thông tin shop đã được sử dụng. Kiểm tra lại trước khi gửi."); }
+            var user = await db.Users.AsNoTracking().SingleAsync(x => x.Id == userId, ct);
+            return await AuthEndpoints.SignIn(user, db, tokens, http);
+        }).RequireAuthorization("MemberIdentity").RequireRateLimiting("auth").WithTags("Identity").Produces<SessionResponse>();
+
         app.MapPost("/api/sellers", async (RegisterSellerRequest request, NpgsqlDataSource data, PortalNotifier notifier, CancellationToken ct) =>
         {
             if (!string.IsNullOrEmpty(request.Website)) return Results.BadRequest();

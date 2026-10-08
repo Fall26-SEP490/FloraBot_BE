@@ -75,5 +75,5 @@ public static class KioskPaymentLinks
             }).RequireAuthorization("Shopping").WithTags("Payment").Produces<PaymentLinkResponse>();
     }
 
-    private static Guid? Customer(HttpContext http) => http.User.IsInRole("CUSTOMER") ? Guid.Parse(http.User.FindFirstValue("sub")!) : null;
+    private static Guid? Customer(HttpContext http) => http.User.IsInRole("CUSTOMER") || http.User.IsInRole("SELLER") ? Guid.Parse(http.User.FindFirstValue("sub")!) : null;
 }

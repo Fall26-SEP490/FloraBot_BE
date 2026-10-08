@@ -8,7 +8,7 @@ namespace FloraBot.Api.Modules.Ordering;
 
 public sealed record CustomerHistoryItem(Guid Id, string OrderCode, DateTime CreatedAt, string Status,
     long TotalAmount, long PointsEarned, long PointsRedeemed, string ShopName, string[] Items);
-public sealed record CustomerHistoryPage(List<CustomerHistoryItem> Items, int Page, bool HasMore, long LoyaltyPoints);
+public sealed record CustomerHistoryPage(List<CustomerHistoryItem> Items, int Page, bool HasMore, long LoyaltyPoints, bool CanForgetAccount = true);
 
 public static class CustomerHistory
 {
@@ -19,7 +19,7 @@ public static class CustomerHistory
         {
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
             return await ReadAsync(page, db, http, ct);
-        }).RequireAuthorization("Customer").Produces<CustomerHistoryPage>();
+        }).RequireAuthorization("KioskMember").Produces<CustomerHistoryPage>();
         app.MapGet("/api/member/history", ReadAsync).RequireAuthorization("Member").Produces<CustomerHistoryPage>();
     }
     private static async Task<IResult> ReadAsync(int? page, FloraDbContext db, HttpContext http, CancellationToken ct)
@@ -44,7 +44,7 @@ public static class CustomerHistory
         var result = visible.Select(x => new CustomerHistoryItem(x.Id, x.OrderCode, x.CreatedAt, x.Status,
             x.TotalAmount, x.PointsEarned, x.PointsRedeemed, names.GetValueOrDefault(x.SellerId, "Shop hoa"), grouped[x.Id].ToArray())).ToList();
         await transaction.CommitAsync(ct);
-        return Results.Ok(new CustomerHistoryPage(result, number, rows.Count > 25, points.Value));
+        return Results.Ok(new CustomerHistoryPage(result, number, rows.Count > 25, points.Value, http.User.IsInRole("CUSTOMER")));
     }
 
 }

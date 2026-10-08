@@ -121,7 +121,7 @@ public sealed class PrivateEvidence(IDataProtectionProvider protection, TimeProv
         }).RequireAuthorization("Admin");
     }
 
-    private static async Task<IResult> UploadAsync(HttpContext http, CloudinaryMedia media, PrivateEvidence tickets, string purpose, string binding, CancellationToken ct)
+    internal static async Task<IResult> UploadAsync(HttpContext http, CloudinaryMedia media, PrivateEvidence tickets, string purpose, string binding, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         if (http.Request.ContentType is not ("image/png" or "image/jpeg" or "image/webp")) return Results.StatusCode(415);
@@ -147,7 +147,7 @@ public sealed class PrivateEvidence(IDataProtectionProvider protection, TimeProv
     private static bool IsProviderFailure(Exception ex, CancellationToken ct) => ex is MediaUnavailableException or HttpRequestException or JsonException || ex is OperationCanceledException && !ct.IsCancellationRequested;
     private static IResult Unavailable() => Results.Problem(statusCode: 503, detail: "Kho ảnh chưa sẵn sàng. Ảnh chưa được xác nhận; vui lòng thử lại sau.");
 
-    private static void DescribeUpload(RouteHandlerBuilder endpoint) => endpoint
+    internal static void DescribeUpload(RouteHandlerBuilder endpoint) => endpoint
         .Accepts<byte[]>("image/png", "image/jpeg", "image/webp")
         .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
         .ProducesProblem(413).ProducesProblem(415).ProducesProblem(429).ProducesProblem(503)

@@ -20,7 +20,7 @@ public sealed class TokenService(IConfiguration configuration, IConnectionMultip
         if (kioskId is not null) claims.Add(new("kiosk_id", kioskId));
         var credentials = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(configuration["JWT_SIGNING_KEY"]!)), SecurityAlgorithms.HmacSha256);
         return new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(Issuer, Issuer, claims,
-            expires: expires ?? DateTime.UtcNow.AddMinutes(user.Role == "CUSTOMER" ? 10 : 15), signingCredentials: credentials));
+            expires: expires ?? DateTime.UtcNow.AddMinutes(kioskId is not null || user.Role == "CUSTOMER" ? 10 : 15), signingCredentials: credentials));
     }
     public async Task<string> CreateRefresh(User user)
     {

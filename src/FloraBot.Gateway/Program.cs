@@ -83,10 +83,12 @@ public class GatewayProgram
         {
             http.Response.Headers["X-Content-Type-Options"] = "nosniff";
             http.Response.Headers["Referrer-Policy"] = "no-referrer";
-            var renewsSession = http.Request.Path.Value is "/api/auth/login" or "/api/auth/refresh" or "/api/auth/logout";
+            var renewsSession = http.Request.Path.Value is "/api/auth/login" or "/api/auth/admin/login" or "/api/auth/refresh" or "/api/auth/logout";
+            var opensDocumentation = HttpMethods.IsGet(http.Request.Method) &&
+                string.Equals(http.Request.Path.Value?.TrimEnd('/'), "/openapi", StringComparison.OrdinalIgnoreCase);
             var hasSession = http.Request.Headers.ContainsKey("Authorization") ||
                 (!http.Request.Headers.ContainsKey("X-Kiosk-Key") && http.Request.Cookies.ContainsKey("florabot_access"));
-            if (!renewsSession && hasSession && !(await http.AuthenticateAsync()).Succeeded)
+            if (!renewsSession && !opensDocumentation && hasSession && !(await http.AuthenticateAsync()).Succeeded)
             {
                 http.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return;
@@ -94,6 +96,11 @@ public class GatewayProgram
             await next();
         });
         app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "gateway" }));
+        app.MapGet("/openapi", async (HttpContext http) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            return Results.Redirect((await http.AuthenticateAsync()).Succeeded ? "/openapi/v1.json" : "/admin/login");
+        });
         // The API still validates current user status, device keys, endpoint roles and tenant ownership.
         app.MapReverseProxy().RequireRateLimiting("gateway");
         app.Run();

@@ -80,7 +80,7 @@ public sealed class AiAdvisor(NpgsqlDataSource data, AdvisorClient advisor, Advi
         {
             http.Response.Headers.CacheControl = "no-store";
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
-            var customer = http.User.IsInRole("CUSTOMER") ? Guid.Parse(http.User.FindFirstValue("sub")!) : (Guid?)null;
+            var customer = http.User.IsInRole("CUSTOMER") || http.User.IsInRole("SELLER") ? Guid.Parse(http.User.FindFirstValue("sub")!) : (Guid?)null;
             await using var command = data.CreateCommand("""
                 SELECT s.source, coalesce(jsonb_agg(jsonb_build_object(
                     'bouquetId',c.bouquet_id,'productId',c.product_id,'name',c.name,'price',c.price,

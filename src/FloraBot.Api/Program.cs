@@ -151,15 +151,18 @@ builder.Services.AddAuthentication("selector")
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
     .AddPolicy("Admin", p => p.RequireRole("ADMIN"))
-    .AddPolicy("Seller", p => p.RequireRole("SELLER"))
+    .AddPolicy("Seller", p => p.RequireRole("SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("SameSeller", p => p.RequireAuthenticatedUser().AddRequirements(new SameSellerRequirement()))
-    .AddPolicy("Merchant", p => p.RequireRole("ADMIN", "SELLER"))
-    .AddPolicy("Portal", p => p.RequireRole("ADMIN", "SELLER"))
-    .AddPolicy("Account", p => p.RequireRole("ADMIN", "SELLER", "CUSTOMER"))
-    .AddPolicy("Member", p => p.RequireRole("CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Merchant", p => p.RequireRole("ADMIN", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Portal", p => p.RequireRole("ADMIN", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Account", p => p.RequireRole("ADMIN", "STAFF", "SELLER", "CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Staff", p => p.RequireRole("STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Kiosk", p => p.RequireRole("KIOSK"))
     .AddPolicy("Customer", p => p.RequireRole("CUSTOMER").RequireClaim("kiosk_id"))
-    .AddPolicy("Shopping", p => p.RequireRole("KIOSK", "CUSTOMER"));
+    .AddPolicy("KioskMember", p => p.RequireRole("CUSTOMER", "SELLER").RequireClaim("kiosk_id"))
+    .AddPolicy("Shopping", p => p.RequireRole("KIOSK", "CUSTOMER", "SELLER").RequireClaim("kiosk_id"));
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
@@ -226,6 +229,11 @@ app.MapReads();
 app.MapWalletRead();
 app.MapSellerBankRead();
 app.MapAdminIncidentsRead();
+app.MapStaffTasks();
+app.MapStaffStock();
+app.MapStaffTaskDetails();
+app.MapStaffEvidence();
+app.MapStaffIncidentResolution();
 app.MapAdminComplaintsRead();
 app.MapAdminWithdrawalsRead();
 app.MapAdminRefundsRead();

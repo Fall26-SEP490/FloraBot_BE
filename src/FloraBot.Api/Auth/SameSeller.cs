@@ -10,6 +10,7 @@ public sealed class SameSellerHandler : AuthorizationHandler<SameSellerRequireme
 {
     protected override Task HandleRequirementAsync(AuthorizationHandlerContext context, SameSellerRequirement requirement)
     {
+        if (context.User.HasClaim(claim => claim.Type == "kiosk_id")) return Task.CompletedTask;
         if (context.Resource is HttpContext http && (context.User.IsInRole("ADMIN") ||
             (context.User.IsInRole("SELLER") && context.User.FindFirstValue("seller_id") == http.Request.RouteValues["sellerId"]?.ToString()))) context.Succeed(requirement);
         return Task.CompletedTask;

@@ -8,7 +8,7 @@ namespace FloraBot.Api.Auth;
 
 public sealed record OtpRequest(string Phone);
 public sealed record OtpVerification(string Phone, string Code);
-public sealed record CustomerSession(string AccessToken, int ExpiresInSeconds);
+public sealed record CustomerSession(string AccessToken, int ExpiresInSeconds, bool CanForgetAccount = true);
 
 public static partial class OtpEndpoints
 {
@@ -20,6 +20,7 @@ public static partial class OtpEndpoints
         {
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
             if (request.Phone is null || !PhonePattern().IsMatch(request.Phone)) return Results.BadRequest();
+            request = request with { Phone = NormalizePhone(request.Phone) };
             var development = environment.IsDevelopment() && config.GetValue<bool>("DEV_OTP");
             var deliveryUrl = config["SMS_WEBHOOK_URL"];
             if (!development && (!Uri.TryCreate(deliveryUrl, UriKind.Absolute, out var uri) || uri.Scheme != "https"))
@@ -39,12 +40,17 @@ public static partial class OtpEndpoints
         app.MapPost("/api/kiosks/{kioskId:guid}/otp/verify", async (Guid kioskId, OtpVerification request, HttpContext http, OtpService otp, NpgsqlDataSource data, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
         {
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
-            if (request.Phone is null || !PhonePattern().IsMatch(request.Phone) || request.Code is null || !await otp.VerifyAsync(kioskId, request.Phone, request.Code)) return Results.Unauthorized();
+            if (request.Phone is null || !PhonePattern().IsMatch(request.Phone) || request.Code is null) return Results.Unauthorized();
+            request = request with { Phone = NormalizePhone(request.Phone) };
+            if (!await otp.VerifyAsync(kioskId, request.Phone, request.Code)) return Results.Unauthorized();
             await using var command = data.CreateCommand("SELECT flow.customer_by_phone(@phone)");
             command.Parameters.AddWithValue("phone", request.Phone);
-            var id = (Guid)(await command.ExecuteScalarAsync(ct))!;
+            Guid id;
+            try { id = (Guid)(await command.ExecuteScalarAsync(ct))!; }
+            catch (PostgresException ex) when (ex.SqlState == "42501") { return Results.Forbid(); }
             var user = await db.Users.AsNoTracking().SingleAsync(x => x.Id == id, ct);
-            return Results.Ok(new CustomerSession(tokens.Issue(user, kioskId: kioskId.ToString()), 600));
+            return Results.Ok(new CustomerSession(tokens.Issue(user, kioskId: kioskId.ToString()), 600, user.Role == "CUSTOMER"));
         }).RequireAuthorization("Kiosk").RequireRateLimiting("auth").WithTags("Auth").Produces<CustomerSession>();
     }
+    private static string NormalizePhone(string phone) => phone.StartsWith("+84", StringComparison.Ordinal) ? "0" + phone[3..] : phone;
 }

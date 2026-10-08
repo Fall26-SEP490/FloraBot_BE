@@ -14,7 +14,7 @@ public static class ResourceAccess
     public static async Task<IResult?> CheckAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         ClaimsPrincipal user, string flow, Dictionary<string, JsonElement> args, CancellationToken ct)
     {
-        if (user.IsInRole("SELLER"))
+        if (user.IsInRole("SELLER") && !user.HasClaim(c => c.Type == "kiosk_id"))
         {
             foreach (var key in SellerResources)
             {
