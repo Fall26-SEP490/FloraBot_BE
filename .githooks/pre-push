@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+dotnet format FloraBot.slnx --verify-no-changes
+dotnet test
+pwsh -NoProfile -File scripts/initialize-db.ps1 -Verify
+docker build --target test -t florabot-ai-tests ./ai

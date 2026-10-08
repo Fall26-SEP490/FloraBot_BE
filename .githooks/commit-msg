@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+head -n 1 "$1" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\((api|ai|contracts|db|firmware|infra)\)!?: .+' || {
+  echo 'Use a conventional commit, for example: feat(api): add catalog validation' >&2
+  exit 1
+}

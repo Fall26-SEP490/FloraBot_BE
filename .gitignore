@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+.env
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+.venv/
+TestResults/
+artifacts/
+infra/secrets/
+**/.pio/
+firmware/esp32/include/config.local.h
