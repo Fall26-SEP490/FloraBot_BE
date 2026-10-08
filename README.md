@@ -124,7 +124,7 @@ foreign/missing seller concealment and foreign-device scope. `PortalHubTests`
 covers SignalR separately. These checks do not replace each endpoint's resource,
 business-error, valid-user success or provider integration tests.
 
-`node scripts/generate-flows.mjs` regenerates the explicitly exposed flow endpoints. Parameters naming actors are injected from the authenticated principal; p_now is absent from HTTP DTOs. Unknown body fields are rejected. `/openapi/v1.json` requires ADMIN.
+`node scripts/generate-flows.mjs` regenerates the explicitly exposed flow endpoints. Parameters naming actors are injected from the authenticated principal; p_now is absent from HTTP DTOs. Unknown body fields are rejected. `/openapi/v1.json` requires ADMIN. The gateway's `/openapi` entry redirects visitors without a valid session to `/admin/login`; after signing in as ADMIN, open `/openapi` again to view `/openapi/v1.json`.
 
 ### Subscription payment links
 
