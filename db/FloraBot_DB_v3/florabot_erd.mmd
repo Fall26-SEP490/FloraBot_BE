@@ -1,0 +1,352 @@
+---
+title: FloraBot ERD logical v3.1 (MVP) — 22 bảng / 7 service (nét liền = FK trong service, nét đứt = tham chiếu logic khác service; bảng cap.published/received do CAP tự sinh, không tính)
+---
+erDiagram
+  gift_surveys["gift_surveys (ai)"] {
+    uuid id PK
+    text session_id "NOT NULL"
+    uuid customer_id FK
+    uuid kiosk_id FK "NOT NULL"
+    text recipient_type "NOT NULL"
+    text age_group
+    text occasion "NOT NULL"
+    text message_tone
+    bigint budget_max
+    jsonb results "NOT NULL"
+    text model_version
+    text source
+    integer latency_ms
+    uuid selected_product_id FK
+    uuid purchased_order_id FK
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  flower_products["flower_products (catalog)"] {
+    uuid id PK
+    uuid seller_id FK "NOT NULL"
+    text name "NOT NULL"
+    text description
+    bigint price "NOT NULL"
+    text_arr tags "NOT NULL"
+    integer shelf_life_hours "NOT NULL"
+    text status "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  sellers["sellers (identity)"] {
+    uuid id PK
+    text shop_name "NOT NULL"
+    text phone "NOT NULL"
+    text address
+    text status "NOT NULL"
+    uuid package_id FK
+    date package_expires_at
+    text brand_tone
+    text bank_name
+    text bank_account_no_enc
+    text bank_holder
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  subscription_packages["subscription_packages (identity)"] {
+    uuid id PK
+    text name UK "NOT NULL"
+    bigint monthly_fee "NOT NULL"
+    integer max_slots "NOT NULL"
+    text status "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  subscriptions["subscriptions (identity)"] {
+    uuid id PK
+    uuid seller_id FK "NOT NULL"
+    uuid package_id FK "NOT NULL"
+    date period_from "NOT NULL"
+    date period_to "NOT NULL"
+    bigint price "NOT NULL"
+    text status "NOT NULL"
+    uuid payment_id FK
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  users["users (identity)"] {
+    uuid id PK
+    text email UK
+    text phone UK
+    text password_hash
+    text full_name "NOT NULL"
+    text role "NOT NULL"
+    uuid seller_id FK
+    text status "NOT NULL"
+    bigint loyalty_points "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  accessories["accessories (kiosk-ops)"] {
+    uuid id PK
+    uuid seller_id FK "NOT NULL"
+    uuid kiosk_id FK "NOT NULL"
+    text name "NOT NULL"
+    bigint price "NOT NULL"
+    integer stock_quantity "NOT NULL"
+    text status "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  bouquets["bouquets (kiosk-ops)"] {
+    uuid id PK
+    uuid product_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    text qr_code UK "NOT NULL"
+    bigint price_snapshot "NOT NULL"
+    text status "NOT NULL"
+    timestamptz sellable_until "NOT NULL"
+    timestamptz stocked_at "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  inventory_logs["inventory_logs (kiosk-ops)"] {
+    uuid id PK
+    bigint seq UK "NOT NULL"
+    uuid bouquet_id FK "NOT NULL"
+    uuid slot_id FK "NOT NULL"
+    text movement_type "NOT NULL"
+    uuid batch_id
+    uuid order_id FK
+    uuid performed_by FK
+    text reason
+    timestamptz created_at "NOT NULL"
+  }
+  kiosks["kiosks (kiosk-ops)"] {
+    uuid id PK
+    text code UK "NOT NULL"
+    text name "NOT NULL"
+    text address "NOT NULL"
+    text region "NOT NULL"
+    text hardware_id UK "NOT NULL"
+    text mqtt_client_id UK "NOT NULL"
+    text status "NOT NULL"
+    timestamptz last_heartbeat_at
+    text api_key_hash
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  slot_assignments["slot_assignments (kiosk-ops)"] {
+    uuid id PK
+    uuid slot_id FK,UK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    uuid assigned_by FK "NOT NULL"
+    timestamptz assigned_at "NOT NULL"
+    text status "NOT NULL"
+    timestamptz released_at
+    text release_reason
+  }
+  slots["slots (kiosk-ops)"] {
+    uuid id PK
+    uuid kiosk_id FK "NOT NULL"
+    text slot_code "NOT NULL"
+    text status "NOT NULL"
+    uuid current_seller_id FK
+    uuid bouquet_id FK,UK
+    timestamptz hold_until
+    uuid hold_order_id FK
+    integer row_version "NOT NULL"
+    smallint relay_channel "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  system_settings["system_settings (kiosk-ops)"] {
+    text key PK
+    jsonb value "NOT NULL"
+    text description
+    uuid updated_by FK
+    timestamptz updated_at "NOT NULL"
+  }
+  unlock_tokens["unlock_tokens (kiosk-ops)"] {
+    uuid id PK
+    uuid kiosk_id FK "NOT NULL"
+    uuid slot_id FK,UK "NOT NULL"
+    text purpose "NOT NULL"
+    uuid order_id FK
+    uuid issued_to_user_id FK
+    text token_hash UK "NOT NULL"
+    uuid cmd_id UK "NOT NULL"
+    text status "NOT NULL"
+    integer attempts "NOT NULL"
+    timestamptz issued_at "NOT NULL"
+    timestamptz expires_at "NOT NULL"
+    timestamptz door_opened_at
+    timestamptz door_closed_at
+  }
+  attachments["attachments (notify-media)"] {
+    uuid id PK
+    text owner_service "NOT NULL"
+    text owner_type "NOT NULL"
+    uuid owner_id "NOT NULL"
+    text file_url "NOT NULL"
+    text mime_type "NOT NULL"
+    bigint size_bytes "NOT NULL"
+    text sha256 "NOT NULL"
+    text phase "NOT NULL"
+    uuid uploaded_by FK
+    timestamptz created_at "NOT NULL"
+  }
+  audit_logs["audit_logs (notify-media)"] {
+    bigint id PK
+    text actor_type "NOT NULL"
+    uuid actor_id FK
+    text action "NOT NULL"
+    text entity_type "NOT NULL"
+    uuid entity_id
+    jsonb payload
+    timestamptz created_at "NOT NULL"
+  }
+  disputes["disputes (ordering)"] {
+    uuid id PK
+    text kind "NOT NULL"
+    uuid order_id FK,UK
+    uuid kiosk_id FK "NOT NULL"
+    uuid slot_id FK
+    text reason "NOT NULL"
+    uuid reported_by FK
+    text status "NOT NULL"
+    text decision
+    bigint refund_amount
+    uuid decided_by FK
+    timestamptz resolved_at
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  order_items["order_items (ordering)"] {
+    uuid id PK
+    uuid order_id FK "NOT NULL"
+    text item_type "NOT NULL"
+    uuid bouquet_id FK,UK
+    uuid accessory_id FK
+    uuid slot_id FK
+    text name_snapshot "NOT NULL"
+    integer quantity "NOT NULL"
+    bigint unit_price "NOT NULL"
+    bigint line_total "NOT NULL"
+    text line_status "NOT NULL"
+    timestamptz created_at "NOT NULL"
+  }
+  orders["orders (ordering)"] {
+    uuid id PK
+    text order_code UK "NOT NULL"
+    uuid checkout_id "NOT NULL"
+    uuid customer_id FK
+    uuid seller_id FK "NOT NULL"
+    uuid kiosk_id FK "NOT NULL"
+    text status "NOT NULL"
+    bigint subtotal "NOT NULL"
+    bigint discount_amount "NOT NULL"
+    bigint total_amount "NOT NULL"
+    bigint points_redeemed "NOT NULL"
+    bigint points_earned "NOT NULL"
+    text tracking_token UK "NOT NULL"
+    text ecard_content
+    timestamptz completed_at
+    text refund_bank_name
+    text refund_bank_account_enc
+    text refund_bank_holder
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  ledger_entries["ledger_entries (payment)"] {
+    uuid id PK
+    uuid journal_id "NOT NULL"
+    text account "NOT NULL"
+    uuid seller_id FK
+    bigint amount "NOT NULL"
+    text ref_type "NOT NULL"
+    uuid ref_id "NOT NULL"
+    text memo
+    timestamptz created_at "NOT NULL"
+  }
+  payments["payments (payment)"] {
+    uuid id PK
+    text kind "NOT NULL"
+    text purpose "NOT NULL"
+    uuid checkout_id FK,UK
+    uuid order_id FK
+    uuid subscription_id FK
+    uuid parent_payment_id FK
+    text gateway "NOT NULL"
+    text gateway_txn_id
+    text idempotency_key UK "NOT NULL"
+    bigint amount "NOT NULL"
+    text status "NOT NULL"
+    uuid approved_by FK
+    text reason
+    jsonb raw_payload
+    timestamptz paid_at
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  withdrawal_requests["withdrawal_requests (payment)"] {
+    uuid id PK
+    uuid seller_id FK,UK "NOT NULL"
+    bigint amount "NOT NULL"
+    text status "NOT NULL"
+    text bank_name "NOT NULL"
+    text bank_account_no_enc "NOT NULL"
+    text bank_holder "NOT NULL"
+    uuid approved_by FK
+    text reject_reason
+    timestamptz paid_at
+    timestamptz created_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  kiosks ||--o{ slots : "kiosk_id"
+  subscription_packages o|--o{ sellers : "package_id"
+  sellers ||--o{ subscriptions : "seller_id"
+  subscription_packages ||--o{ subscriptions : "package_id"
+  bouquets o|--|o slots : "bouquet_id"
+  sellers o|--o{ users : "seller_id"
+  slots ||--|o slot_assignments : "slot_id"
+  bouquets ||--o{ inventory_logs : "bouquet_id"
+  slots ||--o{ inventory_logs : "slot_id"
+  kiosks ||--o{ unlock_tokens : "kiosk_id"
+  slots ||--|o unlock_tokens : "slot_id"
+  kiosks ||--o{ accessories : "kiosk_id"
+  orders ||--o{ order_items : "order_id"
+  orders o|--|o disputes : "order_id"
+  payments o|--o{ payments : "parent_payment_id"
+  payments o|..o{ subscriptions : "payment_id"
+  sellers ||..o{ flower_products : "seller_id"
+  flower_products ||..o{ bouquets : "product_id"
+  sellers ||..o{ bouquets : "seller_id"
+  sellers o|..o{ slots : "current_seller_id"
+  orders o|..o{ slots : "hold_order_id"
+  sellers ||..o{ slot_assignments : "seller_id"
+  users ||..o{ slot_assignments : "assigned_by"
+  orders o|..o{ inventory_logs : "order_id"
+  users o|..o{ inventory_logs : "performed_by"
+  orders o|..o{ unlock_tokens : "order_id"
+  users o|..o{ unlock_tokens : "issued_to_user_id"
+  sellers ||..o{ accessories : "seller_id"
+  users o|..o{ system_settings : "updated_by"
+  users o|..o{ orders : "customer_id"
+  sellers ||..o{ orders : "seller_id"
+  kiosks ||..o{ orders : "kiosk_id"
+  bouquets o|..|o order_items : "bouquet_id"
+  accessories o|..o{ order_items : "accessory_id"
+  slots o|..o{ order_items : "slot_id"
+  kiosks ||..o{ disputes : "kiosk_id"
+  slots o|..o{ disputes : "slot_id"
+  users o|..o{ disputes : "reported_by"
+  users o|..o{ disputes : "decided_by"
+  orders o|..|o payments : "checkout_id"
+  orders o|..o{ payments : "order_id"
+  subscriptions o|..o{ payments : "subscription_id"
+  users o|..o{ payments : "approved_by"
+  sellers o|..o{ ledger_entries : "seller_id"
+  sellers ||..|o withdrawal_requests : "seller_id"
+  users o|..o{ withdrawal_requests : "approved_by"
+  users o|..o{ audit_logs : "actor_id"
+  users o|..o{ attachments : "uploaded_by"
+  users o|..o{ gift_surveys : "customer_id"
+  kiosks ||..o{ gift_surveys : "kiosk_id"
+  flower_products o|..o{ gift_surveys : "selected_product_id"
+  orders o|..o{ gift_surveys : "purchased_order_id"
