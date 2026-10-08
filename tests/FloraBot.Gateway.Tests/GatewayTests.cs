@@ -56,6 +56,31 @@ public sealed class GatewayFixture : IAsyncLifetime
 
 public sealed class GatewayTests(GatewayFixture fixture) : IClassFixture<GatewayFixture>
 {
+    [Theory]
+    [InlineData("/openapi", false)]
+    [InlineData("/openapi/", false)]
+    [InlineData("/openapi", true)]
+    [InlineData("/openapi/", true)]
+    public async Task DocumentationEntryRedirectsToLoginOrDocument(string path, bool authenticated)
+    {
+        using var client = fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Add("Cookie", "florabot_access=" +
+            (authenticated ? GatewayFixture.Token(DateTime.UtcNow.AddMinutes(5)) : "expired-session"));
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(authenticated ? "/openapi/v1.json" : "/admin/login", response.Headers.Location?.OriginalString);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+    }
+
+    [Fact]
+    public async Task AnonymousDocumentationEntryRedirectsToLogin()
+    {
+        using var client = fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        var response = await client.GetAsync("/openapi");
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal("/admin/login", response.Headers.Location?.OriginalString);
+    }
+
     [Fact]
     public async Task ProxyPreservesPathBodyHostDeviceKeyAndCookies()
     {
@@ -85,6 +110,7 @@ public sealed class GatewayTests(GatewayFixture fixture) : IClassFixture<Gateway
         client.DefaultRequestHeaders.Add("Cookie", "florabot_access=invalid-token");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/auth/login", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/auth/admin/login", null)).StatusCode);
     }
     [Fact]
     public async Task ClientCannotBypassRateLimitUsingForwardedHeaders()

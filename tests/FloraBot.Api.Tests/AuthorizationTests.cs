@@ -85,7 +85,7 @@ public sealed class AuthorizationTests(ApiFactory factory) : IClassFixture<ApiFa
     public void AnonymousEndpointsMatchExplicitAllowlist()
     {
         _ = factory.CreateClient();
-        var allowed = new HashSet<string> { "/api/shop/catalog", "/api/auth/register", "/api/auth/forgot-password", "/api/auth/reset-password", "/health", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/packages", "/api/kiosks",
+        var allowed = new HashSet<string> { "/api/shop/catalog", "/api/auth/register", "/api/auth/forgot-password", "/api/auth/reset-password", "/health", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/packages", "/api/kiosks",
             "/api/receipts/lookup", "/api/receipts/{orderId:guid}/evidence", "/api/receipts/flows/open_dispute", "/api/receipts/flows/submit_refund_info", "/api/sellers", "/api/payments/webhook" };
         var routes = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
         foreach (var route in routes.Where(r => r.Metadata.GetMetadata<IAllowAnonymous>() is not null)) Assert.Contains(route.RoutePattern.RawText!, allowed);

@@ -84,7 +84,7 @@ public sealed class FlowContractTests(ApiFactory factory) : IClassFixture<ApiFac
         Add(["SELLER"], "request_withdrawal");
         Add(["KIOSK"], "kiosk_heartbeat device_event");
         Add(["CUSTOMER"], "forget_customer");
-        Add(["KIOSK", "CUSTOMER"], "kiosk_checkout request_pickup ai_suggest");
+        Add(["KIOSK", "CUSTOMER", "SELLER"], "kiosk_checkout request_pickup ai_suggest");
         Add([], "open_dispute submit_refund_info");
         Assert.Equal(FlowExecutor.Definitions.Keys.Order(), expected.Keys.Order());
 
@@ -114,10 +114,10 @@ public sealed class FlowContractTests(ApiFactory factory) : IClassFixture<ApiFac
                 http.Request.RouteValues["sellerId"] = sellerId;
                 http.Request.RouteValues["kioskId"] = kioskId;
                 http.User = role == "UNAUTHENTICATED" ? new ClaimsPrincipal(new ClaimsIdentity()) : new ClaimsPrincipal(new ClaimsIdentity(
-                    [new("sub", Guid.NewGuid().ToString()), new("role", role), new("seller_id", sellerId), new("seller_status", "ACTIVE"), new("kiosk_id", kioskId)], "test", "sub", "role"));
+                    [new("sub", Guid.NewGuid().ToString()), new("role", role), new("seller_id", sellerId), new("seller_status", "ACTIVE"), new(endpoint.RoutePattern.RawText!.StartsWith("/api/kiosks/") ? "kiosk_id" : "test_kiosk", kioskId)], "test", "sub", "role"));
                 var result = await authorization.AuthorizeAsync(http.User, http, policy);
                 Assert.True(result.Succeeded == roles.Contains(role), $"Unexpected {role} permission for {name}");
-                if (role == "SELLER" && roles.Contains(role))
+                if (role == "SELLER" && roles.Contains(role) && endpoint.RoutePattern.RawText!.StartsWith("/api/sellers/"))
                 {
                     http.Request.RouteValues["sellerId"] = Guid.NewGuid().ToString();
                     Assert.False((await authorization.AuthorizeAsync(http.User, http, policy)).Succeeded, $"Missing tenant boundary for {name}");

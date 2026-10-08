@@ -46,14 +46,14 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             if (isPublic) continue;
             var policy = await AuthorizationPolicy.CombineAsync(provider, endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
             Assert.NotNull(policy);
-            foreach (var role in new[] { "ADMIN", "SELLER", "CUSTOMER", "KIOSK", "SYSTEM", "ANONYMOUS" })
+            foreach (var role in new[] { "ADMIN", "STAFF", "SELLER", "CUSTOMER", "KIOSK", "SYSTEM", "ANONYMOUS" })
             {
                 var http = new DefaultHttpContext();
                 http.Request.RouteValues["sellerId"] = Seller;
                 http.Request.RouteValues["kioskId"] = Kiosk;
                 http.User = role == "ANONYMOUS" ? new(new ClaimsIdentity()) : new(new ClaimsIdentity(
                     [new("sub", Guid.NewGuid().ToString()), new("role", role), new("seller_id", Seller),
-                        new("seller_status", "ACTIVE"), new(expected.Template.StartsWith("/api/member/") ? "test_kiosk" : "kiosk_id", Kiosk)], "test", "sub", "role"));
+                        new("seller_status", "ACTIVE"), new(expected.Template.StartsWith("/api/kiosks/") ? "kiosk_id" : "test_kiosk", Kiosk)], "test", "sub", "role"));
                 var result = await authorization.AuthorizeAsync(http.User, http, policy);
                 Assert.True(result.Succeeded == expected.Roles.Contains(role), $"Unexpected {role} access: {expected.Key}");
             }
@@ -146,10 +146,23 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     {
         var entries = new List<Access>();
         Add([], "GET", "/api/shop/catalog");
+        Add(["STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/resolve-incident");
+        Add(["STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/evidence/upload", "/api/staff/tasks/{taskId:guid}/evidence");
+        Add(["STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/evidence", "/api/staff/tasks/{taskId:guid}/evidence/{attachmentId:guid}");
+        Add(["ADMIN"], "GET", "/api/admin/staff-tasks/{taskId:guid}/evidence", "/api/admin/staff-tasks/{taskId:guid}/evidence/{attachmentId:guid}");
+        Add(["ADMIN"], "GET", "/api/admin/staff", "/api/admin/staff-tasks", "/api/admin/staff-delivery-scopes");
+        Add(["ADMIN"], "POST", "/api/admin/staff-tasks", "/api/admin/staff-tasks/{taskId:guid}/transition", "/api/admin/staff-tasks/{taskId:guid}/reassign");
+        Add(["STAFF"], "GET", "/api/staff/tasks", "/api/staff/tasks/{taskId:guid}");
+        Add(["ADMIN"], "GET", "/api/admin/staff-tasks/{taskId:guid}");
+        Add(["STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/transition");
+        Add(["STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/stock");
+        Add(["STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/stock");
         Add([], "POST", "/api/auth/register", "/api/auth/forgot-password", "/api/auth/reset-password");
-        Add(["ADMIN", "SELLER", "CUSTOMER"], "GET", "/api/auth/me");
-        Add(["CUSTOMER"], "GET", "/api/member/profile", "/api/member/history", "/api/member/preorders");
-        Add(["CUSTOMER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER"], "GET", "/api/auth/me");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
+        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");
+        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
         Add(["ADMIN"], "GET", "/api/admin/preorders");
@@ -160,7 +173,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
         Add([], "GET", "/health", "/api/packages", "/api/kiosks");
-        Add([], "POST", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
+        Add([], "POST", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
         Add(["ADMIN"], "GET", "/openapi/{documentName}.json",
             "/api/admin/sellers", "/api/admin/slots",
             "/api/admin/reports/v_admin_queue", "/api/admin/reports/v_refund_queue", "/api/admin/reports/v_revenue_daily",
@@ -178,11 +191,11 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/products/{productId:guid}/photos",
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");
-        Add(["KIOSK", "CUSTOMER"], "GET", "/api/kiosks/{kioskId:guid}/catalog", "/api/kiosks/{kioskId:guid}/catalog/items",
+        Add(["KIOSK", "CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/catalog", "/api/kiosks/{kioskId:guid}/catalog/items",
             "/api/kiosks/{kioskId:guid}/catalog/accessories", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}",
             "/api/kiosks/{kioskId:guid}/surveys/{surveyId:guid}");
-        Add(["KIOSK", "CUSTOMER"], "POST", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link");
-        Add(["CUSTOMER"], "GET", "/api/kiosks/{kioskId:guid}/customer/history", "/api/kiosks/{kioskId:guid}/customer/points");
+        Add(["KIOSK", "CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/customer/history", "/api/kiosks/{kioskId:guid}/customer/points");
         return entries.ToArray();
 
         void Add(string[] roles, string method, params string[] paths)

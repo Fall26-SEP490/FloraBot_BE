@@ -41,13 +41,6 @@ jobs:
       - name: Stop CI broker
         if: always()
         run: docker compose down
-  ai:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify advisor on Python 3.12
-        run: docker build --target test -t florabot-ai-tests ./ai
   api-and-database:
     runs-on: ubuntu-latest
     timeout-minutes: 20

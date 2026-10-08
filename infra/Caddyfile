@@ -14,28 +14,19 @@
   }
 
   redir /kiosk /kiosk/ 308
-  handle_path /kiosk/* {
-    root * /srv/kiosk
-    header Cache-Control no-cache
-    try_files {path} /index.html
-    file_server
+  handle /kiosk/* {
+    reverse_proxy kiosk-web:80
   }
 
-  handle_path /portal/* {
-    root * /srv/portal
-    file_server
+  handle /_next/* {
+    reverse_proxy next-web:3000
   }
   @portal path /login /admin /admin/* /seller /seller/* /receipt /dang-nhap /dang-ky /quen-mat-khau /dat-lai-mat-khau /tai-khoan /dat-hoa
   handle @portal {
-    root * /srv/portal
-    header Cache-Control no-cache
-    rewrite * /index.html
-    file_server
+    reverse_proxy next-web:3000
   }
 
   handle {
-    root * /srv/landing
-    try_files {path} {path}/index.html =404
-    file_server
+    reverse_proxy next-web:3000
   }
 }

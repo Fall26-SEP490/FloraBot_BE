@@ -1,7 +1,7 @@
 services:
   ai:
     build:
-      context: ./ai
+      context: ../AI
       target: runtime
     environment:
       AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?Set the internal advisor token}
@@ -89,13 +89,25 @@ services:
       TRUSTED_PROXY_IPS: ${CADDY_PROXY_IP:-172.29.80.10}
     networks: [default, edge]
     restart: unless-stopped
+  next-web:
+    build:
+      context: ../FE
+      dockerfile: infra/Next.Dockerfile
+    depends_on: [gateway]
+    networks: [edge]
+    restart: unless-stopped
+  kiosk-web:
+    build:
+      context: ../Kios
+    networks: [edge]
+    restart: unless-stopped
   web:
     build:
       context: ../FE
       dockerfile: infra/Dockerfile
       args:
         SITE_URL: http://localhost:8088
-    depends_on: [gateway]
+    depends_on: [gateway, next-web, kiosk-web]
     environment:
       SITE_ADDRESS: ":80"
     ports: ["127.0.0.1:8088:80"]

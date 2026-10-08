@@ -24,7 +24,7 @@ public sealed class SessionTests(ApiFactory factory) : IClassFixture<ApiFactory>
         try
         {
             using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
-            var login = await client.PostAsJsonAsync("/api/auth/login", new { email, password });
+            var login = await client.PostAsJsonAsync("/api/auth/admin/login", new { email, password });
             Assert.Equal(HttpStatusCode.OK, login.StatusCode);
             var cookies = login.Headers.GetValues("Set-Cookie").ToArray();
             Assert.All(cookies, cookie => { Assert.Contains("httponly", cookie.ToLowerInvariant()); Assert.Contains("samesite=strict", cookie.ToLowerInvariant()); });

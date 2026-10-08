@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FloraBot.Api.Modules.Notify;
+using FloraBot.Api.Modules.KioskOps;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +15,102 @@ namespace FloraBot.Api.Tests;
 public sealed class PrivateEvidenceTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
     private static readonly byte[] Png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=");
+
+    [Fact]
+    public async Task StaffEvidenceIsPrivateVersionBoundAndRetrySafe()
+    {
+        using var handler = new Storage(); using var transport = new HttpClient(handler);
+        var settings = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["CLOUDINARY_CLOUD_NAME"] = "test-cloud", ["CLOUDINARY_API_KEY"] = "test", ["CLOUDINARY_API_SECRET"] = "test-secret" }).Build();
+        using var app = factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            services.AddScoped(_ => new CloudinaryMedia(transport, settings, TimeProvider.System))));
+        using var scope = app.Services.CreateScope(); var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var staffId = Guid.NewGuid(); var otherId = Guid.NewGuid(); var taskId = Guid.NewGuid(); var incident = Guid.NewGuid();
+        var kiosk = Guid.Parse("40000000-0000-0000-0000-000000000001");
+        await using var setup = data.CreateCommand("""
+            INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
+              (@staff,@staff::text||'@example.invalid','Evidence staff','!unprovisioned','STAFF'),
+              (@other,@other::text||'@example.invalid','Other evidence staff','!unprovisioned','STAFF');
+            INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@incident,'DEVICE_FAULT',@kiosk,'Evidence door test');
+            """);
+        setup.Parameters.AddWithValue("staff", staffId); setup.Parameters.AddWithValue("other", otherId);
+        setup.Parameters.AddWithValue("incident", incident); setup.Parameters.AddWithValue("kiosk", kiosk); await setup.ExecuteNonQueryAsync();
+        using var staff = app.CreateClient(); using var other = app.CreateClient(); using var admin = app.CreateClient();
+        staff.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: staffId));
+        other.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: otherId));
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
+        (await admin.PostAsJsonAsync("/api/admin/staff-tasks", new AssignStaffTask(taskId, staffId, "INCIDENT", kiosk, null, incident, "Inspect the door with private evidence"))).EnsureSuccessStatusCode();
+        var path = $"/api/staff/tasks/{taskId}/evidence";
+        HttpContent Content() { var body = new ByteArrayContent(Png); body.Headers.ContentType = new("image/png"); return body; }
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsync(path + "/upload", Content())).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.PostAsync(path + "/upload", Content())).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await admin.PostAsync(path + "/upload", Content())).StatusCode);
+        (await staff.PostAsJsonAsync($"/api/staff/tasks/{taskId}/transition", new TransitionStaffTask(1, "IN_PROGRESS", "Started inspecting door and collecting photos"))).EnsureSuccessStatusCode();
+        var upload = await staff.PostAsync(path + "/upload", Content()); upload.EnsureSuccessStatusCode();
+        var ticket = (await upload.Content.ReadFromJsonAsync<EvidenceUploadResponse>())!;
+        var input = new StaffEvidenceInput(Guid.NewGuid(), 2, ticket.Reference);
+        Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(path, input with { Reference = "https://example.invalid/photo.png" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(path, input with { Version = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await other.PostAsJsonAsync(path, input)).StatusCode);
+        var responses = await Task.WhenAll(staff.PostAsJsonAsync(path, input), staff.PostAsJsonAsync(path, input));
+        foreach (var response in responses) response.EnsureSuccessStatusCode();
+        var saved = (await responses[0].Content.ReadFromJsonAsync<StaffEvidenceItem>())!;
+        Assert.Equal(saved, await responses[1].Content.ReadFromJsonAsync<StaffEvidenceItem>());
+        Assert.NotEqual(DateTime.MinValue, saved.CreatedAt);
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input with { Id = Guid.NewGuid() })).StatusCode);
+        var list = (await staff.GetFromJsonAsync<StaffEvidencePage>(path))!;
+        Assert.Equal(saved, Assert.Single(list.Items)); Assert.False(list.HasMore);
+        Assert.Equal(HttpStatusCode.BadRequest, (await staff.GetAsync(path + "?page=0")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(path)).StatusCode);
+        var read = await staff.GetAsync(path + "/" + saved.Id); read.EnsureSuccessStatusCode();
+        Assert.True(read.Headers.CacheControl?.NoStore); Assert.Equal(Png, await read.Content.ReadAsByteArrayAsync());
+        Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(path + "/" + saved.Id)).StatusCode);
+        var adminPath = $"/api/admin/staff-tasks/{taskId}/evidence";
+        Assert.Equal(Png, await admin.GetByteArrayAsync(adminPath + "/" + saved.Id));
+        handler.Corrupt = true; Assert.Equal(HttpStatusCode.ServiceUnavailable, (await staff.GetAsync(path + "/" + saved.Id)).StatusCode); handler.Corrupt = false;
+        var detail = (await staff.GetFromJsonAsync<StaffTaskDetail>($"/api/staff/tasks/{taskId}"))!;
+        Assert.Equal("STAFF_TASK_EVIDENCE_ADDED", detail.History[0].Action);
+        var secondTask = Guid.NewGuid(); var secondIncident = Guid.NewGuid();
+        await using var secondSetup = data.CreateCommand("INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@id,'DEVICE_FAULT',@kiosk,'Second task evidence test')");
+        secondSetup.Parameters.AddWithValue("id", secondIncident); secondSetup.Parameters.AddWithValue("kiosk", kiosk); await secondSetup.ExecuteNonQueryAsync();
+        (await admin.PostAsJsonAsync("/api/admin/staff-tasks", new AssignStaffTask(secondTask, staffId, "INCIDENT", kiosk, null, secondIncident, "Inspect another door with private evidence"))).EnsureSuccessStatusCode();
+        (await staff.PostAsJsonAsync($"/api/staff/tasks/{secondTask}/transition", new TransitionStaffTask(1, "IN_PROGRESS", "Started inspecting the second door"))).EnsureSuccessStatusCode();
+        var secondPath = $"/api/staff/tasks/{secondTask}/evidence";
+        var anotherUpload = await staff.PostAsync(path + "/upload", Content()); anotherUpload.EnsureSuccessStatusCode();
+        var secondUpload = await staff.PostAsync(secondPath + "/upload", Content()); secondUpload.EnsureSuccessStatusCode();
+        var firstReference = (await anotherUpload.Content.ReadFromJsonAsync<EvidenceUploadResponse>())!.Reference;
+        var secondReference = (await secondUpload.Content.ReadFromJsonAsync<EvidenceUploadResponse>())!.Reference;
+        Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(secondPath, input)).StatusCode);
+        var collisionId = Guid.NewGuid();
+        var collisions = await Task.WhenAll(staff.PostAsJsonAsync(path, new StaffEvidenceInput(collisionId, 2, firstReference)), staff.PostAsJsonAsync(secondPath, new StaffEvidenceInput(collisionId, 2, secondReference)));
+        Assert.Single(collisions, x => x.StatusCode == HttpStatusCode.OK);
+        Assert.Single(collisions, x => x.StatusCode == HttpStatusCode.Conflict);
+        // Reusing an existing ID with a different upload cannot be mistaken for a retry.
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input with { Reference = firstReference })).StatusCode);
+        (await staff.PostAsJsonAsync($"/api/staff/tasks/{taskId}/transition", new TransitionStaffTask(2, "SUBMITTED", "Photos attached for administrator review"))).EnsureSuccessStatusCode();
+        (await staff.PostAsJsonAsync(path, input)).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, new StaffEvidenceInput(Guid.NewGuid(), 2, firstReference))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsync(path + "/upload", Content())).StatusCode);
+        (await admin.PostAsJsonAsync($"/api/admin/staff-tasks/{taskId}/transition", new TransitionStaffTask(3, "IN_PROGRESS", "Collect additional views of the repaired door"))).EnsureSuccessStatusCode();
+        (await admin.PostAsJsonAsync($"/api/admin/staff-tasks/{taskId}/reassign", new ReassignStaffTask(4, otherId, "Next shift will collect additional evidence"))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.NotFound, (await staff.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await staff.GetAsync(path + "/" + saved.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await staff.PostAsJsonAsync(path, input)).StatusCode);
+        Assert.Contains(saved, (await other.GetFromJsonAsync<StaffEvidencePage>(path))!.Items);
+        Assert.Equal(Png, await other.GetByteArrayAsync(path + "/" + saved.Id));
+        await using var seed = data.CreateCommand("""
+            INSERT INTO notify.attachments(owner_service,owner_type,owner_id,file_url,mime_type,size_bytes,sha256,phase,uploaded_by)
+            SELECT 'kiosk_ops','staff_task',@task,'https://example.invalid/page-'||n,'image/png',1,'fixture','EVIDENCE',@actor
+            FROM generate_series(1,26) n
+            """);
+        seed.Parameters.AddWithValue("task", taskId); seed.Parameters.AddWithValue("actor", otherId); await seed.ExecuteNonQueryAsync();
+        var firstPage = (await other.GetFromJsonAsync<StaffEvidencePage>(path))!;
+        var secondPage = (await other.GetFromJsonAsync<StaffEvidencePage>(path + "?page=2"))!;
+        Assert.Equal(25, firstPage.Items.Count); Assert.True(firstPage.HasMore); Assert.False(secondPage.HasMore);
+        Assert.Empty(firstPage.Items.Select(x => x.Id).Intersect(secondPage.Items.Select(x => x.Id)));
+        Assert.Equal(saved, Assert.Single((await other.GetFromJsonAsync<StaffEvidencePage>(path + "?attachmentId=" + saved.Id))!.Items));
+        Assert.Empty((await other.GetFromJsonAsync<StaffEvidencePage>(path + "?attachmentId=" + Guid.NewGuid()))!.Items);
+    }
 
     [Theory]
     [InlineData("pay_withdrawal")]

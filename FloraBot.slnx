@@ -4,6 +4,7 @@
     <Project Path="src/FloraBot.Gateway/FloraBot.Gateway.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/FloraBot.BrowserHost/FloraBot.BrowserHost.csproj" />
     <Project Path="tests/FloraBot.Api.Tests/FloraBot.Api.Tests.csproj" />
     <Project Path="tests/FloraBot.Gateway.Tests/FloraBot.Gateway.Tests.csproj" />
   </Folder>

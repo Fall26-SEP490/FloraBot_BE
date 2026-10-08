@@ -34,7 +34,7 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
             Assert.DoesNotContain(password, output.ToString());
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Add("Origin", "http://127.0.0.1:5173");
-            var login = await client.PostAsJsonAsync("/api/auth/login", new { email, password });
+            var login = await client.PostAsJsonAsync(role == "ADMIN" ? "/api/auth/admin/login" : "/api/auth/login", new { email, password });
             Assert.Equal(HttpStatusCode.OK, login.StatusCode);
             var session = await login.Content.ReadFromJsonAsync<SessionResponse>();
             Assert.Equal(id, session!.Id); Assert.Equal(role, session.Role);
@@ -44,7 +44,7 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
             nullOverride.Parameters.AddWithValue("id", id); nullOverride.Parameters.AddWithValue("email", email);
             var denied = await Assert.ThrowsAsync<PostgresException>(() => nullOverride.ExecuteNonQueryAsync());
             Assert.Equal(PostgresErrorCodes.RaiseException, denied.SqlState);
-            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/auth/login", new { email, password })).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(role == "ADMIN" ? "/api/auth/admin/login" : "/api/auth/login", new { email, password })).StatusCode);
             await using var audit = data.CreateCommand("SELECT count(*) FROM notify.audit_logs WHERE entity_id=@id AND action='PORTAL_USER_PROVISIONED' AND actor_type='SYSTEM' AND NOT(payload ? 'password') AND NOT(payload ? 'email')");
             audit.Parameters.AddWithValue("id", id);
             Assert.Equal(1L, await audit.ExecuteScalarAsync());

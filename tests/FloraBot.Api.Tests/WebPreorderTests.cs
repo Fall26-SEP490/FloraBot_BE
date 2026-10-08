@@ -21,7 +21,9 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
     [InlineData("CUSTOM", false, false, true, false)]
     [InlineData("STOCK", false, false, true, false)]
     [InlineData("STOCK", false, false, false, true)]
-    public async Task WebPaymentWaitsForPhysicalPickupAndSupportsCancellation(string kind, bool cancel, bool expire, bool late, bool fault)
+    [InlineData("CUSTOM", false, false, false, false, true)]
+    [InlineData("STOCK", false, false, false, false, true)]
+    public async Task WebPaymentWaitsForPhysicalPickupAndSupportsCancellation(string kind, bool cancel, bool expire, bool late, bool fault, bool shopBuyer = false)
     {
         using var app = factory.WithWebHostBuilder(_ => { });
         using var scope = app.Services.CreateScope();
@@ -54,8 +56,10 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         }
         Guid? bouquet = kind == "STOCK" ? (Guid)(await Sql("SELECT flow.stock_bouquet(flow.new_batch(),@product,@slot,@user,@qr)", ("product", product), ("slot", slot), ("user", user), ("qr", "web-" + product)))! : null;
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
+        if (shopBuyer)
+            await Sql("UPDATE identity.users SET role='SELLER',seller_id=@seller,password_hash='!unprovisioned' WHERE id=@customer", ("seller", seller), ("customer", customer));
         using var client = app.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = customer, Role = "CUSTOMER", FullName = "Member" }));
+        client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = customer, Role = shopBuyer ? "SELLER" : "CUSTOMER", SellerId = shopBuyer ? seller : null, PasswordHash = shopBuyer ? "!unprovisioned" : null, FullName = "Member" }));
         using var shop = app.CreateClient();
         shop.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = user, SellerId = seller, Role = "SELLER", FullName = "Shop" }));
         using var foreign = app.CreateClient();

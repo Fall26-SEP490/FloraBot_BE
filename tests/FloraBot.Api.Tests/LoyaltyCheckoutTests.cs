@@ -13,8 +13,10 @@ namespace FloraBot.Api.Tests;
 
 public sealed class LoyaltyCheckoutTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
-    [Fact]
-    public async Task RedemptionIsAtomicCappedPerSellerAndRestoredOnce()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RedemptionIsAtomicCappedPerSellerAndRestoredOnce(bool shopOwner)
     {
         using var scope = factory.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
@@ -54,8 +56,16 @@ public sealed class LoyaltyCheckoutTests(ApiFactory factory) : IClassFixture<Api
             find.Parameters.AddWithValue("id", slots[index]); bouquets.Add((Guid)(await find.ExecuteScalarAsync())!);
         }
         using var client = factory.CreateClient();
+        var member = new User { Id = customer, Role = "CUSTOMER", FullName = "Loyalty fixture" };
+        if (shopOwner)
+        {
+            member.Role = "SELLER"; member.SellerId = Guid.Parse("20000000-0000-0000-0000-000000000001"); member.PasswordHash = "!unprovisioned";
+            await using var promote = source.CreateCommand("UPDATE identity.users SET role='SELLER',seller_id=@seller,password_hash=@hash WHERE id=@id");
+            promote.Parameters.AddWithValue("seller", member.SellerId.Value); promote.Parameters.AddWithValue("hash", member.PasswordHash);
+            promote.Parameters.AddWithValue("id", customer); await promote.ExecuteNonQueryAsync();
+        }
         client.DefaultRequestHeaders.Authorization = new("Bearer", scope.ServiceProvider.GetRequiredService<TokenService>()
-            .Issue(new User { Id = customer, Role = "CUSTOMER", FullName = "Loyalty fixture" }, kioskId: kiosk.ToString()));
+            .Issue(member, kioskId: kiosk.ToString()));
         var path = $"/api/kiosks/{kiosk}/flows/kiosk_checkout";
         var card = string.Concat(Enumerable.Repeat("🌼", 150));
         var longCard = await client.PostAsJsonAsync(path, new { p_bouquets = bouquets, p_ecard = card + "a" });

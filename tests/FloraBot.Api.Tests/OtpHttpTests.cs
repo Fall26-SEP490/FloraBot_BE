@@ -7,11 +7,55 @@ using System.Text.RegularExpressions;
 using FloraBot.Api.Auth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace FloraBot.Api.Tests;
 
 public sealed class OtpHttpTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
+    [Theory]
+    [InlineData("SELLER", "ACTIVE", true)]
+    [InlineData("CUSTOMER", "LOCKED", false)]
+    [InlineData("ADMIN", "ACTIVE", false)]
+    [InlineData("STAFF", "ACTIVE", false)]
+    public async Task ExistingIdentityIsPreservedWithoutGrantingPortalAccess(string role, string status, bool allowed)
+    {
+        using var scope = factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var otp = scope.ServiceProvider.GetRequiredService<OtpService>();
+        var id = Guid.NewGuid();
+        var phone = "09" + RandomNumberGenerator.GetInt32(10000000, 99999999);
+        const string seller = "20000000-0000-0000-0000-000000000001";
+        const string kioskId = "40000000-0000-0000-0000-000000000001";
+        const string path = "/api/kiosks/" + kioskId;
+        await using var setup = data.CreateCommand("INSERT INTO identity.users(id,phone,full_name,password_hash,role,status,seller_id) VALUES(@id,@phone,'OTP identity test','!unprovisioned',@role,@status,CASE WHEN @role='SELLER' THEN @seller ELSE NULL END)");
+        setup.Parameters.AddWithValue("id", id); setup.Parameters.AddWithValue("phone", phone);
+        setup.Parameters.AddWithValue("role", role); setup.Parameters.AddWithValue("status", status);
+        setup.Parameters.AddWithValue("seller", Guid.Parse(seller)); await setup.ExecuteNonQueryAsync();
+        var code = await otp.IssueAsync(Guid.Parse(kioskId), phone);
+        using var device = factory.CreateClient(); device.DefaultRequestHeaders.Add("X-Kiosk-Key", "demo-key-q1");
+        var response = await device.PostAsJsonAsync(path + "/otp/verify", new { phone = "+84" + phone[1..], code });
+        if (!allowed) { Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode); return; }
+        response.EnsureSuccessStatusCode();
+        var session = (await response.Content.ReadFromJsonAsync<CustomerSession>())!;
+        Assert.False(session.CanForgetAccount);
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(session.AccessToken);
+        Assert.Equal(id.ToString(), jwt.Claims.Single(c => c.Type == "sub").Value);
+        Assert.Equal(role, jwt.Claims.Single(c => c.Type == "role").Value);
+        Assert.InRange((jwt.ValidTo - DateTime.UtcNow).TotalSeconds, 590, 600);
+        using var member = factory.CreateClient(); member.DefaultRequestHeaders.Authorization = new("Bearer", session.AccessToken);
+        foreach (var suffix in new[] { "/customer/history", "/customer/points", "/catalog/items" })
+            Assert.Equal(HttpStatusCode.OK, (await member.GetAsync(path + suffix)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/member/history")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/auth/me")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/admin/staff")).StatusCode);
+        var wallet = await member.GetAsync($"/api/sellers/{seller}/wallet");
+        Assert.True(wallet.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/kiosks/40000000-0000-0000-0000-000000000002/customer/history")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync(path + "/flows/forget_customer", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await device.PostAsJsonAsync(path + "/otp/verify", new { phone, code })).StatusCode);
+    }
+
     [Fact]
     public async Task DeliveredCodeCreatesKioskBoundCustomerSessionAndCannotReplay()
     {
