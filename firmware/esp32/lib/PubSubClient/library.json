@@ -1,0 +1,8 @@
+{
+  "name": "PubSubClient-FloraBot",
+  "version": "2.8.0-florabot.1",
+  "description": "PubSubClient 2.8 with bounded outgoing QoS 1 and acknowledgment hooks",
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
