@@ -1,0 +1,25 @@
+name: florabot-mqtt-test
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine
+    entrypoint: ["/bin/sh", "/mosquitto/config/start.sh"]
+    ports: ["127.0.0.1:58884:8883"]
+    volumes:
+      - ./infra/mosquitto:/mosquitto/config:ro
+      - ./infra/secrets/mqtt/broker:/provisioned:ro
+      - broker-state:/mosquitto/data
+    tmpfs: [/mosquitto/secure]
+  simulator:
+    build:
+      context: ./firmware/simulator
+      target: runtime
+    depends_on: [mosquitto]
+    command: ["--host", "mosquitto", "--port", "8883", "--credentials", "/device.json", "--ca", "/ca.crt", "--state", "/state/device.db"]
+    restart: on-failure
+    volumes:
+      - ./infra/secrets/mqtt/devices/ESP32-A1B2C3.json:/device.json:ro
+      - ./infra/secrets/mqtt/broker/ca.crt:/ca.crt:ro
+      - simulator-state:/state
+volumes:
+  broker-state:
+  simulator-state:

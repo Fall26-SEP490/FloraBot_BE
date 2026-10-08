@@ -1,0 +1,10 @@
+**/bin
+**/obj
+**/.git
+.env*
+infra/secrets
+artifacts
+TestResults
+db/FloraBot_DB_v3/*.html
+db/FloraBot_DB_v3/*.png
+db/FloraBot_DB_v3/*.svg

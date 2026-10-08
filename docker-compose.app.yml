@@ -1,0 +1,119 @@
+services:
+  ai:
+    build:
+      context: ./ai
+      target: runtime
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?Set the internal advisor token}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+    networks: [advisor]
+    restart: unless-stopped
+  db-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: florabot
+      PGDATABASE: florabot
+      PGPASSWORD: ${POSTGRES_PASSWORD:-local-florabot-only}
+    entrypoint: ["/bin/sh", "/bootstrap/initialize-runtime.sh"]
+    volumes:
+      - ./db/FloraBot_DB_v3:/sql:ro
+      - ./db/migrations:/migrations:ro
+      - ./infra/initialize-runtime.sh:/bootstrap/initialize-runtime.sh:ro
+  api:
+    build:
+      context: .
+      dockerfile: infra/Api.Dockerfile
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      mosquitto:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      DATABASE_URL: Host=postgres;Database=florabot;Username=florabot;Password=${POSTGRES_PASSWORD:-local-florabot-only}
+      VALKEY_URL: valkey:6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: florabot
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-local-florabot-only}
+      MQTT_ENABLED: "true"
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "8883"
+      MQTT_CLIENT_ID: florabot-main-api
+      MQTT_CREDENTIALS_FILE: /mqtt/backend.json
+      MQTT_CA_FILE: /mqtt/ca.crt
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?Set a shared signing key before starting the application stack}
+      DATA_PROTECTION_KEYS_PATH: /var/lib/florabot/keys
+      ALLOWED_ORIGINS: http://localhost:8088,http://127.0.0.1:8088
+      JOBS_ENABLED: "true"
+      AI_SERVICE_URL: http://ai:8000
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      AI_CACHE_VERSION: ${AI_CACHE_VERSION:-1}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-Disabled}
+      MEMBER_WEB_URL: ${MEMBER_WEB_URL:-http://localhost:8088}
+      PAYOS_CLIENT_ID: ${PAYOS_CLIENT_ID:-}
+      PAYOS_API_KEY: ${PAYOS_API_KEY:-}
+      PAYOS_CHECKSUM_KEY: ${PAYOS_CHECKSUM_KEY:-}
+      PAYOS_RETURN_URL: ${PAYOS_RETURN_URL:-http://localhost:8088/tai-khoan}
+      PAYOS_CANCEL_URL: ${PAYOS_CANCEL_URL:-http://localhost:8088/tai-khoan}
+      EMAIL_SENDER: ${EMAIL_SENDER:-}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      GOOGLE_SMTP_APP_PASSWORD: ${GOOGLE_SMTP_APP_PASSWORD:-}
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?Set the internal advisor token}
+    networks: [default, advisor]
+    volumes:
+      - data-protection-keys:/var/lib/florabot/keys
+      - ./infra/secrets/mqtt/backend.json:/mqtt/backend.json:ro
+      - ./infra/secrets/mqtt/broker/ca.crt:/mqtt/ca.crt:ro
+    restart: unless-stopped
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/Gateway.Dockerfile
+    depends_on: [api]
+    environment:
+      API_UPSTREAM_URL: http://api:8080
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?Set a shared signing key before starting the application stack}
+      TRUSTED_PROXY_IPS: ${CADDY_PROXY_IP:-172.29.80.10}
+    networks: [default, edge]
+    restart: unless-stopped
+  web:
+    build:
+      context: ../FE
+      dockerfile: infra/Dockerfile
+      args:
+        SITE_URL: http://localhost:8088
+    depends_on: [gateway]
+    environment:
+      SITE_ADDRESS: ":80"
+    ports: ["127.0.0.1:8088:80"]
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge:
+        ipv4_address: ${CADDY_PROXY_IP:-172.29.80.10}
+    restart: unless-stopped
+networks:
+  advisor:
+  edge:
+    ipam:
+      config:
+        - subnet: ${FLORABOT_EDGE_SUBNET:-172.29.80.0/24}
+volumes:
+  data-protection-keys:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,57 @@
+name: florabot
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "unix_socket_directories=/var/run/postgresql,/tmp"]
+    environment:
+      POSTGRES_DB: florabot
+      POSTGRES_USER: florabot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-florabot-only}
+    ports: ["127.0.0.1:55436:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/FloraBot_DB_v3:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U florabot -d florabot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports: ["127.0.0.1:56379:6379"]
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes: ["valkey-data:/data"]
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports: ["127.0.0.1:55672:5672", "127.0.0.1:55673:15672"]
+    environment:
+      RABBITMQ_DEFAULT_USER: florabot
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-local-florabot-only}
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine
+    entrypoint: ["/bin/sh", "/mosquitto/config/start.sh"]
+    ports: ["127.0.0.1:58883:8883"]
+    volumes:
+      - ./infra/mosquitto:/mosquitto/config:ro
+      - ./infra/secrets/mqtt/broker:/provisioned:ro
+      - mosquitto-data:/mosquitto/data
+    tmpfs: [/mosquitto/secure]
+    restart: unless-stopped
+  device-simulator:
+    profiles: [simulator]
+    build:
+      context: ./firmware/simulator
+      target: runtime
+    depends_on: [mosquitto]
+    command: ["--host", "mosquitto", "--port", "8883", "--credentials", "/device.json", "--ca", "/ca.crt", "--state", "/state/device.db"]
+    volumes:
+      - ./infra/secrets/mqtt/devices/ESP32-A1B2C3.json:/device.json:ro
+      - ./infra/secrets/mqtt/broker/ca.crt:/ca.crt:ro
+      - simulator-state:/state
+volumes:
+  postgres-data:
+  valkey-data:
+  rabbitmq-data:
+  mosquitto-data:
+  simulator-state:

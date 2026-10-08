@@ -1,0 +1,12 @@
+user florabot-backend
+topic write kiosk/+/cmd
+topic read kiosk/+/evt
+
+user ESP32-A1B2C3
+topic read kiosk/ESP32-A1B2C3/cmd
+topic write kiosk/ESP32-A1B2C3/evt
+
+user ESP32-D4E5F6
+topic read kiosk/ESP32-D4E5F6/cmd
+topic write kiosk/ESP32-D4E5F6/evt
+

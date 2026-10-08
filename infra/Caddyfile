@@ -1,0 +1,41 @@
+{
+  admin off
+}
+
+{$SITE_ADDRESS} {
+  encode zstd gzip
+  header X-Content-Type-Options nosniff
+  header Referrer-Policy no-referrer
+  header X-Frame-Options DENY
+
+  @api path /api /api/* /hub /hub/* /openapi /openapi/*
+  handle @api {
+    reverse_proxy gateway:8080
+  }
+
+  redir /kiosk /kiosk/ 308
+  handle_path /kiosk/* {
+    root * /srv/kiosk
+    header Cache-Control no-cache
+    try_files {path} /index.html
+    file_server
+  }
+
+  handle_path /portal/* {
+    root * /srv/portal
+    file_server
+  }
+  @portal path /login /admin /admin/* /seller /seller/* /receipt /dang-nhap /dang-ky /quen-mat-khau /dat-lai-mat-khau /tai-khoan /dat-hoa
+  handle @portal {
+    root * /srv/portal
+    header Cache-Control no-cache
+    rewrite * /index.html
+    file_server
+  }
+
+  handle {
+    root * /srv/landing
+    try_files {path} {path}/index.html =404
+    file_server
+  }
+}
