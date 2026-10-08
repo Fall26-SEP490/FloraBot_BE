@@ -1,0 +1,1099 @@
+[
+  {
+    "name": "set_seller_bank",
+    "module": "Identity",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_bank",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_account_enc",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_holder",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "set_seller_tone",
+    "module": "Identity",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_tone",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "subscribe",
+    "module": "Identity",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_months",
+        "type": "int",
+        "optional": false
+      },
+      {
+        "name": "p_from",
+        "type": "date",
+        "optional": true
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "approve_seller",
+    "module": "Identity",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_package",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_tone",
+        "type": "text",
+        "optional": true
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "set_seller_status",
+    "module": "Identity",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_status",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "forget_customer",
+    "module": "Identity",
+    "scope": "customer",
+    "params": [
+      {
+        "name": "p_customer",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "set_product_status",
+    "module": "Catalog",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_product",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_status",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "update_product_price",
+    "module": "Catalog",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_product",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_price",
+        "type": "bigint",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "add_product_photo",
+    "module": "Catalog",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_product",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_url",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "restock_accessory",
+    "module": "Catalog",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_accessory",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_qty",
+        "type": "int",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "release_slot",
+    "module": "KioskOps",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_actor",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "stock_bouquet",
+    "module": "KioskOps",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_batch",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_product",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_staff",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_qr",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "return_to_seller",
+    "module": "KioskOps",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_staff",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_photo_url",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_damaged",
+        "type": "boolean",
+        "optional": true
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "report_device_fault",
+    "module": "KioskOps",
+    "scope": "seller",
+    "params": [
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_reporter",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_desc",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_photo",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "assign_slot",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "admin_dispose_slot",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_slot",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_note",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "resolve_device_fault",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_dispute",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_note",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "set_kiosk_status",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_status",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_actor",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "admin_close_door",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_cmd",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_note",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "set_cfg",
+    "module": "KioskOps",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_key",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_value",
+        "type": "numeric",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "kiosk_heartbeat",
+    "module": "KioskOps",
+    "scope": "kiosk",
+    "params": [
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "device_event",
+    "module": "KioskOps",
+    "scope": "kiosk",
+    "params": [
+      {
+        "name": "p_cmd",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_event",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "kiosk_checkout",
+    "module": "Ordering",
+    "scope": "shopping",
+    "params": [
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_bouquets",
+        "type": "uuid[]",
+        "optional": false
+      },
+      {
+        "name": "p_customer",
+        "type": "uuid",
+        "optional": true
+      },
+      {
+        "name": "p_accessories",
+        "type": "jsonb",
+        "optional": true
+      },
+      {
+        "name": "p_points",
+        "type": "bigint",
+        "optional": true
+      },
+      {
+        "name": "p_ecard",
+        "type": "text",
+        "optional": true
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "request_pickup",
+    "module": "Ordering",
+    "scope": "shopping",
+    "params": [
+      {
+        "name": "p_order",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_tracking",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "open_dispute",
+    "module": "Ordering",
+    "scope": "receipt",
+    "params": [
+      {
+        "name": "p_order",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_tracking",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_photo",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "submit_refund_info",
+    "module": "Ordering",
+    "scope": "receipt",
+    "params": [
+      {
+        "name": "p_order",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_tracking",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_bank",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_account_enc",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_holder",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "resolve_dispute",
+    "module": "Ordering",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_dispute",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_refund",
+        "type": "bigint",
+        "optional": false
+      },
+      {
+        "name": "p_decision",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "request_withdrawal",
+    "module": "Payment",
+    "scope": "sellerOnly",
+    "params": [
+      {
+        "name": "p_seller",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_amount",
+        "type": "bigint",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "approve_withdrawal",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_w",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "pay_withdrawal",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_w",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_proof_url",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "reject_withdrawal",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_w",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "admin_refund",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_order",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_amount",
+        "type": "bigint",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "create_refund",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_order",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_amount",
+        "type": "bigint",
+        "optional": false
+      },
+      {
+        "name": "p_reason",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_approver",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_gateway",
+        "type": "text",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "approve_refund",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_refund",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "confirm_refund",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_refund",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_proof_url",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "reconcile_gateway",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_date",
+        "type": "date",
+        "optional": false
+      },
+      {
+        "name": "p_statement",
+        "type": "jsonb",
+        "optional": false
+      },
+      {
+        "name": "p_admin",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": true
+  },
+  {
+    "name": "reconcile_daily",
+    "module": "Payment",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_date",
+        "type": "date",
+        "optional": false
+      }
+    ],
+    "setReturning": true
+  },
+  {
+    "name": "ai_suggest",
+    "module": "Ai",
+    "scope": "shopping",
+    "params": [
+      {
+        "name": "p_session",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_customer",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_kiosk",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_recipient",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_age",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_occasion",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_tone",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_budget",
+        "type": "bigint",
+        "optional": false
+      },
+      {
+        "name": "p_now",
+        "type": "timestamptz",
+        "optional": true
+      }
+    ],
+    "setReturning": false
+  },
+  {
+    "name": "attach",
+    "module": "Notify",
+    "scope": "admin",
+    "params": [
+      {
+        "name": "p_service",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_owner_type",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_owner",
+        "type": "uuid",
+        "optional": false
+      },
+      {
+        "name": "p_url",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_phase",
+        "type": "text",
+        "optional": false
+      },
+      {
+        "name": "p_user",
+        "type": "uuid",
+        "optional": false
+      }
+    ],
+    "setReturning": false
+  }
+]
