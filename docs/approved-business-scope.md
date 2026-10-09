@@ -33,7 +33,7 @@ The present runtime still uses ADMIN/STAFF/SELLER/CUSTOMER. Do not claim the sev
 
 ## Pending timing decisions
 
-P1 dispatch15min, leave notice12h, maximum2 photo revisions, no response2h, pickup24h/reminder2h were proposals only. Product owner requested explanation, not approval. Do not apply these defaults automatically or infer timeout monetary consequences. Keep configurable once decided.
+P1 dispatch15min, leave notice12h, maximum2 photo revisions and pickup24h/reminder2h remain proposals only. No-response-to-photo2h is approved: measure from latest seller photo delivery; if customer has not responded, permit progression to stocking. A revision request received during that window continues the revision flow. Implement server-side idempotent transition with audit; do not infer pickup expiry or monetary/refund consequences.
 
 ## Delivery order and acceptance
 
@@ -52,3 +52,6 @@ A catalog CRUD slice can proceed independently using existing seller authorizati
 Acceptance requires UC-to-source/API/UI/test traceability, positive/negative role+tenant/region tests, invalid transitions/concurrency/retry checks, read-after-write and real API integration for changed UI. External mock/simulator evidence must be distinguished from live providers/hardware.
 All implementation is on feature branches; never update main.
 
+
+
+Approved clarification — 2026-10-09: photo no-response timeout is2hours from latest seller photo delivery. Permit progression to stocking when no response, to avoid prolonged waiting. This rule is recorded for the preorder implementation; catalog increment does not yet implement the timer. It does not free an occupied slot, guarantee slot availability, override a timely revision request, or automatically release money/refund rights. Other time proposals remain pending.

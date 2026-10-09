@@ -1,4 +1,4 @@
-﻿# Kế hoạch hoàn thiện nghiệp vụ FloraBot — 09/10/2026
+# Kế hoạch hoàn thiện nghiệp vụ FloraBot — 09/10/2026
 
 ## Nguồn phạm vi và thứ tự ưu tiên
 
@@ -28,7 +28,7 @@ Tài liệu cần chuẩn hóa trước khi coi là acceptance specification:
 
 Cập nhật quyết định trực tiếp của CEO (ưu tiên hơn PDF): toàn bộ hoa là **hoa giả**, kể cả Walk-in và Preorder; một kiosk có hai khu ô riêng WALK_IN/PREORDER; phụ kiện chỉ bán kèm Preorder, seller chuẩn bị chung trước khi nạp; seller cung cấp bank, admin xét yêu cầu rút rồi chuyển khoản thủ công; refund khách cũng do admin xét và chuyển thủ công. Không tạo ví khách hoặc chuyển tiền tự động theo các dòng PDF cũ. Chính sách tiền tạm giữ/khả dụng cần làm rõ riêng, không suy diễn từ quyền admin nắm tiền.
 
-Các mốc P1=15phút, xin nghỉ12giờ, tối đa2lần chỉnh ảnh, không phản hồi2giờ, nhận24giờ/nhắc2giờ vẫn là PENDING_DECISION: CEO yêu cầu giải thích và chưa phê duyệt. Không áp dụng tự động khi chưa chốt; phần catalog không phụ thuộc tiếp tục làm. Hết thời hạn nhận hàng là giải phóng sức chứa/quyền nhận, không phải hoa giả bị hết hạn/hủy.
+Các mốc P1=15phút, xin nghỉ12giờ, tối đa2lần chỉnh ảnh, nhận24giờ/nhắc2giờ vẫn là PENDING_DECISION. Mốc không phản hồi ảnh2giờ đã được CEO phê duyệt: tính từ ảnh mẫu mới nhất seller gửi, không có phản hồi thì cho phép tiếp tục nạp tủ; có yêu cầu sửa trong hạn thì theo luồng sửa. Không áp dụng tự động khi chưa chốt; phần catalog không phụ thuộc tiếp tục làm. Hết thời hạn nhận hàng là giải phóng sức chứa/quyền nhận, không phải hoa giả bị hết hạn/hủy.
 
 ## Vai trò và ranh giới quyền
 
@@ -86,3 +86,5 @@ BE feature commit cb027d9; FE feature commit 9f308b4. POST tạo ARTIFICIAL/DRAF
 Evidence: source SQL326pass; API253pass/1MQTTskip, gateway11pass; portal129pass (API mocked), FEunit3/lint/typecheck/buildpass, BEbuild/formatpass. Contracts xuất từ API thật và generate bằng pnpm contracts. Chưa có acceptance browser-to-live-API cho catalog mới; chưa xác nhận MQTT vật lý hoặc rotation3tài khoản.
 
 UC_SEL_01/08 PARTIALLY_IMPLEMENTED, không coi toàn bộ UC hoặc migration7role hoàn tất. Mốc thời gian vẫn PENDING_DECISION. Tiếp theo: permission7actors/tenant và whole-kiosk zones, chuyển đổi inventory legacy có rehearsal; rồi nghiệm thu các luồng đầy đủ theo thứ tự wave. Các audit worker ban đầu đã kết thúc, không có background scheduler.
+
+Approved clarification — 2026-10-09: photo no-response timeout is2hours from latest seller photo delivery. Permit progression to stocking when no response, to avoid prolonged waiting. This rule is recorded for the preorder implementation; catalog increment does not yet implement the timer. It does not free an occupied slot, guarantee slot availability, override a timely revision request, or automatically release money/refund rights. Other time proposals remain pending.
