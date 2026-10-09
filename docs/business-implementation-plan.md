@@ -78,3 +78,11 @@ Device/API key, SYSTEM và AI internal token là tài khoản kỹ thuật, khô
 - Ba worker đang rà soát read-only mapping và đề xuất increment đầu (BE quyền/tenant, FE navigation/session, Kios+AI dependencies).
 - Implementation đầu được chọn sau khi kiểm tra phương án migration và hợp đồng BE↔FE; theo dõi evidence riêng từng increment tại đây.
 
+
+## Increment danh mục hoa giả — đã tích hợp 09/10/2026
+
+BE feature commit cb027d9; FE feature commit 9f308b4. POST tạo ARTIFICIAL/DRAFT và PUT metadata/kích thước, kiểm tra shop/quyền/thuê bao; đổi kích thước khi còn STOCKED/HELD bị chặn. Giá của bó đã nạp giữ snapshot. Trigger mới ngăn hết hạn theo tuổi cho ARTIFICIAL; dữ liệu LEGACY_FRESH chưa chuyển đổi hàng loạt.
+
+Evidence: source SQL326pass; API253pass/1MQTTskip, gateway11pass; portal129pass (API mocked), FEunit3/lint/typecheck/buildpass, BEbuild/formatpass. Contracts xuất từ API thật và generate bằng pnpm contracts. Chưa có acceptance browser-to-live-API cho catalog mới; chưa xác nhận MQTT vật lý hoặc rotation3tài khoản.
+
+UC_SEL_01/08 PARTIALLY_IMPLEMENTED, không coi toàn bộ UC hoặc migration7role hoàn tất. Mốc thời gian vẫn PENDING_DECISION. Tiếp theo: permission7actors/tenant và whole-kiosk zones, chuyển đổi inventory legacy có rehearsal; rồi nghiệm thu các luồng đầy đủ theo thứ tự wave. Các audit worker ban đầu đã kết thúc, không có background scheduler.
