@@ -12,6 +12,9 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
     [Theory]
     [InlineData("ADMIN")]
     [InlineData("SELLER")]
+    [InlineData("OPERATIONS_MANAGER")]
+    [InlineData("TECHNICIAN")]
+    [InlineData("SELLER_STAFF")]
     public async Task ProvisioningEnablesLoginOnceAndPreservesMembership(string role)
     {
         using var scope = factory.Services.CreateScope();
@@ -21,7 +24,7 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
         await using var insert = data.CreateCommand("""
             INSERT INTO identity.users(id,email,phone,password_hash,full_name,role,seller_id)
             VALUES(@id,NULL,@phone,'!unprovisioned','Provision test',@role,
-              CASE WHEN @role='SELLER' THEN '20000000-0000-0000-0000-000000000001'::uuid ELSE NULL END)
+              CASE WHEN @role IN ('SELLER', 'SELLER_STAFF') THEN '20000000-0000-0000-0000-000000000001'::uuid ELSE NULL END)
             """);
         insert.Parameters.AddWithValue("id", id); insert.Parameters.AddWithValue("phone", id.ToString()); insert.Parameters.AddWithValue("role", role);
         await insert.ExecuteNonQueryAsync();
@@ -34,17 +37,19 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
             Assert.DoesNotContain(password, output.ToString());
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Add("Origin", "http://127.0.0.1:5173");
-            var login = await client.PostAsJsonAsync(role == "ADMIN" ? "/api/auth/admin/login" : "/api/auth/login", new { email, password });
+            var isPlatform = role is "ADMIN" or "OPERATIONS_MANAGER" or "TECHNICIAN";
+            var login = await client.PostAsJsonAsync(isPlatform ? "/api/auth/admin/login" : "/api/auth/login", new { email, password });
             Assert.Equal(HttpStatusCode.OK, login.StatusCode);
             var session = await login.Content.ReadFromJsonAsync<SessionResponse>();
             Assert.Equal(id, session!.Id); Assert.Equal(role, session.Role);
-            Assert.Equal(role == "SELLER" ? Guid.Parse("20000000-0000-0000-0000-000000000001") : (Guid?)null, session.SellerId);
+            var expectedSeller = role is "SELLER" or "SELLER_STAFF" ? Guid.Parse("20000000-0000-0000-0000-000000000001") : (Guid?)null;
+            Assert.Equal(expectedSeller, session.SellerId);
             Assert.Equal(1, await PortalProvisioning.RunAsync(args, config, new StringReader("another-strong-password"), output));
             await using var nullOverride = data.CreateCommand("SELECT flow.provision_portal_user(@id,@email,(SELECT password_hash FROM identity.users WHERE id=@id),NULL)");
             nullOverride.Parameters.AddWithValue("id", id); nullOverride.Parameters.AddWithValue("email", email);
             var denied = await Assert.ThrowsAsync<PostgresException>(() => nullOverride.ExecuteNonQueryAsync());
             Assert.Equal(PostgresErrorCodes.RaiseException, denied.SqlState);
-            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(role == "ADMIN" ? "/api/auth/admin/login" : "/api/auth/login", new { email, password })).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(isPlatform ? "/api/auth/admin/login" : "/api/auth/login", new { email, password })).StatusCode);
             await using var audit = data.CreateCommand("SELECT count(*) FROM notify.audit_logs WHERE entity_id=@id AND action='PORTAL_USER_PROVISIONED' AND actor_type='SYSTEM' AND NOT(payload ? 'password') AND NOT(payload ? 'email')");
             audit.Parameters.AddWithValue("id", id);
             Assert.Equal(1L, await audit.ExecuteScalarAsync());
@@ -71,6 +76,8 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
     [InlineData("ADMIN", "LOCKED", "!unprovisioned", "Testing", 1)]
     [InlineData("ADMIN", "ACTIVE", "$2b$12$demoadmin", "Production", 1)]
     [InlineData("ADMIN", "ACTIVE", "$2b$12$demoadmin", "Development", 0)]
+    [InlineData("OPERATIONS_MANAGER", "ACTIVE", "$2b$12$demoops", "Development", 0)]
+    [InlineData("TECHNICIAN", "ACTIVE", "$2b$12$demotech", "Development", 0)]
     public async Task RoleStatusAndEnvironmentControlProvisioning(string role, string status, string hash, string environment, int expected)
     {
         using var scope = factory.Services.CreateScope();

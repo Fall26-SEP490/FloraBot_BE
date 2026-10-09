@@ -144,6 +144,7 @@ builder.Services.AddAuthentication("selector")
                 if (!Guid.TryParse(context.Principal?.FindFirstValue("sub"), out var id)) { context.Fail("Invalid session."); return; }
                 var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.Status == "ACTIVE");
                 if (user is null || user.Role != context.Principal?.FindFirstValue("role") || user.SellerId?.ToString() != context.Principal?.FindFirstValue("seller_id")) context.Fail("Session revoked.");
+                else if (user.Role == "SELLER_STAFF" && user.SellerId is null) context.Fail("Session revoked.");
                 else if (context.Principal?.FindFirstValue("credential_version") is { } version && version != TokenService.CredentialVersion(user)) context.Fail("Credentials changed.");
             }
         };
@@ -155,7 +156,7 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("SameSeller", p => p.RequireAuthenticatedUser().AddRequirements(new SameSellerRequirement()))
     .AddPolicy("Merchant", p => p.RequireRole("ADMIN", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Portal", p => p.RequireRole("ADMIN", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
-    .AddPolicy("Account", p => p.RequireRole("ADMIN", "STAFF", "SELLER", "CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("Account", p => p.RequireRole("ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Staff", p => p.RequireRole("STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))

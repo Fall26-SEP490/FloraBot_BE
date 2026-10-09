@@ -88,3 +88,13 @@ Evidence: source SQL326pass; API253pass/1MQTTskip, gateway11pass; portal129pass 
 UC_SEL_01/08 PARTIALLY_IMPLEMENTED, không coi toàn bộ UC hoặc migration7role hoàn tất. Mốc thời gian vẫn PENDING_DECISION. Tiếp theo: permission7actors/tenant và whole-kiosk zones, chuyển đổi inventory legacy có rehearsal; rồi nghiệm thu các luồng đầy đủ theo thứ tự wave. Các audit worker ban đầu đã kết thúc, không có background scheduler.
 
 Approved clarification — 2026-10-09: photo no-response timeout is2hours from latest seller photo delivery. Permit progression to stocking when no response, to avoid prolonged waiting. This rule is recorded for the preorder implementation; catalog increment does not yet implement the timer. It does not free an occupied slot, guarantee slot availability, override a timely revision request, or automatically release money/refund rights. Other time proposals remain pending.
+
+## Increment nền tảng danh tính — 09/10/2026
+
+Migration019 bổ sung OPERATIONS_MANAGER, TECHNICIAN, SELLER_STAFF; staff shop cần seller_id thật, giữ STAFF cũ và không tự gán tenant. Đăng nhập đúng portal, /auth/me, refresh một lần và cấp mật khẩu cho tài khoản đã tạo được hỗ trợ. Token access cũ bị thu hồi khi đổi role/shop, khóa tài khoản hoặc đổi mật khẩu; refresh lấy danh tính và scope hiện tại, khóa/đổi mật khẩu thì từ chối. Các policy owner/Admin/legacyStaff không được mở rộng cho ba role mới. ADR0050 ghi ranh giới identity lưu trữ và persona khách theo kênh.
+
+Frontend /workspace hiện thông tin phiên thật, đăng xuất, retry lỗi máy chủ; ba role mới không gọi API owner/tài chính. Giao diện báo rõ tính năng tác nghiệp chưa khả dụng. Chưa có quyền vùng/phiếu/ca/check-in/invitation hay quản lý tài khoản CRUD; không coi MGR01/TEC01/STF01 hoàn tất. Khách kiosk ẩn danh vẫn dùng hành trình hiện có. Hai worker OpenCode/9Router viết phần BE/FE, Codex review, kiểm thử độc lập và tích hợp; chưa xác minh rotation cả3 tài khoản.
+
+Evidence hiện có: LoginRealm10pass, sourceSQL326pass, BEformat pass; portal139pass với API mocked, FEunit3/lint/typecheck/build pass. Kết quả toàn bộ backend và commit tích hợp ghi tại checkpoint dự án khi kiểm tra xong. Không coi UI mocked là nghiệm thu browser-to-live-API hoặc thử MQTT/payment thật. App demo đang chạy có thể vẫn là binary cũ; chưa cập nhật app/demo DB trong increment này.
+
+Final coordinator regression: API270pass/1MQTTskip, gateway11pass; full solution exit0, BEformat exit0. Logs live in project .agent/business-implementation/actor-full-backend.log and actor-final-format.log. Frontend feature commit bbd0a12 pushed on codex/seven-role-business-flows; no main modification.

@@ -46,7 +46,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             if (isPublic) continue;
             var policy = await AuthorizationPolicy.CombineAsync(provider, endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
             Assert.NotNull(policy);
-            foreach (var role in new[] { "ADMIN", "STAFF", "SELLER", "CUSTOMER", "KIOSK", "SYSTEM", "ANONYMOUS" })
+            foreach (var role in new[] { "ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM", "ANONYMOUS" })
             {
                 var http = new DefaultHttpContext();
                 http.Request.RouteValues["sellerId"] = Seller;
@@ -158,7 +158,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/stock");
         Add(["STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/stock");
         Add([], "POST", "/api/auth/register", "/api/auth/forgot-password", "/api/auth/reset-password");
-        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER"], "GET", "/api/auth/me");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");

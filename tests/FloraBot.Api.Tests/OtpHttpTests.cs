@@ -18,6 +18,9 @@ public sealed class OtpHttpTests(ApiFactory factory) : IClassFixture<ApiFactory>
     [InlineData("CUSTOMER", "LOCKED", false)]
     [InlineData("ADMIN", "ACTIVE", false)]
     [InlineData("STAFF", "ACTIVE", false)]
+    [InlineData("OPERATIONS_MANAGER", "ACTIVE", false)]
+    [InlineData("TECHNICIAN", "ACTIVE", false)]
+    [InlineData("SELLER_STAFF", "ACTIVE", false)]
     public async Task ExistingIdentityIsPreservedWithoutGrantingPortalAccess(string role, string status, bool allowed)
     {
         using var scope = factory.Services.CreateScope();
@@ -28,7 +31,7 @@ public sealed class OtpHttpTests(ApiFactory factory) : IClassFixture<ApiFactory>
         const string seller = "20000000-0000-0000-0000-000000000001";
         const string kioskId = "40000000-0000-0000-0000-000000000001";
         const string path = "/api/kiosks/" + kioskId;
-        await using var setup = data.CreateCommand("INSERT INTO identity.users(id,phone,full_name,password_hash,role,status,seller_id) VALUES(@id,@phone,'OTP identity test','!unprovisioned',@role,@status,CASE WHEN @role='SELLER' THEN @seller ELSE NULL END)");
+        await using var setup = data.CreateCommand("INSERT INTO identity.users(id,phone,full_name,password_hash,role,status,seller_id) VALUES(@id,@phone,'OTP identity test','!unprovisioned',@role,@status,CASE WHEN @role IN ('SELLER', 'SELLER_STAFF') THEN @seller ELSE NULL END)");
         setup.Parameters.AddWithValue("id", id); setup.Parameters.AddWithValue("phone", phone);
         setup.Parameters.AddWithValue("role", role); setup.Parameters.AddWithValue("status", status);
         setup.Parameters.AddWithValue("seller", Guid.Parse(seller)); await setup.ExecuteNonQueryAsync();

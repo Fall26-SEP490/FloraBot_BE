@@ -35,7 +35,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             Id = userId ?? Guid.Parse(role == "ADMIN" ? "10000000-0000-0000-0000-000000000001" : "10000000-0000-0000-0000-000000000003"),
             Role = role,
             FullName = "Test",
-            SellerId = role == "SELLER" ? sellerId ?? Guid.Parse("20000000-0000-0000-0000-000000000001") : null
+            SellerId = (role == "SELLER" || role == "SELLER_STAFF") ? sellerId ?? Guid.Parse("20000000-0000-0000-0000-000000000001") : null
         };
         return scope.ServiceProvider.GetRequiredService<TokenService>().Issue(user, "APPROVED", expires: expires);
     }

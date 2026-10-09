@@ -13,17 +13,18 @@ public static class AuthEndpoints
     public static void MapAuth(this WebApplication app)
     {
         app.MapPost("/api/auth/login", (LoginRequest request, FloraDbContext db, TokenService tokens, HttpContext http) =>
-            Login(request, db, tokens, http, ["CUSTOMER", "SELLER"]))
+            Login(request, db, tokens, http, ["CUSTOMER", "SELLER", "SELLER_STAFF"]))
             .AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
         app.MapPost("/api/auth/admin/login", (LoginRequest request, FloraDbContext db, TokenService tokens, HttpContext http) =>
-            Login(request, db, tokens, http, ["ADMIN", "STAFF"]))
+            Login(request, db, tokens, http, ["ADMIN", "STAFF", "OPERATIONS_MANAGER", "TECHNICIAN"]))
             .AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
         app.MapPost("/api/auth/refresh", async (FloraDbContext db, TokenService tokens, HttpContext http) =>
         {
             if (!http.Request.Cookies.TryGetValue("florabot_refresh", out var refresh)) return Results.Unauthorized();
             var id = await tokens.ConsumeRefresh(refresh);
-            var user = id is null ? null : await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id.Value.Id && x.Status == "ACTIVE" && (x.Role == "SELLER" || x.Role == "ADMIN" || x.Role == "CUSTOMER" || x.Role == "STAFF"));
+            var user = id is null ? null : await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id.Value.Id && x.Status == "ACTIVE" && (x.Role == "SELLER" || x.Role == "ADMIN" || x.Role == "CUSTOMER" || x.Role == "STAFF" || x.Role == "OPERATIONS_MANAGER" || x.Role == "TECHNICIAN" || x.Role == "SELLER_STAFF"));
             if (user is not null && TokenService.CredentialVersion(user) != id!.Value.Version) return Results.Unauthorized();
+            if (user is not null && user.Role == "SELLER_STAFF" && user.SellerId is null) return Results.Unauthorized();
             return user is null ? Results.Unauthorized() : await SignIn(user, db, tokens, http);
         }).AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
         app.MapPost("/api/auth/logout", async (TokenService tokens, HttpContext http) =>
@@ -38,7 +39,9 @@ public static class AuthEndpoints
             var id = Guid.Parse(http.User.FindFirstValue("sub")!);
             var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.Status == "ACTIVE");
             if (user is null) return Results.Unauthorized();
-            var seller = user.SellerId is null ? null : await db.Sellers.AsNoTracking().SingleAsync(x => x.Id == user.SellerId);
+            if (user.Role == "SELLER_STAFF" && user.SellerId is null) return Results.Unauthorized();
+            var seller = user.SellerId is null ? null : await db.Sellers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == user.SellerId);
+            if (user.Role == "SELLER_STAFF" && seller is null) return Results.Unauthorized();
             return Results.Ok(Session(user, seller));
         }).RequireAuthorization("Account").WithTags("Auth").Produces<SessionResponse>();
     }
@@ -58,7 +61,9 @@ public static class AuthEndpoints
     private static SessionResponse Session(User user, Seller? seller) => new(user.Id, user.FullName, user.Role, user.SellerId, seller?.Status, seller?.PackageExpiresAt);
     internal static async Task<IResult> SignIn(User user, FloraDbContext db, TokenService tokens, HttpContext http)
     {
-        var seller = user.SellerId is null ? null : await db.Sellers.AsNoTracking().SingleAsync(x => x.Id == user.SellerId);
+        if (user.Role == "SELLER_STAFF" && user.SellerId is null) return Results.Unauthorized();
+        var seller = user.SellerId is null ? null : await db.Sellers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == user.SellerId);
+        if (user.Role == "SELLER_STAFF" && seller is null) return Results.Unauthorized();
         http.Response.Cookies.Append("florabot_access", tokens.Issue(user, seller?.Status), Options(http, "/", TimeSpan.FromMinutes(15)));
         http.Response.Cookies.Append("florabot_refresh", await tokens.CreateRefresh(user), Options(http, "/api/auth", TimeSpan.FromDays(7)));
         return Results.Ok(Session(user, seller));

@@ -18,6 +18,9 @@ public sealed class MemberTests(ApiFactory factory) : IClassFixture<ApiFactory>
     [InlineData("SELLER", true, false)]
     [InlineData("ADMIN", false, false)]
     [InlineData("STAFF", false, false)]
+    [InlineData("OPERATIONS_MANAGER", false, false)]
+    [InlineData("TECHNICIAN", false, false)]
+    [InlineData("SELLER_STAFF", false, false)]
     public async Task SharedIdentityPolicyRejectsDeviceSessionsAndOperationsRoles(string role, bool kiosk, bool allowed)
     {
         using var scope = factory.Services.CreateScope();
