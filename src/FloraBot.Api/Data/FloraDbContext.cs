@@ -236,6 +236,18 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.Price).HasColumnName("price");
             entity.Property(e => e.SellerId).HasColumnName("seller_id");
             entity.Property(e => e.ShelfLifeHours).HasColumnName("shelf_life_hours");
+            entity.Property(e => e.InventoryKind)
+                .HasDefaultValueSql("'LEGACY_FRESH'::text")
+                .HasColumnName("inventory_kind");
+            entity.Property(e => e.LengthCm)
+                .HasPrecision(6, 2)
+                .HasColumnName("length_cm");
+            entity.Property(e => e.WidthCm)
+                .HasPrecision(6, 2)
+                .HasColumnName("width_cm");
+            entity.Property(e => e.HeightCm)
+                .HasPrecision(6, 2)
+                .HasColumnName("height_cm");
             entity.Property(e => e.Status)
                 .HasDefaultValueSql("'DRAFT'::text")
                 .HasColumnName("status");

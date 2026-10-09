@@ -243,6 +243,7 @@ app.MapCustomerPoints();
 app.MapAccessoryCatalog();
 app.MapSellerAccessories();
 app.MapProductPhotos();
+app.MapProducts();
 PrivateEvidence.MapPrivateEvidence(app);
 app.MapRegistration();
 app.MapPayOs();

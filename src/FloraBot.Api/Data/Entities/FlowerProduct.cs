@@ -21,6 +21,14 @@ public partial class FlowerProduct
 
     public string Status { get; set; } = null!;
 
+    public string InventoryKind { get; set; } = "LEGACY_FRESH";
+
+    public decimal? LengthCm { get; set; }
+
+    public decimal? WidthCm { get; set; }
+
+    public decimal? HeightCm { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

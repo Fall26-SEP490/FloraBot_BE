@@ -5,7 +5,18 @@ using FloraBot.Api.ReadModels;
 
 namespace FloraBot.Api.Infrastructure;
 
-public sealed record ProductResponse(Guid Id, string Name, string? Description, long Price, List<string> Tags, string Status, int ShelfLifeHours);
+public sealed record ProductResponse(
+    Guid Id,
+    string Name,
+    string? Description,
+    long Price,
+    List<string> Tags,
+    string Status,
+    int? ShelfLifeHours,
+    string? InventoryKind = null,
+    decimal? LengthCm = null,
+    decimal? WidthCm = null,
+    decimal? HeightCm = null);
 public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status);
 public sealed record SellerPackageResponse(string Name, long MonthlyFee, int MaxSlots, string Status);
 public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions);

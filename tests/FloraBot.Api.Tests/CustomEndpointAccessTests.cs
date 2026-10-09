@@ -127,7 +127,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             _ => "99999999-9999-4999-8999-999999999999"
         });
         var request = new HttpRequestMessage(new HttpMethod(endpoint.Method), path);
-        if (endpoint.Method == "POST")
+        if (endpoint.Method is "POST" or "PUT")
         {
             if (endpoint.Template.EndsWith("/photos", StringComparison.Ordinal) || endpoint.Template.Contains("/evidence", StringComparison.Ordinal))
             {
@@ -190,6 +190,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/sellers/{sellerId:guid}/products/{productId:guid}/photos");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/products/{productId:guid}/photos",
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
+        Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");
         Add(["KIOSK", "CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/catalog", "/api/kiosks/{kioskId:guid}/catalog/items",
             "/api/kiosks/{kioskId:guid}/catalog/accessories", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}",
