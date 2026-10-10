@@ -20,7 +20,7 @@ public static class StaffEvidence
         {
             await using var connection = await data.OpenConnectionAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            var scope = await StaffTaskAccess.Lock(connection, transaction, taskId, Actor(http), false, ct);
+            var scope = await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct);
             if (scope is null) return Results.NotFound();
             if (scope.Status != "IN_PROGRESS") return Results.Problem(statusCode: 409, detail: "Chỉ tải ảnh khi công việc đang thực hiện.");
             await transaction.CommitAsync(ct);
@@ -36,7 +36,7 @@ public static class StaffEvidence
             catch (ArgumentException ex) { return Results.Problem(statusCode: 400, detail: ex.Message); }
             await using var connection = await data.OpenConnectionAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            var scope = await StaffTaskAccess.Lock(connection, transaction, taskId, actor, false, ct);
+            var scope = await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct);
             if (scope is null) return Results.NotFound();
             // Serialize retries even when the same attachment ID targets different tasks.
             await using (var identityLock = new NpgsqlCommand("SELECT pg_advisory_xact_lock(hashtextextended(@key,0))", connection, transaction))
@@ -69,11 +69,21 @@ public static class StaffEvidence
             return Results.Ok(new StaffEvidenceItem(input.Id, created));
         }).RequireAuthorization("Staff").Produces<StaffEvidenceItem>();
 
-        foreach (var prefix in new[] { "/api/staff/tasks", "/api/admin/staff-tasks" })
+        foreach (var prefix in new[] { "/api/staff/tasks", "/api/admin/staff-tasks", "/api/operations/staff-tasks", "/api/sellers/{sellerId:guid}/staff-tasks" })
         {
-            var policy = prefix.Contains("/admin/") ? "Admin" : "Staff";
-            app.MapGet(prefix + "/{taskId:guid}/evidence", List).RequireAuthorization(policy).Produces<StaffEvidencePage>();
-            app.MapGet(prefix + "/{taskId:guid}/evidence/{attachmentId:guid}", Read).RequireAuthorization(policy);
+            var policy = prefix.Contains("/admin/") ? "Admin" :
+                         prefix.Contains("/operations/") ? "OperationsManager" :
+                         prefix.Contains("/sellers/") ? "Merchant" : "Staff";
+            if (prefix.Contains("/sellers/"))
+            {
+                app.MapGet(prefix + "/{taskId:guid}/evidence", List).RequireAuthorization(policy, "SameSeller").Produces<StaffEvidencePage>();
+                app.MapGet(prefix + "/{taskId:guid}/evidence/{attachmentId:guid}", Read).RequireAuthorization(policy, "SameSeller");
+            }
+            else
+            {
+                app.MapGet(prefix + "/{taskId:guid}/evidence", List).RequireAuthorization(policy).Produces<StaffEvidencePage>();
+                app.MapGet(prefix + "/{taskId:guid}/evidence/{attachmentId:guid}", Read).RequireAuthorization(policy);
+            }
         }
     }
     private static async Task<IResult> List(Guid taskId, int? page, Guid? attachmentId, HttpContext http, NpgsqlDataSource data, CancellationToken ct)
@@ -81,7 +91,7 @@ public static class StaffEvidence
         http.Response.Headers.CacheControl = "no-store";
         var number = page ?? 1; if (number is < 1 or > 100000) return Results.BadRequest();
         await using var connection = await data.OpenConnectionAsync(ct); await using var transaction = await connection.BeginTransactionAsync(ct);
-        if (await StaffTaskAccess.Lock(connection, transaction, taskId, Actor(http), http.User.IsInRole("ADMIN"), ct, readOnly: true) is null) return Results.NotFound();
+        if (await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct, readOnly: true) is null) return Results.NotFound();
         await using var command = new NpgsqlCommand("SELECT id,created_at FROM notify.attachments WHERE owner_service='kiosk_ops' AND owner_type='staff_task' AND owner_id=@id AND phase='EVIDENCE' AND (@attachment IS NULL OR id=@attachment) ORDER BY created_at DESC,id DESC LIMIT 26 OFFSET @offset", connection, transaction);
         command.Parameters.Add("attachment", NpgsqlTypes.NpgsqlDbType.Uuid).Value = (object?)attachmentId ?? DBNull.Value;
         command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("offset", (number - 1) * 25);
@@ -93,7 +103,7 @@ public static class StaffEvidence
     {
         http.Response.Headers.CacheControl = "no-store"; http.Response.Headers["X-Content-Type-Options"] = "nosniff";
         await using var connection = await data.OpenConnectionAsync(ct); await using var transaction = await connection.BeginTransactionAsync(ct);
-        if (await StaffTaskAccess.Lock(connection, transaction, taskId, Actor(http), http.User.IsInRole("ADMIN"), ct, readOnly: true) is null) return Results.NotFound();
+        if (await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct, readOnly: true) is null) return Results.NotFound();
         await using var command = new NpgsqlCommand("SELECT file_url,mime_type,size_bytes,sha256 FROM notify.attachments WHERE id=@id AND owner_service='kiosk_ops' AND owner_type='staff_task' AND owner_id=@task AND phase='EVIDENCE'", connection, transaction);
         command.Parameters.AddWithValue("id", attachmentId); command.Parameters.AddWithValue("task", taskId);
         await using var reader = await command.ExecuteReaderAsync(ct); if (!await reader.ReadAsync(ct)) return Results.NotFound();

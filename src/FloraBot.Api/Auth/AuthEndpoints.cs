@@ -16,13 +16,13 @@ public static class AuthEndpoints
             Login(request, db, tokens, http, ["CUSTOMER", "SELLER", "SELLER_STAFF"]))
             .AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
         app.MapPost("/api/auth/admin/login", (LoginRequest request, FloraDbContext db, TokenService tokens, HttpContext http) =>
-            Login(request, db, tokens, http, ["ADMIN", "STAFF", "OPERATIONS_MANAGER", "TECHNICIAN"]))
+            Login(request, db, tokens, http, ["ADMIN", "OPERATIONS_MANAGER", "TECHNICIAN"]))
             .AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
         app.MapPost("/api/auth/refresh", async (FloraDbContext db, TokenService tokens, HttpContext http) =>
         {
             if (!http.Request.Cookies.TryGetValue("florabot_refresh", out var refresh)) return Results.Unauthorized();
             var id = await tokens.ConsumeRefresh(refresh);
-            var user = id is null ? null : await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id.Value.Id && x.Status == "ACTIVE" && (x.Role == "SELLER" || x.Role == "ADMIN" || x.Role == "CUSTOMER" || x.Role == "STAFF" || x.Role == "OPERATIONS_MANAGER" || x.Role == "TECHNICIAN" || x.Role == "SELLER_STAFF"));
+            var user = id is null ? null : await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id.Value.Id && x.Status == "ACTIVE" && (x.Role == "SELLER" || x.Role == "ADMIN" || x.Role == "CUSTOMER" || x.Role == "OPERATIONS_MANAGER" || x.Role == "TECHNICIAN" || x.Role == "SELLER_STAFF"));
             if (user is not null && TokenService.CredentialVersion(user) != id!.Value.Version) return Results.Unauthorized();
             if (user is not null && user.Role == "SELLER_STAFF" && user.SellerId is null) return Results.Unauthorized();
             return user is null ? Results.Unauthorized() : await SignIn(user, db, tokens, http);
@@ -38,7 +38,7 @@ public static class AuthEndpoints
         {
             var id = Guid.Parse(http.User.FindFirstValue("sub")!);
             var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.Status == "ACTIVE");
-            if (user is null) return Results.Unauthorized();
+            if (user is null || user.Role == "STAFF") return Results.Unauthorized();
             if (user.Role == "SELLER_STAFF" && user.SellerId is null) return Results.Unauthorized();
             var seller = user.SellerId is null ? null : await db.Sellers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == user.SellerId);
             if (user.Role == "SELLER_STAFF" && seller is null) return Results.Unauthorized();

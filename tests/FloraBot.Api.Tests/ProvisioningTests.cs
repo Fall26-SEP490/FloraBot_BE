@@ -73,6 +73,7 @@ public sealed class ProvisioningTests(ApiFactory factory) : IClassFixture<ApiFac
 
     [Theory]
     [InlineData("CUSTOMER", "ACTIVE", "!unprovisioned", "Testing", 1)]
+    [InlineData("STAFF", "ACTIVE", "!unprovisioned", "Testing", 1)]
     [InlineData("ADMIN", "LOCKED", "!unprovisioned", "Testing", 1)]
     [InlineData("ADMIN", "ACTIVE", "$2b$12$demoadmin", "Production", 1)]
     [InlineData("ADMIN", "ACTIVE", "$2b$12$demoadmin", "Development", 0)]

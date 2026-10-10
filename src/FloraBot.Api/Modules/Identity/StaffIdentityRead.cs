@@ -9,7 +9,15 @@ public sealed record StaffDirectoryItem(Guid Id, string Name);
 public static class StaffIdentityRead
 {
     public static Task<List<StaffDirectoryItem>> ActiveStaff(FloraDbContext db, CancellationToken ct) =>
-        db.Users.AsNoTracking().Where(x => x.Role == "STAFF" && x.Status == "ACTIVE")
+        db.Users.AsNoTracking().Where(x => (x.Role == "TECHNICIAN" || x.Role == "SELLER_STAFF") && x.Status == "ACTIVE")
+            .OrderBy(x => x.FullName).ThenBy(x => x.Id).Select(x => new StaffDirectoryItem(x.Id, x.FullName)).ToListAsync(ct);
+
+    public static Task<List<StaffDirectoryItem>> ActiveTechnicians(FloraDbContext db, CancellationToken ct) =>
+        db.Users.AsNoTracking().Where(x => x.Role == "TECHNICIAN" && x.Status == "ACTIVE")
+            .OrderBy(x => x.FullName).ThenBy(x => x.Id).Select(x => new StaffDirectoryItem(x.Id, x.FullName)).ToListAsync(ct);
+
+    public static Task<List<StaffDirectoryItem>> ActiveSellerStaff(FloraDbContext db, Guid sellerId, CancellationToken ct) =>
+        db.Users.AsNoTracking().Where(x => x.Role == "SELLER_STAFF" && x.Status == "ACTIVE" && x.SellerId == sellerId)
             .OrderBy(x => x.FullName).ThenBy(x => x.Id).Select(x => new StaffDirectoryItem(x.Id, x.FullName)).ToListAsync(ct);
 
     public static Task<Dictionary<Guid, string>> ActiveSellers(NpgsqlDataSource data, CancellationToken ct) =>

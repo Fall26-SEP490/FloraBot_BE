@@ -18,8 +18,8 @@ public sealed class StaffIncidentResolutionTests(ApiFactory factory) : IClassFix
         var incident = Guid.NewGuid(); var task = Guid.NewGuid(); var order = Guid.NewGuid(); var charge = Guid.NewGuid(); var refund = Guid.NewGuid();
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
-              (@staff,@staff::text||'@example.invalid','Resolution staff','!unprovisioned','STAFF'),
-              (@other,@other::text||'@example.invalid','Other resolution staff','!unprovisioned','STAFF');
+              (@staff,@staff::text||'@example.invalid','Resolution staff','!unprovisioned','TECHNICIAN'),
+              (@other,@other::text||'@example.invalid','Other resolution staff','!unprovisioned','TECHNICIAN');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash)
               VALUES(@kiosk,@kiosk::text,'Resolution fixture','Fixture','HCM',@kiosk::text,@kiosk::text,'ONLINE','fixture');
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,status) VALUES(@slot,@kiosk,'A01',0,'FAULT');
@@ -44,8 +44,8 @@ public sealed class StaffIncidentResolutionTests(ApiFactory factory) : IClassFix
         }
         using var admin = factory.CreateClient(); using var staff = factory.CreateClient(); using var other = factory.CreateClient();
         admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
-        staff.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: staffId));
-        other.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: otherId));
+        staff.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: staffId));
+        other.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: otherId));
         (await admin.PostAsJsonAsync("/api/admin/staff-tasks", new AssignStaffTask(task, staffId, "INCIDENT", kiosk, null, incident, "Inspect door and record repair findings"))).EnsureSuccessStatusCode();
         var path = $"/api/staff/tasks/{task}/resolve-incident";
         var input = new StaffIncidentResolutionInput(Guid.NewGuid(), 2, "Door has been repaired and inspected on site");

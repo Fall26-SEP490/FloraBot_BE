@@ -40,6 +40,6 @@ public static class StaffIncidentResolution
                     _ => Results.Problem(statusCode: 400, detail: "Chưa thể đóng sự cố. Kiểm tra báo cáo và khoản hoàn tiền đang chờ; liên hệ quản trị viên để xử lý.")
                 };
             }
-        }).RequireAuthorization("Staff").Produces<StaffIncidentResolutionResult>();
+        }).RequireAuthorization("Technician").Produces<StaffIncidentResolutionResult>();
     }
 }

@@ -17,7 +17,7 @@ public static class StaffStock
 {
     public static void MapStaffStock(this WebApplication app)
     {
-        app.MapGet("/api/staff/tasks/{taskId:guid}/stock", Read).RequireAuthorization("Staff").Produces<StaffStockOptions>();
+        app.MapGet("/api/staff/tasks/{taskId:guid}/stock", Read).RequireAuthorization("SellerStaff").Produces<StaffStockOptions>();
         app.MapPost("/api/staff/tasks/{taskId:guid}/stock", async (Guid taskId, StaffStockInput input, NpgsqlDataSource data, ICapPublisher publisher, HttpContext http, CancellationToken ct) =>
         {
             if (input.Id == Guid.Empty || input.ProductId == Guid.Empty || input.SlotId == Guid.Empty || string.IsNullOrWhiteSpace(input.QrCode) || input.QrCode.Trim().Length > 120 || input.QrCode.Any(char.IsControl)) return Results.BadRequest();
@@ -46,7 +46,7 @@ public static class StaffStock
                     _ => Results.Problem(statusCode: 400, detail: "Công việc, shop, sản phẩm hoặc ô tủ hiện không cho phép nạp hoa. Tải lại các lựa chọn.")
                 };
             }
-        }).RequireAuthorization("Staff").Produces<StaffStockResult>();
+        }).RequireAuthorization("SellerStaff").Produces<StaffStockResult>();
     }
 
     private static async Task<IResult> Read(Guid taskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
@@ -60,6 +60,8 @@ public static class StaffStock
             if (!await reader.ReadAsync(ct)) return Results.NotFound();
             seller = reader.GetGuid(0); kiosk = reader.GetGuid(1); status = reader.GetString(2);
         }
+        var sellerClaim = http.User.FindFirstValue("seller_id");
+        if (sellerClaim is null || !Guid.TryParse(sellerClaim, out var staffSeller) || staffSeller != seller) return Results.NotFound();
         var slots = new List<StaffStockSlot>();
         if (status == "IN_PROGRESS")
         {

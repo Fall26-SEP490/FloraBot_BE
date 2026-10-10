@@ -1,7 +1,9 @@
+using System.Security.Claims;
 using FloraBot.Api.Data;
 using FloraBot.Api.Modules.KioskOps;
 using FloraBot.Api.Modules.Notify;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace FloraBot.Api.Modules.Ordering;
 
@@ -29,6 +31,25 @@ public static class AdminIncidentsRead
             var slots = await IncidentLocations.SlotsAsync(db, rows.Where(x => x.SlotId.HasValue).Select(x => x.SlotId!.Value).Distinct().ToArray(), ct);
             return Results.Ok(new AdminIncidentPage(rows.Take(25).Select(x => Map(x, locations, slots)).ToList(), number, rows.Count > 25));
         }).RequireAuthorization("Admin").Produces<AdminIncidentPage>();
+
+        app.MapGet("/api/operations/incidents", async (string? status, int? page, Guid? kioskId, FloraDbContext db, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            status ??= "OPEN";
+            var number = page ?? 1;
+            if (status is not ("OPEN" or "RESOLVED_FIXED") || number < 1 || number > 100000) return Results.BadRequest();
+            var managerId = Guid.Parse(http.User.FindFirstValue("sub")!);
+            var allowedKiosks = await StaffTaskAccess.ManagerKiosks(data, managerId, ct);
+            if (allowedKiosks.Count == 0) return Results.Ok(new AdminIncidentPage([], number, false));
+            if (kioskId.HasValue && !allowedKiosks.Contains(kioskId.Value)) return Results.Ok(new AdminIncidentPage([], number, false));
+            var targetKiosks = kioskId.HasValue ? [kioskId.Value] : allowedKiosks.ToArray();
+            var query = db.Disputes.AsNoTracking().Where(x => (x.Kind == "DEVICE_FAULT" || x.Kind == "DISPENSE_FAILED") && x.Status == status && targetKiosks.Contains(x.KioskId));
+            query = status == "OPEN" ? query.OrderBy(x => x.CreatedAt).ThenBy(x => x.Id) : query.OrderByDescending(x => x.ResolvedAt).ThenByDescending(x => x.Id);
+            var rows = await query.Skip((number - 1) * 25).Take(26).ToListAsync(ct);
+            var locations = await IncidentLocations.KiosksAsync(db, rows.Select(x => x.KioskId).Distinct().ToArray(), ct);
+            var slots = await IncidentLocations.SlotsAsync(db, rows.Where(x => x.SlotId.HasValue).Select(x => x.SlotId!.Value).Distinct().ToArray(), ct);
+            return Results.Ok(new AdminIncidentPage(rows.Take(25).Select(x => Map(x, locations, slots)).ToList(), number, rows.Count > 25));
+        }).RequireAuthorization("OperationsManager").Produces<AdminIncidentPage>();
 
         app.MapGet("/api/admin/incidents/{incidentId:guid}", async (Guid incidentId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
         {

@@ -29,15 +29,15 @@ public sealed class PrivateEvidenceTests(ApiFactory factory) : IClassFixture<Api
         var kiosk = Guid.Parse("40000000-0000-0000-0000-000000000001");
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
-              (@staff,@staff::text||'@example.invalid','Evidence staff','!unprovisioned','STAFF'),
-              (@other,@other::text||'@example.invalid','Other evidence staff','!unprovisioned','STAFF');
+              (@staff,@staff::text||'@example.invalid','Evidence staff','!unprovisioned','TECHNICIAN'),
+              (@other,@other::text||'@example.invalid','Other evidence staff','!unprovisioned','TECHNICIAN');
             INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@incident,'DEVICE_FAULT',@kiosk,'Evidence door test');
             """);
         setup.Parameters.AddWithValue("staff", staffId); setup.Parameters.AddWithValue("other", otherId);
         setup.Parameters.AddWithValue("incident", incident); setup.Parameters.AddWithValue("kiosk", kiosk); await setup.ExecuteNonQueryAsync();
         using var staff = app.CreateClient(); using var other = app.CreateClient(); using var admin = app.CreateClient();
-        staff.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: staffId));
-        other.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("STAFF", userId: otherId));
+        staff.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: staffId));
+        other.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: otherId));
         admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
         (await admin.PostAsJsonAsync("/api/admin/staff-tasks", new AssignStaffTask(taskId, staffId, "INCIDENT", kiosk, null, incident, "Inspect the door with private evidence"))).EnsureSuccessStatusCode();
         var path = $"/api/staff/tasks/{taskId}/evidence";

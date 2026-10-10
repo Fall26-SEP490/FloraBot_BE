@@ -19,11 +19,11 @@ public sealed class StaffTaskTests
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
         var adminId = Guid.NewGuid(); var staffId = Guid.NewGuid(); var seller = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid();
         await using var setup = data.CreateCommand("""
-            INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
-              (@admin,@admin::text||'@example.invalid','Delivery admin','!unprovisioned','ADMIN'),
-              (@staff,@staff::text||'@example.invalid','Delivery staff','!unprovisioned','STAFF');
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@seller,'Delivery shop','0901112233','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            INSERT INTO identity.users(id,email,full_name,password_hash,role,seller_id) VALUES
+              (@admin,@admin::text||'@example.invalid','Delivery admin','!unprovisioned','ADMIN',NULL),
+              (@staff,@staff::text||'@example.invalid','Delivery staff','!unprovisioned','SELLER_STAFF',@seller);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Delivery kiosk','Delivery address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
@@ -50,15 +50,16 @@ public sealed class StaffTaskTests
         inventory.Parameters.AddWithValue("spare", spareSlot); inventory.Parameters.AddWithValue("kiosk", kiosk); inventory.Parameters.AddWithValue("admin", adminId);
         await inventory.ExecuteNonQueryAsync();
         using var staff = app.CreateClient();
-        staff.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = staffId, Role = "STAFF", FullName = "Staff", PasswordHash = "!unprovisioned" }));
+        staff.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = staffId, Role = "SELLER_STAFF", SellerId = seller, FullName = "Staff", PasswordHash = "!unprovisioned" }, "ACTIVE"));
         var stockPath = $"/api/staff/tasks/{input.Id}/stock";
         var stock = new StaffStockInput(Guid.NewGuid(), product, slot, $"staff-{Guid.NewGuid():N}");
         var otherStaffId = Guid.NewGuid();
-        await using var otherSetup = data.CreateCommand("INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES(@id,@id::text||'@example.invalid','Other delivery staff','!unprovisioned','STAFF')");
+        await using var otherSetup = data.CreateCommand("INSERT INTO identity.users(id,email,full_name,password_hash,role,seller_id) VALUES(@id,@id::text||'@example.invalid','Other delivery staff','!unprovisioned','SELLER_STAFF',@seller)");
         otherSetup.Parameters.AddWithValue("id", otherStaffId);
+        otherSetup.Parameters.AddWithValue("seller", seller);
         await otherSetup.ExecuteNonQueryAsync();
         using var otherStaff = app.CreateClient();
-        otherStaff.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = otherStaffId, Role = "STAFF", FullName = "Other staff", PasswordHash = "!unprovisioned" }));
+        otherStaff.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = otherStaffId, Role = "SELLER_STAFF", SellerId = seller, FullName = "Other staff", PasswordHash = "!unprovisioned" }, "ACTIVE"));
         Assert.Equal(HttpStatusCode.NotFound, (await otherStaff.GetAsync(stockPath)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await otherStaff.PostAsJsonAsync(stockPath, stock)).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(stockPath, stock)).StatusCode);
@@ -138,8 +139,8 @@ public sealed class StaffTaskTests
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
               (@admin,@admin::text||'@example.invalid','Task admin','!unprovisioned','ADMIN'),
-              (@staff,@staff::text||'@example.invalid','Task staff','!unprovisioned','STAFF'),
-              (@other,@other::text||'@example.invalid','Other staff','!unprovisioned','STAFF');
+              (@staff,@staff::text||'@example.invalid','Task staff','!unprovisioned','TECHNICIAN'),
+              (@other,@other::text||'@example.invalid','Other staff','!unprovisioned','TECHNICIAN');
             INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@incident,'DEVICE_FAULT',@kiosk,'Door stuck test');
             """);
         setup.Parameters.AddWithValue("admin", adminId); setup.Parameters.AddWithValue("staff", staffId);
@@ -151,7 +152,7 @@ public sealed class StaffTaskTests
             client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = id, Role = role, FullName = "Task test", PasswordHash = "!unprovisioned" }));
             return client;
         }
-        using var admin = Client(adminId, "ADMIN"); using var staff = Client(staffId, "STAFF"); using var other = Client(otherId, "STAFF");
+        using var admin = Client(adminId, "ADMIN"); using var staff = Client(staffId, "TECHNICIAN"); using var other = Client(otherId, "TECHNICIAN");
         var input = new AssignStaffTask(taskId, staffId, "INCIDENT", kiosk, null, incident, "Inspect the door and report findings");
         Assert.Equal(HttpStatusCode.Forbidden, (await staff.PostAsJsonAsync("/api/admin/staff-tasks", input)).StatusCode);
         (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input)).EnsureSuccessStatusCode();

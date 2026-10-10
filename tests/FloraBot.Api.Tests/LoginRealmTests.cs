@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FloraBot.Api.Auth;
+using FloraBot.Api.Data.Entities;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -11,7 +12,6 @@ public sealed class LoginRealmTests
 {
     [Theory]
     [InlineData("ADMIN", true)]
-    [InlineData("STAFF", true)]
     [InlineData("OPERATIONS_MANAGER", true)]
     [InlineData("TECHNICIAN", true)]
     [InlineData("CUSTOMER", false)]
@@ -245,5 +245,60 @@ public sealed class LoginRealmTests
         insert.Parameters.AddWithValue("email", $"legacystaff-{legacyId:N}@example.invalid");
         var ex = await Assert.ThrowsAsync<PostgresException>(() => insert.ExecuteNonQueryAsync());
         Assert.Equal(PostgresErrorCodes.CheckViolation, ex.SqlState);
+    }
+
+    [Fact]
+    public async Task LegacyStaffCannotLoginOrRefreshAndExistingTokensAreRevoked()
+    {
+        await using var factory = new ApiFactory();
+        using var scope = factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
+
+        var id = Guid.NewGuid();
+        var email = $"retired-staff-{id:N}@example.invalid";
+        const string password = "Staff-legacy-password-2026";
+        await using var insert = data.CreateCommand("""
+            INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
+            VALUES(@id,@email,@hash,'Retired staff','STAFF',NULL)
+            """);
+        insert.Parameters.AddWithValue("id", id);
+        insert.Parameters.AddWithValue("email", email);
+        insert.Parameters.AddWithValue("hash", BCrypt.Net.BCrypt.HashPassword(password, 12));
+        await insert.ExecuteNonQueryAsync();
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
+
+        // Admin realm login rejects legacy STAFF
+        var adminLogin = await client.PostAsJsonAsync("/api/auth/admin/login", new { email, password });
+        Assert.Equal(HttpStatusCode.Unauthorized, adminLogin.StatusCode);
+        Assert.False(adminLogin.Headers.Contains("Set-Cookie"));
+
+        // Ordinary portal login rejects legacy STAFF
+        var portalLogin = await client.PostAsJsonAsync("/api/auth/login", new { email, password });
+        Assert.Equal(HttpStatusCode.Unauthorized, portalLogin.StatusCode);
+        Assert.False(portalLogin.Headers.Contains("Set-Cookie"));
+
+        // Refresh token consumption rejects legacy STAFF
+        var userEntity = new User { Id = id, Role = "STAFF", FullName = "Retired staff", PasswordHash = "!unprovisioned" };
+        var refreshToken = await tokens.CreateRefresh(userEntity);
+        using var refreshClient = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
+        refreshClient.DefaultRequestHeaders.Add("Origin", "http://127.0.0.1:5173");
+        refreshClient.DefaultRequestHeaders.Add("Cookie", $"florabot_refresh={refreshToken}");
+        var refreshRes = await refreshClient.PostAsync("/api/auth/refresh", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, refreshRes.StatusCode);
+
+        // Old access token with role STAFF is revoked at OnTokenValidated or rejected by policy
+        var oldAccessToken = factory.Token("STAFF", userId: id);
+        var meReq = new HttpRequestMessage(HttpMethod.Get, "/api/auth/me");
+        meReq.Headers.Authorization = new("Bearer", oldAccessToken);
+        var meRes = await client.SendAsync(meReq);
+        Assert.True(meRes.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden);
+
+        // Accessing tasks route with old STAFF token is revoked
+        var tasksReq = new HttpRequestMessage(HttpMethod.Get, "/api/staff/tasks");
+        tasksReq.Headers.Authorization = new("Bearer", oldAccessToken);
+        var tasksRes = await client.SendAsync(tasksReq);
+        Assert.True(tasksRes.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden);
     }
 }

@@ -15,6 +15,8 @@ public static class StaffTaskDetails
     {
         app.MapGet("/api/staff/tasks/{taskId:guid}", Read).RequireAuthorization("Staff").Produces<StaffTaskDetail>();
         app.MapGet("/api/admin/staff-tasks/{taskId:guid}", Read).RequireAuthorization("Admin").Produces<StaffTaskDetail>();
+        app.MapGet("/api/operations/staff-tasks/{taskId:guid}", Read).RequireAuthorization("OperationsManager").Produces<StaffTaskDetail>();
+        app.MapGet("/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}", Read).RequireAuthorization("Merchant", "SameSeller").Produces<StaffTaskDetail>();
     }
     private static async Task<IResult> Read(Guid taskId, int? page, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
     {
@@ -23,15 +25,16 @@ public static class StaffTaskDetails
         if (number is < 1 or > 100000) return Results.BadRequest();
         await using var connection = await data.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        if (await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct, readOnly: true) is null)
+            return Results.NotFound();
         Guid kiosk; Guid? incidentId; string status; DateTime? heartbeat;
         await using (var command = new NpgsqlCommand("""
             SELECT t.kiosk_id,t.incident_id,k.status,k.last_heartbeat_at FROM kiosk_ops.staff_tasks t
             JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
-            WHERE t.id=@id AND (@admin OR t.assignee_id=@actor) FOR SHARE OF t
+            WHERE t.id=@id FOR SHARE OF t
             """, connection, transaction))
         {
-            command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("admin", http.User.IsInRole("ADMIN"));
-            command.Parameters.AddWithValue("actor", Guid.Parse(http.User.FindFirstValue("sub")!));
+            command.Parameters.AddWithValue("id", taskId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct)) return Results.NotFound();
             kiosk = reader.GetGuid(0); incidentId = reader.IsDBNull(1) ? null : reader.GetGuid(1);
