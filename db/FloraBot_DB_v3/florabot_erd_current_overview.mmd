@@ -1,0 +1,249 @@
+---
+title: FloraBot current source ERD overview — 30 tables / 7 database schemas; base schema plus 20 migrations
+---
+erDiagram
+  gift_surveys["gift_surveys (ai)"] {
+    uuid id PK
+    uuid customer_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid purchased_order_id FK
+    uuid selected_product_id FK
+  }
+  flower_products["flower_products (catalog)"] {
+    uuid id PK
+    uuid seller_id FK "NOT NULL"
+  }
+  sellers["sellers (identity)"] {
+    uuid id PK
+    uuid package_id FK
+  }
+  subscription_packages["subscription_packages (identity)"] {
+    uuid id PK
+    text name UK "NOT NULL"
+  }
+  subscriptions["subscriptions (identity)"] {
+    uuid id PK
+    uuid package_id FK "NOT NULL"
+    uuid payment_id FK
+    uuid seller_id FK "NOT NULL"
+  }
+  users["users (identity)"] {
+    uuid id PK
+    uuid seller_id FK
+    text email UK
+    text phone UK
+  }
+  accessories["accessories (kiosk-ops)"] {
+    uuid id PK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+  }
+  bouquets["bouquets (kiosk-ops)"] {
+    uuid id PK
+    uuid product_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    text qr_code UK "NOT NULL"
+  }
+  inventory_logs["inventory_logs (kiosk-ops)"] {
+    uuid id PK
+    uuid bouquet_id FK "NOT NULL"
+    uuid order_id FK
+    uuid performed_by FK
+    uuid slot_id FK "NOT NULL"
+    bigint seq UK
+  }
+  kiosks["kiosks (kiosk-ops)"] {
+    uuid id PK
+    text code UK "NOT NULL"
+    text hardware_id UK "NOT NULL"
+    text mqtt_client_id UK "NOT NULL"
+  }
+  manager_kiosks["manager_kiosks (kiosk-ops)"] {
+    uuid kiosk_id PK,FK
+    uuid manager_id PK,FK
+  }
+  mqtt_dispatches["mqtt_dispatches (kiosk-ops)"] {
+    uuid cmd_id PK,FK
+  }
+  mqtt_inbox["mqtt_inbox (kiosk-ops)"] {
+    uuid event_id PK
+    uuid cmd_id FK
+    uuid kiosk_id FK "NOT NULL"
+  }
+  slot_assignments["slot_assignments (kiosk-ops)"] {
+    uuid id PK
+    uuid assigned_by FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    uuid slot_id FK "NOT NULL"
+  }
+  slots["slots (kiosk-ops)"] {
+    uuid id PK
+    uuid bouquet_id FK,UK
+    uuid current_seller_id FK
+    uuid hold_order_id FK
+    uuid kiosk_id FK "NOT NULL"
+  }
+  staff_incident_actions["staff_incident_actions (kiosk-ops)"] {
+    uuid id PK
+    uuid actor_id FK "NOT NULL"
+    uuid incident_id FK "NOT NULL"
+    uuid task_id FK,UK "NOT NULL"
+  }
+  staff_stock_actions["staff_stock_actions (kiosk-ops)"] {
+    uuid id PK
+    uuid actor_id FK "NOT NULL"
+    uuid bouquet_id FK "NOT NULL"
+    uuid product_id FK "NOT NULL"
+    uuid slot_id FK "NOT NULL"
+    uuid task_id FK "NOT NULL"
+  }
+  staff_tasks["staff_tasks (kiosk-ops)"] {
+    uuid id PK
+    uuid assigned_by FK "NOT NULL"
+    uuid assignee_id FK "NOT NULL"
+    uuid incident_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK
+  }
+  system_settings["system_settings (kiosk-ops)"] {
+    text key PK
+    uuid updated_by FK
+  }
+  unlock_tokens["unlock_tokens (kiosk-ops)"] {
+    uuid id PK
+    uuid issued_to_user_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid order_id FK
+    uuid slot_id FK "NOT NULL"
+    uuid cmd_id UK "NOT NULL"
+    text token_hash UK "NOT NULL"
+  }
+  attachments["attachments (notify)"] {
+    uuid id PK
+    uuid uploaded_by FK
+  }
+  audit_logs["audit_logs (notify)"] {
+    bigint id PK
+    uuid actor_id FK
+  }
+  disputes["disputes (ordering)"] {
+    uuid id PK
+    uuid decided_by FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid order_id FK
+    uuid reported_by FK
+    uuid slot_id FK
+  }
+  order_items["order_items (ordering)"] {
+    uuid id PK
+    uuid accessory_id FK
+    uuid bouquet_id FK
+    uuid order_id FK "NOT NULL"
+    uuid slot_id FK
+  }
+  orders["orders (ordering)"] {
+    uuid id PK
+    uuid customer_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    text order_code UK "NOT NULL"
+    text tracking_token UK "NOT NULL"
+  }
+  web_requests["web_requests (ordering)"] {
+    uuid id PK
+    uuid order_id FK,UK
+  }
+  gateway_orders["gateway_orders (payment)"] {
+    uuid payment_id PK,FK
+    bigint order_code UK "NOT NULL"
+  }
+  ledger_entries["ledger_entries (payment)"] {
+    uuid id PK
+    uuid seller_id FK
+  }
+  payments["payments (payment)"] {
+    uuid id PK
+    uuid approved_by FK
+    uuid checkout_id FK
+    uuid order_id FK
+    uuid parent_payment_id FK
+    uuid subscription_id FK
+    text idempotency_key UK "NOT NULL"
+  }
+  withdrawal_requests["withdrawal_requests (payment)"] {
+    uuid id PK
+    uuid approved_by FK
+    uuid seller_id FK "NOT NULL"
+  }
+  users o|..o{ gift_surveys : "customer_id"
+  kiosks ||..o{ gift_surveys : "kiosk_id"
+  orders o|..o{ gift_surveys : "purchased_order_id"
+  flower_products o|..o{ gift_surveys : "selected_product_id"
+  sellers ||..o{ flower_products : "seller_id"
+  subscription_packages o|--o{ sellers : "package_id"
+  subscription_packages ||--o{ subscriptions : "package_id"
+  payments o|..o{ subscriptions : "payment_id"
+  sellers ||--o{ subscriptions : "seller_id"
+  sellers o|--o{ users : "seller_id"
+  kiosks ||--o{ accessories : "kiosk_id"
+  sellers ||..o{ accessories : "seller_id"
+  flower_products ||..o{ bouquets : "product_id"
+  sellers ||..o{ bouquets : "seller_id"
+  bouquets ||--o{ inventory_logs : "bouquet_id"
+  orders o|..o{ inventory_logs : "order_id"
+  users o|..o{ inventory_logs : "performed_by"
+  slots ||--o{ inventory_logs : "slot_id"
+  kiosks ||--|o manager_kiosks : "kiosk_id"
+  users ||..|o manager_kiosks : "manager_id"
+  unlock_tokens o|--|o mqtt_dispatches : "cmd_id"
+  unlock_tokens o|--o{ mqtt_inbox : "cmd_id"
+  kiosks ||--o{ mqtt_inbox : "kiosk_id"
+  users ||..o{ slot_assignments : "assigned_by"
+  sellers ||..o{ slot_assignments : "seller_id"
+  slots ||--o{ slot_assignments : "slot_id"
+  bouquets o|--|o slots : "bouquet_id"
+  sellers o|..o{ slots : "current_seller_id"
+  orders o|..o{ slots : "hold_order_id"
+  kiosks ||--o{ slots : "kiosk_id"
+  users ||..o{ staff_incident_actions : "actor_id"
+  disputes ||..o{ staff_incident_actions : "incident_id"
+  staff_tasks ||--|o staff_incident_actions : "task_id"
+  users ||..o{ staff_stock_actions : "actor_id"
+  bouquets ||--o{ staff_stock_actions : "bouquet_id"
+  flower_products ||..o{ staff_stock_actions : "product_id"
+  slots ||--o{ staff_stock_actions : "slot_id"
+  staff_tasks ||--o{ staff_stock_actions : "task_id"
+  users ||..o{ staff_tasks : "assigned_by"
+  users ||..o{ staff_tasks : "assignee_id"
+  disputes o|..o{ staff_tasks : "incident_id"
+  kiosks ||--o{ staff_tasks : "kiosk_id"
+  sellers o|..o{ staff_tasks : "seller_id"
+  users o|..o{ system_settings : "updated_by"
+  users o|..o{ unlock_tokens : "issued_to_user_id"
+  kiosks ||--o{ unlock_tokens : "kiosk_id"
+  orders o|..o{ unlock_tokens : "order_id"
+  slots ||--o{ unlock_tokens : "slot_id"
+  users o|..o{ attachments : "uploaded_by"
+  users o|..o{ audit_logs : "actor_id"
+  users o|..o{ disputes : "decided_by"
+  kiosks ||..o{ disputes : "kiosk_id"
+  orders o|--o{ disputes : "order_id"
+  users o|..o{ disputes : "reported_by"
+  slots o|..o{ disputes : "slot_id"
+  accessories o|..o{ order_items : "accessory_id"
+  bouquets o|..o{ order_items : "bouquet_id"
+  orders ||--o{ order_items : "order_id"
+  slots o|..o{ order_items : "slot_id"
+  users o|..o{ orders : "customer_id"
+  kiosks ||..o{ orders : "kiosk_id"
+  sellers ||..o{ orders : "seller_id"
+  orders o|--|o web_requests : "order_id"
+  payments o|--|o gateway_orders : "payment_id"
+  sellers o|..o{ ledger_entries : "seller_id"
+  users o|..o{ payments : "approved_by"
+  orders o|..o{ payments : "checkout_id"
+  orders o|..o{ payments : "order_id"
+  payments o|--o{ payments : "parent_payment_id"
+  subscriptions o|..o{ payments : "subscription_id"
+  users o|..o{ withdrawal_requests : "approved_by"
+  sellers ||..o{ withdrawal_requests : "seller_id"

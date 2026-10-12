@@ -1,0 +1,463 @@
+---
+title: FloraBot current source ERD — 30 tables / 7 database schemas; base schema plus 20 migrations
+---
+erDiagram
+  gift_surveys["gift_surveys (ai)"] {
+    uuid id PK
+    uuid customer_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid purchased_order_id FK
+    uuid selected_product_id FK
+    text age_group
+    bigint budget_max
+    timestamptz created_at "NOT NULL"
+    int latency_ms
+    text message_tone
+    text model_version
+    text occasion "NOT NULL"
+    text recipient_type "NOT NULL"
+    jsonb results "NOT NULL"
+    text session_id "NOT NULL"
+    text source
+    timestamptz updated_at "NOT NULL"
+  }
+  flower_products["flower_products (catalog)"] {
+    uuid id PK
+    uuid seller_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text description
+    numeric height_cm
+    text inventory_kind "NOT NULL"
+    numeric length_cm
+    text name "NOT NULL"
+    bigint price "NOT NULL"
+    int shelf_life_hours "NOT NULL"
+    text status "NOT NULL"
+    text_arr tags "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+    numeric width_cm
+  }
+  sellers["sellers (identity)"] {
+    uuid id PK
+    uuid package_id FK
+    text address
+    text bank_account_no_enc
+    text bank_holder
+    text bank_name
+    text brand_tone
+    timestamptz created_at "NOT NULL"
+    date package_expires_at
+    text phone "NOT NULL"
+    text shop_name "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  subscription_packages["subscription_packages (identity)"] {
+    uuid id PK
+    timestamptz created_at "NOT NULL"
+    int max_slots "NOT NULL"
+    bigint monthly_fee "NOT NULL"
+    text name UK "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  subscriptions["subscriptions (identity)"] {
+    uuid id PK
+    uuid package_id FK "NOT NULL"
+    uuid payment_id FK
+    uuid seller_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    date period_from "NOT NULL"
+    date period_to "NOT NULL"
+    bigint price "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  users["users (identity)"] {
+    uuid id PK
+    uuid seller_id FK
+    timestamptz created_at "NOT NULL"
+    text email UK
+    text full_name "NOT NULL"
+    bigint loyalty_points "NOT NULL"
+    text password_hash
+    text phone UK
+    text role "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  accessories["accessories (kiosk-ops)"] {
+    uuid id PK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text name "NOT NULL"
+    bigint price "NOT NULL"
+    text status "NOT NULL"
+    int stock_quantity "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  bouquets["bouquets (kiosk-ops)"] {
+    uuid id PK
+    uuid product_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    bigint price_snapshot "NOT NULL"
+    text qr_code UK "NOT NULL"
+    timestamptz sellable_until "NOT NULL"
+    text status "NOT NULL"
+    timestamptz stocked_at "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  inventory_logs["inventory_logs (kiosk-ops)"] {
+    uuid id PK
+    uuid bouquet_id FK "NOT NULL"
+    uuid order_id FK
+    uuid performed_by FK
+    uuid slot_id FK "NOT NULL"
+    uuid batch_id
+    timestamptz created_at "NOT NULL"
+    text movement_type "NOT NULL"
+    text reason
+    bigint seq UK
+  }
+  kiosks["kiosks (kiosk-ops)"] {
+    uuid id PK
+    text address "NOT NULL"
+    text api_key_hash
+    text code UK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text hardware_id UK "NOT NULL"
+    timestamptz last_heartbeat_at
+    text mqtt_client_id UK "NOT NULL"
+    text name "NOT NULL"
+    text region "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  manager_kiosks["manager_kiosks (kiosk-ops)"] {
+    uuid kiosk_id PK,FK
+    uuid manager_id PK,FK
+    timestamptz created_at "NOT NULL"
+  }
+  mqtt_dispatches["mqtt_dispatches (kiosk-ops)"] {
+    uuid cmd_id PK,FK
+    timestamptz attempted_at "NOT NULL"
+    uuid delivery_id "NOT NULL"
+    timestamptz next_attempt_at "NOT NULL"
+    timestamptz pubacked_at
+  }
+  mqtt_inbox["mqtt_inbox (kiosk-ops)"] {
+    uuid event_id PK
+    uuid cmd_id FK
+    uuid kiosk_id FK "NOT NULL"
+    text disposition "NOT NULL"
+    text event "NOT NULL"
+    timestamptz occurred_at "NOT NULL"
+    text payload_hash "NOT NULL"
+    timestamptz processed_at
+    timestamptz received_at "NOT NULL"
+  }
+  slot_assignments["slot_assignments (kiosk-ops)"] {
+    uuid id PK
+    uuid assigned_by FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    uuid slot_id FK "NOT NULL"
+    timestamptz assigned_at "NOT NULL"
+    text release_reason
+    timestamptz released_at
+    text status "NOT NULL"
+  }
+  slots["slots (kiosk-ops)"] {
+    uuid id PK
+    uuid bouquet_id FK,UK
+    uuid current_seller_id FK
+    uuid hold_order_id FK
+    uuid kiosk_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz hold_until
+    smallint relay_channel "NOT NULL"
+    int row_version "NOT NULL"
+    text slot_code "NOT NULL"
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  staff_incident_actions["staff_incident_actions (kiosk-ops)"] {
+    uuid id PK
+    uuid actor_id FK "NOT NULL"
+    uuid incident_id FK "NOT NULL"
+    uuid task_id FK,UK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text report "NOT NULL"
+    integer request_version "NOT NULL"
+    integer result_version "NOT NULL"
+  }
+  staff_stock_actions["staff_stock_actions (kiosk-ops)"] {
+    uuid id PK
+    uuid actor_id FK "NOT NULL"
+    uuid bouquet_id FK "NOT NULL"
+    uuid product_id FK "NOT NULL"
+    uuid slot_id FK "NOT NULL"
+    uuid task_id FK "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text qr_code "NOT NULL"
+  }
+  staff_tasks["staff_tasks (kiosk-ops)"] {
+    uuid id PK
+    uuid assigned_by FK "NOT NULL"
+    uuid assignee_id FK "NOT NULL"
+    uuid incident_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK
+    timestamptz created_at "NOT NULL"
+    text instructions "NOT NULL"
+    text kind "NOT NULL"
+    text report
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+    integer version "NOT NULL"
+  }
+  system_settings["system_settings (kiosk-ops)"] {
+    text key PK
+    uuid updated_by FK
+    text description
+    timestamptz updated_at "NOT NULL"
+    jsonb value "NOT NULL"
+  }
+  unlock_tokens["unlock_tokens (kiosk-ops)"] {
+    uuid id PK
+    uuid issued_to_user_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid order_id FK
+    uuid slot_id FK "NOT NULL"
+    int attempts "NOT NULL"
+    uuid cmd_id UK "NOT NULL"
+    timestamptz door_closed_at
+    timestamptz door_opened_at
+    timestamptz expires_at "NOT NULL"
+    timestamptz issued_at "NOT NULL"
+    text purpose "NOT NULL"
+    text status "NOT NULL"
+    text token_hash UK "NOT NULL"
+  }
+  attachments["attachments (notify)"] {
+    uuid id PK
+    uuid uploaded_by FK
+    timestamptz created_at "NOT NULL"
+    text file_url "NOT NULL"
+    text mime_type "NOT NULL"
+    uuid owner_id "NOT NULL"
+    text owner_service "NOT NULL"
+    text owner_type "NOT NULL"
+    text phase "NOT NULL"
+    text sha256 "NOT NULL"
+    bigint size_bytes "NOT NULL"
+  }
+  audit_logs["audit_logs (notify)"] {
+    bigint id PK
+    uuid actor_id FK
+    text action "NOT NULL"
+    text actor_type "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    uuid entity_id
+    text entity_type "NOT NULL"
+    jsonb payload
+  }
+  disputes["disputes (ordering)"] {
+    uuid id PK
+    uuid decided_by FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid order_id FK
+    uuid reported_by FK
+    uuid slot_id FK
+    timestamptz created_at "NOT NULL"
+    text decision
+    text kind "NOT NULL"
+    text reason "NOT NULL"
+    bigint refund_amount
+    timestamptz resolved_at
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  order_items["order_items (ordering)"] {
+    uuid id PK
+    uuid accessory_id FK
+    uuid bouquet_id FK
+    uuid order_id FK "NOT NULL"
+    uuid slot_id FK
+    timestamptz created_at "NOT NULL"
+    text item_type "NOT NULL"
+    text line_status "NOT NULL"
+    bigint line_total "NOT NULL"
+    text name_snapshot "NOT NULL"
+    int quantity "NOT NULL"
+    bigint unit_price "NOT NULL"
+  }
+  orders["orders (ordering)"] {
+    uuid id PK
+    uuid customer_id FK
+    uuid kiosk_id FK "NOT NULL"
+    uuid seller_id FK "NOT NULL"
+    uuid checkout_id "NOT NULL"
+    timestamptz completed_at
+    timestamptz created_at "NOT NULL"
+    bigint discount_amount "NOT NULL"
+    text ecard_content
+    text order_code UK "NOT NULL"
+    bigint points_earned "NOT NULL"
+    bigint points_redeemed "NOT NULL"
+    text refund_bank_account_enc
+    text refund_bank_holder
+    text refund_bank_name
+    text status "NOT NULL"
+    bigint subtotal "NOT NULL"
+    bigint total_amount "NOT NULL"
+    text tracking_token UK "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  web_requests["web_requests (ordering)"] {
+    uuid id PK
+    uuid order_id FK,UK
+    timestamptz created_at "NOT NULL"
+    uuid customer_id "NOT NULL"
+    jsonb display_snapshot "NOT NULL"
+    text instructions "NOT NULL"
+    text kind "NOT NULL"
+    uuid kiosk_id "NOT NULL"
+    timestamptz pickup_at "NOT NULL"
+    timestamptz pickup_before "NOT NULL"
+    uuid product_id "NOT NULL"
+    timestamptz quote_expires_at
+    text quote_note
+    bigint quoted_price
+    jsonb request_payload
+    uuid seller_id "NOT NULL"
+    text state "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  gateway_orders["gateway_orders (payment)"] {
+    uuid payment_id PK,FK
+    text checkout_url
+    timestamptz created_at "NOT NULL"
+    bigint order_code UK "NOT NULL"
+  }
+  ledger_entries["ledger_entries (payment)"] {
+    uuid id PK
+    uuid seller_id FK
+    text account "NOT NULL"
+    bigint amount "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    uuid journal_id "NOT NULL"
+    text memo
+    uuid ref_id "NOT NULL"
+    text ref_type "NOT NULL"
+  }
+  payments["payments (payment)"] {
+    uuid id PK
+    uuid approved_by FK
+    uuid checkout_id FK
+    uuid order_id FK
+    uuid parent_payment_id FK
+    uuid subscription_id FK
+    bigint amount "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    text gateway "NOT NULL"
+    text gateway_txn_id
+    text idempotency_key UK "NOT NULL"
+    text kind "NOT NULL"
+    timestamptz paid_at
+    uuid paid_by
+    text purpose "NOT NULL"
+    jsonb raw_payload
+    text reason
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  withdrawal_requests["withdrawal_requests (payment)"] {
+    uuid id PK
+    uuid approved_by FK
+    uuid seller_id FK "NOT NULL"
+    bigint amount "NOT NULL"
+    timestamptz approved_at
+    text bank_account_no_enc "NOT NULL"
+    text bank_holder "NOT NULL"
+    text bank_name "NOT NULL"
+    timestamptz created_at "NOT NULL"
+    timestamptz paid_at
+    uuid paid_by
+    text reject_reason
+    text status "NOT NULL"
+    timestamptz updated_at "NOT NULL"
+  }
+  users o|..o{ gift_surveys : "customer_id"
+  kiosks ||..o{ gift_surveys : "kiosk_id"
+  orders o|..o{ gift_surveys : "purchased_order_id"
+  flower_products o|..o{ gift_surveys : "selected_product_id"
+  sellers ||..o{ flower_products : "seller_id"
+  subscription_packages o|--o{ sellers : "package_id"
+  subscription_packages ||--o{ subscriptions : "package_id"
+  payments o|..o{ subscriptions : "payment_id"
+  sellers ||--o{ subscriptions : "seller_id"
+  sellers o|--o{ users : "seller_id"
+  kiosks ||--o{ accessories : "kiosk_id"
+  sellers ||..o{ accessories : "seller_id"
+  flower_products ||..o{ bouquets : "product_id"
+  sellers ||..o{ bouquets : "seller_id"
+  bouquets ||--o{ inventory_logs : "bouquet_id"
+  orders o|..o{ inventory_logs : "order_id"
+  users o|..o{ inventory_logs : "performed_by"
+  slots ||--o{ inventory_logs : "slot_id"
+  kiosks ||--|o manager_kiosks : "kiosk_id"
+  users ||..|o manager_kiosks : "manager_id"
+  unlock_tokens o|--|o mqtt_dispatches : "cmd_id"
+  unlock_tokens o|--o{ mqtt_inbox : "cmd_id"
+  kiosks ||--o{ mqtt_inbox : "kiosk_id"
+  users ||..o{ slot_assignments : "assigned_by"
+  sellers ||..o{ slot_assignments : "seller_id"
+  slots ||--o{ slot_assignments : "slot_id"
+  bouquets o|--|o slots : "bouquet_id"
+  sellers o|..o{ slots : "current_seller_id"
+  orders o|..o{ slots : "hold_order_id"
+  kiosks ||--o{ slots : "kiosk_id"
+  users ||..o{ staff_incident_actions : "actor_id"
+  disputes ||..o{ staff_incident_actions : "incident_id"
+  staff_tasks ||--|o staff_incident_actions : "task_id"
+  users ||..o{ staff_stock_actions : "actor_id"
+  bouquets ||--o{ staff_stock_actions : "bouquet_id"
+  flower_products ||..o{ staff_stock_actions : "product_id"
+  slots ||--o{ staff_stock_actions : "slot_id"
+  staff_tasks ||--o{ staff_stock_actions : "task_id"
+  users ||..o{ staff_tasks : "assigned_by"
+  users ||..o{ staff_tasks : "assignee_id"
+  disputes o|..o{ staff_tasks : "incident_id"
+  kiosks ||--o{ staff_tasks : "kiosk_id"
+  sellers o|..o{ staff_tasks : "seller_id"
+  users o|..o{ system_settings : "updated_by"
+  users o|..o{ unlock_tokens : "issued_to_user_id"
+  kiosks ||--o{ unlock_tokens : "kiosk_id"
+  orders o|..o{ unlock_tokens : "order_id"
+  slots ||--o{ unlock_tokens : "slot_id"
+  users o|..o{ attachments : "uploaded_by"
+  users o|..o{ audit_logs : "actor_id"
+  users o|..o{ disputes : "decided_by"
+  kiosks ||..o{ disputes : "kiosk_id"
+  orders o|--o{ disputes : "order_id"
+  users o|..o{ disputes : "reported_by"
+  slots o|..o{ disputes : "slot_id"
+  accessories o|..o{ order_items : "accessory_id"
+  bouquets o|..o{ order_items : "bouquet_id"
+  orders ||--o{ order_items : "order_id"
+  slots o|..o{ order_items : "slot_id"
+  users o|..o{ orders : "customer_id"
+  kiosks ||..o{ orders : "kiosk_id"
+  sellers ||..o{ orders : "seller_id"
+  orders o|--|o web_requests : "order_id"
+  payments o|--|o gateway_orders : "payment_id"
+  sellers o|..o{ ledger_entries : "seller_id"
+  users o|..o{ payments : "approved_by"
+  orders o|..o{ payments : "checkout_id"
+  orders o|..o{ payments : "order_id"
+  payments o|--o{ payments : "parent_payment_id"
+  subscriptions o|..o{ payments : "subscription_id"
+  users o|..o{ withdrawal_requests : "approved_by"
+  sellers ||..o{ withdrawal_requests : "seller_id"

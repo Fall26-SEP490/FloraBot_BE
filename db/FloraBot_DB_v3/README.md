@@ -1,6 +1,8 @@
 # FloraBot — CSDL chuẩn + dữ liệu demo (v3.1 — MVP theo BRD §5.1, gói thuê bao theo §7.1)
 
-**Kết quả kiểm chứng:** 22 bảng / 252 cột / 7 service (v2.1: 28 / 406). Chạy lại từ đầu bằng `./run.sh` mất khoảng 3 giây: **326 kiểm tra PASS, 0 lỗi** (gồm 2 vòng red-team độc lập: 14 lỗ hổng đã vá và có hồi quy; 4 vá sau khi dò luồng nghiệp vụ 07/10; v3.1 thêm gói thuê bao + hoàn tiền tay + đối soát). Kiểm trên PostgreSQL 16; với PG18, hàm `uuid_v7()` gọi thẳng `uuidv7()`.
+> **ERD lưu ý:** Các file `florabot_erd.mmd`/`florabot_erd_overview.mmd` cũ là snapshot schema nền v3.1 gồm 22 bảng. Runtime schema áp dụng migrations `001`–`020` có 30 bảng. Dùng `gen_erd_from_source.py` và các file `florabot_erd_current*` để xem ERD hiện hành được sinh từ SQL nguồn+migrations; bộ ERD này chưa được đối chiếu với DB runtime trong phiên tạo vì Docker Engine không chạy.
+
+**Kết quả kiểm chứng của snapshot v3.1:** 22 bảng / 252 cột / 7 schema domain (v2.1: 28 / 406). Đây là số lịch sử của schema nền; không phải số bảng runtime sau migrations và cũng không phải số microservice. Chạy lại từ đầu bằng `./run.sh` mất khoảng 3 giây: **326 kiểm tra PASS, 0 lỗi** (gồm 2 vòng red-team độc lập: 14 lỗ hổng đã vá và có hồi quy; 4 vá sau khi dò luồng nghiệp vụ 07/10; v3.1 thêm gói thuê bao + hoàn tiền tay + đối soát). Kiểm trên PostgreSQL 16; với PG18, hàm `uuid_v7()` gọi thẳng `uuidv7()`.
 
 ## v3.1 (07/10/2026) — ba quyết định sau khi dò luồng nghiệp vụ
 
