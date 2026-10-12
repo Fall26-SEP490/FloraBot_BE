@@ -179,7 +179,7 @@ builder.Services.AddRateLimiter(options =>
             _ => new FixedWindowRateLimiterOptions { PermitLimit = name == "auth" ? 10 : 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 var origins = (builder.Configuration["ALLOWED_ORIGINS"] ?? (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing")
-    ? "http://localhost:4321,http://localhost:5173,http://localhost:5174,http://127.0.0.1:4321,http://127.0.0.1:5173,http://127.0.0.1:5174"
+    ? "http://localhost:3010,http://localhost:4321,http://localhost:5173,http://localhost:5174,http://127.0.0.1:3010,http://127.0.0.1:4321,http://127.0.0.1:5173,http://127.0.0.1:5174"
     : "")).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 var app = builder.Build();
@@ -219,12 +219,25 @@ app.Use(async (http, next) =>
     }
 });
 app.UseCors();
+if (app.Environment.IsDevelopment())
+{
+    // Keep local API documentation reachable even when the admin login is unavailable.
+    app.UseSwaggerUI(options =>
+    {
+        options.RoutePrefix = "openapi/ui";
+        options.SwaggerEndpoint("/openapi/v1.json", "FloraBot API v1");
+    });
+}
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
+
 app.MapHub<PortalHub>("/hub/portal", options => options.CloseOnAuthenticationExpiration = true).RequireAuthorization("Portal");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
-app.MapOpenApi().RequireAuthorization("Admin");
+if (app.Environment.IsDevelopment())
+    app.MapOpenApi().AllowAnonymous();
+else
+    app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
 app.MapMembers();
 app.MapWebOrders();
