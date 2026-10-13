@@ -71,6 +71,7 @@ services:
       EMAIL_SENDER: ${EMAIL_SENDER:-}
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       GOOGLE_SMTP_APP_PASSWORD: ${GOOGLE_SMTP_APP_PASSWORD:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?Set the internal advisor token}
     networks: [default, advisor]
     volumes:

@@ -242,6 +242,7 @@ if (app.Environment.IsDevelopment())
 else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
+app.MapAccountHierarchy();
 
 app.MapMembers();
 app.MapWebOrders();

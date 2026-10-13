@@ -127,7 +127,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             _ => "99999999-9999-4999-8999-999999999999"
         });
         var request = new HttpRequestMessage(new HttpMethod(endpoint.Method), path);
-        if (endpoint.Method is "POST" or "PUT")
+        if (endpoint.Method is "POST" or "PUT" or "PATCH")
         {
             if (endpoint.Template.EndsWith("/photos", StringComparison.Ordinal) || endpoint.Template.Contains("/evidence", StringComparison.Ordinal))
             {
@@ -136,7 +136,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
                 return request;
             }
             var json = endpoint.Template.EndsWith("/otp/request", StringComparison.Ordinal) ? "{\"phone\":\"0901234567\"}" :
-                endpoint.Template.EndsWith("/otp/verify", StringComparison.Ordinal) ? "{\"phone\":\"0901234567\",\"code\":\"123456\"}" : "{}";
+                endpoint.Template.EndsWith("/otp/verify", StringComparison.Ordinal) ? "{\"phone\":\"0901234567\",\"code\":\"123456\"}" :
+                endpoint.Template.EndsWith("/status", StringComparison.Ordinal) ? "{\"status\":\"ACTIVE\"}" : "{}";
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         }
         return request;
@@ -152,9 +153,15 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "GET", "/api/admin/staff-tasks/{taskId:guid}/evidence", "/api/admin/staff-tasks/{taskId:guid}/evidence/{attachmentId:guid}");
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/staff-tasks/{taskId:guid}/evidence", "/api/operations/staff-tasks/{taskId:guid}/evidence/{attachmentId:guid}");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/evidence", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/evidence/{attachmentId:guid}");
-        Add(["ADMIN"], "GET", "/api/admin/staff", "/api/admin/staff-tasks", "/api/admin/staff-delivery-scopes");
-        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/staff", "/api/operations/incidents", "/api/operations/staff-tasks");
+        Add(["ADMIN"], "GET", "/api/admin/staff", "/api/admin/staff-tasks", "/api/admin/staff-delivery-scopes", "/api/admin/managers");
+        Add(["ADMIN"], "POST", "/api/admin/managers");
+        Add(["ADMIN"], "PATCH", "/api/admin/managers/{id:guid}/status");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/staff", "/api/operations/incidents", "/api/operations/staff-tasks", "/api/operations/technicians");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/technicians");
+        Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/technicians/{id:guid}/status");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff", "/api/sellers/{sellerId:guid}/staff-delivery-scopes", "/api/sellers/{sellerId:guid}/staff-tasks");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff");
+        Add(["ADMIN", "SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
         Add(["ADMIN"], "POST", "/api/admin/staff-tasks", "/api/admin/staff-tasks/{taskId:guid}/transition", "/api/admin/staff-tasks/{taskId:guid}/reassign");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/staff-tasks", "/api/operations/staff-tasks/{taskId:guid}/transition", "/api/operations/staff-tasks/{taskId:guid}/reassign");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff-tasks", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/transition", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign");
