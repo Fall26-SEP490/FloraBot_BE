@@ -20,7 +20,7 @@ public static class AuthEndpoints
 
             GoogleJsonWebSignature.Payload payload;
             var clientId = config["Authentication:Google:ClientId"] ?? Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID");
-            var allowTestMock = env.IsEnvironment("Testing") && (config["ALLOW_TEST_AUTH"] == "true" || Environment.GetEnvironmentVariable("ALLOW_TEST_AUTH") == "true");
+            var allowTestMock = (env.IsDevelopment() || env.IsEnvironment("Testing")) && (config["ALLOW_TEST_AUTH"] == "true" || Environment.GetEnvironmentVariable("ALLOW_TEST_AUTH") == "true");
 
             if (allowTestMock && request.IdToken.StartsWith("mock-google-token:"))
             {
