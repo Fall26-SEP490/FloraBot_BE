@@ -213,7 +213,10 @@ public static class MemberEndpoints
             {
                 var ticket = protection.CreateProtector("member-password-reset-v1").Protect(JsonSerializer.Serialize(new ResetTicket(user.Id, TokenService.CredentialVersion(user), DateTimeOffset.UtcNow.AddMinutes(20))));
                 var link = new Uri(baseUri, "/dat-lai-mat-khau").AbsoluteUri + "#token=" + Uri.EscapeDataString(ticket);
-                try { await sender.SendAsync(new(email, "Đặt lại mật khẩu FloraBot", $"Mở liên kết để đặt lại mật khẩu trong 20 phút: {link}\nNếu bạn không yêu cầu, hãy bỏ qua email này."), ct); }
+                var subject = "Đặt lại mật khẩu FloraBot";
+                var text = $"Mở liên kết để đặt lại mật khẩu trong 20 phút: {link}\nNếu bạn không yêu cầu, hãy bỏ qua email này.";
+                var html = EmailTemplates.PasswordReset(link, user.FullName);
+                try { await sender.SendAsync(new(email, subject, text, html), ct); }
                 catch (EmailUnavailableException) { return Results.Problem(statusCode: 503, detail: "Chưa xác nhận được email đã gửi. Hãy thử lại sau."); }
             }
             return Results.Ok(new { message = "Nếu email thuộc tài khoản thành viên, bạn sẽ nhận được liên kết đặt lại mật khẩu." });

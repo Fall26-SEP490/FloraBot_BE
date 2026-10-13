@@ -6,9 +6,12 @@ Thiết lập các biến môi trường backend trước khi khởi chạy:
 GOOGLE_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
 EMAIL_PROVIDER=GoogleSmtp
 EMAIL_SENDER=your-sender@gmail.com
+EMAIL_SENDER_NAME=FloraBot
 GOOGLE_SMTP_APP_PASSWORD=your-app-password
 MEMBER_WEB_URL=http://localhost:8088
 ```
+
+Biến `EMAIL_SENDER_NAME` dùng cấu hình tên hiển thị người gửi email (From display name), mặc định là `FloraBot`. Tên này được xác thực độ dài tối đa 100 ký tự và không chứa ký tự điều khiển (CRLF).
 
 Giữ credential trong file local ignored hoặc secret manager; không commit và không đưa SMTP password vào FE. GoogleSmtp chỉ hỗ trợ Development. Google Client ID công khai; FE lấy từ `/api/auth/config`. Luồng Google Identity Services hiện tại không cần Client Secret.
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -40,19 +41,21 @@ public sealed class TestRemoteIpStartupFilter : IStartupFilter
 
 public sealed class TestEmailSender : ITransactionalEmailSender
 {
-    public List<TransactionalEmail> SentEmails { get; } = [];
+    public ConcurrentQueue<TransactionalEmail> SentEmails { get; } = new();
     public bool ShouldFail { get; set; }
 
     public Task SendAsync(TransactionalEmail email, CancellationToken ct)
     {
         if (ShouldFail) throw new EmailUnavailableException();
-        SentEmails.Add(email);
+        SentEmails.Enqueue(email);
         return Task.CompletedTask;
     }
 
-    public string? ExtractLastCode()
+    public string? ExtractLastCode(string? recipient = null)
     {
-        var last = SentEmails.LastOrDefault();
+        var last = recipient is null
+            ? SentEmails.LastOrDefault()
+            : SentEmails.LastOrDefault(email => string.Equals(email.Recipient, recipient, StringComparison.OrdinalIgnoreCase));
         if (last is null) return null;
         var match = Regex.Match(last.Text, @"\b\d{6}\b");
         return match.Success ? match.Value : null;
@@ -125,7 +128,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         var resp = await client.PostAsJsonAsync("/api/auth/register", new MemberRegistration(fullName, email, password));
         resp.EnsureSuccessStatusCode();
         var challenge = await resp.Content.ReadFromJsonAsync<RegistrationChallengeResponse>();
-        var code = EmailSender.ExtractLastCode()!;
+        var code = EmailSender.ExtractLastCode(email)!;
         return (challenge!.ChallengeId, code);
     }
 

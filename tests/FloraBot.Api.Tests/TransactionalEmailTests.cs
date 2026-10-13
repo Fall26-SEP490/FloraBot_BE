@@ -8,14 +8,18 @@ namespace FloraBot.Api.Tests;
 public sealed class TransactionalEmailTests
 {
     private static readonly TransactionalEmail Message = new("shop@example.test", "FloraBot: shop đã được duyệt", "Chào bạn, shop đã được duyệt. Thanh toán gói là bước riêng.");
-    private static EmailSettings Settings(string provider = "Brevo", string sender = "sender@example.test", string credential = "fake-key", bool development = true) =>
-        EmailSettings.Load(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+    private static EmailSettings Settings(string provider = "Brevo", string sender = "sender@example.test", string credential = "fake-key", bool development = true, string? senderName = null)
+    {
+        var dict = new Dictionary<string, string?>
         {
             ["EMAIL_PROVIDER"] = provider,
             ["EMAIL_SENDER"] = sender,
             ["BREVO_API_KEY"] = credential,
             ["GOOGLE_SMTP_APP_PASSWORD"] = credential
-        }).Build(), development);
+        };
+        if (senderName != null) dict["EMAIL_SENDER_NAME"] = senderName;
+        return EmailSettings.Load(new ConfigurationBuilder().AddInMemoryCollection(dict).Build(), development);
+    }
 
     [Fact]
     public async Task BrevoUsesSingleRecipientPlainTextAndRequiresAcceptance()
@@ -75,7 +79,9 @@ public sealed class TransactionalEmailTests
             Message with { Subject = "Subject\r\nBcc: other@example.test" },
             Message with { Subject = new string('a', 201) },
             Message with { Text = "" },
-            Message with { Text = new string('ớ', 12000) }
+            Message with { Text = new string('ớ', 12000) },
+            Message with { Html = "   " },
+            Message with { Html = new string('a', 65 * 1024) }
         }) await Assert.ThrowsAsync<ArgumentException>(() => sender.SendAsync(message, default));
         await Assert.ThrowsAsync<EmailUnavailableException>(() => new TransactionalEmailSender(client, Settings("Disabled", "", "")).SendAsync(Message, default));
         Assert.Equal(0, handler.Calls);
@@ -97,6 +103,26 @@ public sealed class TransactionalEmailTests
     {
         Assert.Equal(EmailProvider.Disabled, EmailSettings.Load(new ConfigurationBuilder().Build(), false).Provider);
         Assert.Equal(EmailProvider.GoogleSmtp, Settings("GoogleSmtp").Provider);
+    }
+
+    [Theory]
+    [InlineData("FloraBot\r\nBcc: evil@test.com")]
+    [InlineData("FloraBot\ninjection")]
+    [InlineData("FloraBot\0null")]
+    [InlineData("   ")]
+    public void InvalidSenderNameFailsImmediately(string senderName) =>
+        Assert.Throws<InvalidOperationException>(() => Settings(senderName: senderName));
+
+    [Fact]
+    public void SenderNameLengthOver100FailsImmediately() =>
+        Assert.Throws<InvalidOperationException>(() => Settings(senderName: new string('A', 101)));
+
+    [Fact]
+    public void ValidSenderNameIsPreservedAndDefaultsToFloraBot()
+    {
+        Assert.Equal("FloraBot", Settings().SenderName);
+        Assert.Equal("FloraBot Support", Settings(senderName: "FloraBot Support").SenderName);
+        Assert.Equal("FloraBot", Settings(senderName: "").SenderName);
     }
 
     [Fact]
@@ -121,10 +147,11 @@ public sealed class TransactionalEmailTests
             Assert.Equal("fake-key", Assert.Single(request.Headers.GetValues("api-key")));
             using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
             Assert.Equal("sender@example.test", json.RootElement.GetProperty("sender").GetProperty("email").GetString());
+            Assert.Equal("FloraBot", json.RootElement.GetProperty("sender").GetProperty("name").GetString());
             Assert.Equal(Message.Recipient, Assert.Single(json.RootElement.GetProperty("to").EnumerateArray()).GetProperty("email").GetString());
             Assert.Equal(Message.Subject, json.RootElement.GetProperty("subject").GetString());
             Assert.Equal(Message.Text, json.RootElement.GetProperty("textContent").GetString());
-            Assert.False(json.RootElement.TryGetProperty("htmlContent", out _));
+            Assert.True(json.RootElement.TryGetProperty("htmlContent", out var html) && !string.IsNullOrWhiteSpace(html.GetString()));
             if (mode == "network") throw new HttpRequestException("sensitive");
             if (mode == "timeout") throw new OperationCanceledException("sensitive");
             return new HttpResponseMessage((HttpStatusCode)status)

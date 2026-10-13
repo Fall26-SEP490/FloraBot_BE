@@ -78,10 +78,11 @@ public sealed class RegistrationOtpService(
         var code = RandomNumberGenerator.GetInt32(0, 1000000).ToString("D6");
         var subject = "Mã xác thực đăng ký tài khoản FloraBot";
         var text = $"Mã xác thực của bạn là: {code}\nMã có hiệu lực trong 10 phút. Không chia sẻ mã này với bất kỳ ai.";
+        var html = EmailTemplates.RegistrationOtp(code, fullName);
 
         try
         {
-            await emailSender.SendAsync(new TransactionalEmail(normalizedEmail, subject, text), ct);
+            await emailSender.SendAsync(new TransactionalEmail(normalizedEmail, subject, text, html), ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

@@ -12,6 +12,7 @@ public sealed class EmailSettings
 {
     public EmailProvider Provider { get; private init; }
     public string Sender { get; private init; } = "";
+    public string SenderName { get; private init; } = "FloraBot";
     public string Credential { get; private init; } = "";
 
     public static EmailSettings Load(IConfiguration configuration, bool development)
@@ -29,7 +30,21 @@ public sealed class EmailSettings
         var credential = configuration[key];
         if (string.IsNullOrWhiteSpace(credential) || credential.Any(char.IsControl))
             throw new InvalidOperationException($"{key} is required and must not contain control characters.");
-        return new() { Provider = selected, Sender = sender, Credential = credential };
+
+        var configuredSenderName = configuration["EMAIL_SENDER_NAME"];
+        string senderName;
+        if (string.IsNullOrEmpty(configuredSenderName))
+        {
+            senderName = "FloraBot";
+        }
+        else
+        {
+            if (configuredSenderName.Length > 100 || configuredSenderName.Any(char.IsControl) || string.IsNullOrWhiteSpace(configuredSenderName))
+                throw new InvalidOperationException("EMAIL_SENDER_NAME must not contain control characters, whitespace-only, or exceed 100 characters.");
+            senderName = configuredSenderName.Trim();
+        }
+
+        return new() { Provider = selected, Sender = sender, SenderName = senderName, Credential = credential };
     }
 
     internal static bool IsAddress(string address) => address.Length is > 0 and <= 254 &&
@@ -37,7 +52,7 @@ public sealed class EmailSettings
         parsed.DisplayName.Length == 0 && parsed.Address == address && parsed.Host.Contains('.');
 }
 
-public sealed record TransactionalEmail(string Recipient, string Subject, string Text);
+public sealed record TransactionalEmail(string Recipient, string Subject, string Text, string? Html = null);
 
 public sealed class EmailUnavailableException : Exception
 {
@@ -52,15 +67,35 @@ public interface ITransactionalEmailSender
 // Acceptance by a provider is not proof of inbox delivery. No automatic send retries here.
 public sealed class TransactionalEmailSender(HttpClient client, EmailSettings settings) : ITransactionalEmailSender
 {
+    public static MailMessage CreateMailMessage(TransactionalEmail email, EmailSettings settings)
+    {
+        var html = !string.IsNullOrWhiteSpace(email.Html) ? email.Html : EmailTemplates.CreateDefaultHtml(email.Subject, email.Text);
+        var from = new MailAddress(settings.Sender, settings.SenderName, Encoding.UTF8);
+        var to = new MailAddress(email.Recipient);
+        var message = new MailMessage(from, to)
+        {
+            Subject = email.Subject,
+            SubjectEncoding = Encoding.UTF8,
+            Body = email.Text,
+            BodyEncoding = Encoding.UTF8,
+            IsBodyHtml = false
+        };
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(email.Text, Encoding.UTF8, "text/plain"));
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(html, Encoding.UTF8, "text/html"));
+        return message;
+    }
+
     public async Task SendAsync(TransactionalEmail email, CancellationToken ct)
     {
         if (!EmailSettings.IsAddress(email.Recipient) || string.IsNullOrWhiteSpace(email.Subject) ||
             email.Subject.Length > 200 || email.Subject.Any(char.IsControl) ||
-            string.IsNullOrWhiteSpace(email.Text) || Encoding.UTF8.GetByteCount(email.Text) > 32 * 1024)
+            string.IsNullOrWhiteSpace(email.Text) || Encoding.UTF8.GetByteCount(email.Text) > 32 * 1024 ||
+            (email.Html != null && (string.IsNullOrWhiteSpace(email.Html) || Encoding.UTF8.GetByteCount(email.Html) > 64 * 1024)))
             throw new ArgumentException("Email requires one recipient, a plain subject and at most 32 KiB of text.", nameof(email));
         if (settings.Provider == EmailProvider.Disabled) throw new EmailUnavailableException();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        var html = !string.IsNullOrWhiteSpace(email.Html) ? email.Html : EmailTemplates.CreateDefaultHtml(email.Subject, email.Text);
         try
         {
             if (settings.Provider == EmailProvider.GoogleSmtp)
@@ -71,12 +106,7 @@ public sealed class TransactionalEmailSender(HttpClient client, EmailSettings se
                     UseDefaultCredentials = false,
                     Credentials = new NetworkCredential(settings.Sender, settings.Credential)
                 };
-                using var message = new MailMessage(settings.Sender, email.Recipient, email.Subject, email.Text)
-                {
-                    IsBodyHtml = false,
-                    SubjectEncoding = Encoding.UTF8,
-                    BodyEncoding = Encoding.UTF8
-                };
+                using var message = CreateMailMessage(email, settings);
                 await smtp.SendMailAsync(message, deadline.Token);
                 return;
             }
@@ -85,10 +115,11 @@ public sealed class TransactionalEmailSender(HttpClient client, EmailSettings se
             request.Headers.Add("api-key", settings.Credential);
             request.Content = JsonContent.Create(new
             {
-                sender = new { email = settings.Sender, name = "FloraBot" },
+                sender = new { email = settings.Sender, name = settings.SenderName },
                 to = new[] { new { email = email.Recipient } },
                 subject = email.Subject,
-                textContent = email.Text
+                textContent = email.Text,
+                htmlContent = html
             });
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             if (response.StatusCode != HttpStatusCode.Created || response.Content.Headers.ContentLength > 8192)
