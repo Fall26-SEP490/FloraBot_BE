@@ -40,12 +40,13 @@ public sealed class MemberTests(ApiFactory factory) : IClassFixture<ApiFactory>
         const string password = "Member-test-password-2026";
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Member", email, password, role = "ADMIN" })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Member", email, password = "short" })).StatusCode);
-        var registered = await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Member test", email, password });
-        registered.EnsureSuccessStatusCode();
-        var session = await registered.Content.ReadFromJsonAsync<SessionResponse>();
+        var (challengeId, code) = await factory.RegisterAsync(client, "Member test", email, password);
+        var verified = await client.PostAsJsonAsync("/api/auth/register/verify", new VerifyRegistrationRequest(challengeId, code));
+        verified.EnsureSuccessStatusCode();
+        var session = await verified.Content.ReadFromJsonAsync<SessionResponse>();
         Assert.Equal("CUSTOMER", session!.Role);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Member test", email = email.ToUpperInvariant(), password })).StatusCode);
-        var cookie = registered.Headers.GetValues("Set-Cookie").Single(x => x.StartsWith("florabot_access=")).Split(';')[0];
+        var cookie = verified.Headers.GetValues("Set-Cookie").Single(x => x.StartsWith("florabot_access=")).Split(';')[0];
         client.DefaultRequestHeaders.Add("Cookie", cookie);
         client.DefaultRequestHeaders.Add("Origin", "http://127.0.0.1:5173");
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/admin/preorders")).StatusCode);
@@ -68,7 +69,7 @@ public sealed class MemberTests(ApiFactory factory) : IClassFixture<ApiFactory>
         using var app = factory.WithWebHostBuilder(_ => { });
         using var client = app.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
         var email = $"reset-{Guid.NewGuid():N}@example.invalid";
-        var registered = await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Reset test", email, password = "Initial-test-password" });
+        var registered = await factory.RegisterAndVerifyAsync(client, "Reset test", email, "Initial-test-password");
         registered.EnsureSuccessStatusCode();
         using var scope = app.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();

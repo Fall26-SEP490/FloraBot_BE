@@ -249,6 +249,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
                 services.PostConfigure<CapOptions>(options => options.DefaultGroupName = schema);
                 services.PostConfigure<RabbitMQOptions>(options => options.ExchangeName = schema);
                 services.AddHttpClient<TransactionalEmailSender>().ConfigurePrimaryHttpMessageHandler(() => handler);
+                services.AddTransient<ITransactionalEmailSender>(sp => sp.GetRequiredService<TransactionalEmailSender>());
             });
         });
         using var client = isolated.CreateClient();

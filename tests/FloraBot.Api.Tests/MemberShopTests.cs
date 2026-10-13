@@ -40,7 +40,7 @@ public sealed class MemberShopTests
         await using var app = new ApiFactory();
         using var client = app.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
         var email = $"onboarding-{Guid.NewGuid():N}@example.invalid";
-        var registration = await client.PostAsJsonAsync("/api/auth/register", new { fullName = "Future shop owner", email, password = "Member-shop-password-2026" });
+        var registration = await app.RegisterAndVerifyAsync(client, "Future shop owner", email, "Member-shop-password-2026");
         registration.EnsureSuccessStatusCode();
         var original = (await registration.Content.ReadFromJsonAsync<SessionResponse>())!;
         void UseCookie(HttpResponseMessage response)

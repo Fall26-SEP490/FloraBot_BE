@@ -12,10 +12,10 @@ public sealed class TokenService(IConfiguration configuration, IConnectionMultip
 {
     public const string Issuer = "FloraBot";
     public static string CredentialVersion(User user) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(user.PasswordHash ?? "")));
-    public string Issue(User user, string? sellerStatus = null, string? kioskId = null, DateTime? expires = null)
+    public string Issue(User user, string? sellerStatus = null, string? kioskId = null, DateTime? expires = null, bool bindCredentialVersion = false)
     {
         var claims = new List<Claim> { new("sub", user.Id.ToString()), new("role", user.Role), new("name", user.FullName) };
-        if (user.PasswordHash is not null) claims.Add(new("credential_version", CredentialVersion(user)));
+        if (user.PasswordHash is not null || bindCredentialVersion) claims.Add(new("credential_version", CredentialVersion(user)));
         if (user.SellerId is not null) { claims.Add(new("seller_id", user.SellerId.ToString()!)); claims.Add(new("seller_status", sellerStatus ?? "PENDING")); }
         if (kioskId is not null) claims.Add(new("kiosk_id", kioskId));
         var credentials = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(configuration["JWT_SIGNING_KEY"]!)), SecurityAlgorithms.HmacSha256);

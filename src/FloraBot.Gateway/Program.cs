@@ -83,7 +83,10 @@ public class GatewayProgram
         {
             http.Response.Headers["X-Content-Type-Options"] = "nosniff";
             http.Response.Headers["Referrer-Policy"] = "no-referrer";
-            var renewsSession = http.Request.Path.Value is "/api/auth/login" or "/api/auth/admin/login" or "/api/auth/refresh" or "/api/auth/logout";
+            var renewsSession = http.Request.Path.Value is
+                "/api/auth/login" or "/api/auth/admin/login" or "/api/auth/refresh" or "/api/auth/logout" or
+                "/api/auth/config" or "/api/auth/google" or "/api/auth/register" or "/api/auth/register/verify" or
+                "/api/auth/forgot-password" or "/api/auth/reset-password";
             var opensDocumentation = HttpMethods.IsGet(http.Request.Method) &&
                 string.Equals(http.Request.Path.Value?.TrimEnd('/'), "/openapi", StringComparison.OrdinalIgnoreCase);
             var hasSession = http.Request.Headers.ContainsKey("Authorization") ||

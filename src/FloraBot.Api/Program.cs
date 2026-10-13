@@ -83,6 +83,7 @@ builder.Services.AddScoped(sp =>
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(builder.Configuration["VALKEY_URL"] ?? "localhost:56379"));
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<OtpService>();
+builder.Services.AddScoped<RegistrationOtpService>();
 builder.Services.AddSingleton<IAuthorizationHandler, SameSellerHandler>();
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, TenantAuthorizationResultHandler>();
 builder.Services.AddHttpClient("sms", client => client.Timeout = TimeSpan.FromSeconds(5));
@@ -93,6 +94,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(EmailSettings.Load(builder.Configuration, builder.Environment.IsDevelopment()));
 builder.Services.AddHttpClient<TransactionalEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddTransient<ITransactionalEmailSender>(sp => sp.GetRequiredService<TransactionalEmailSender>());
+builder.Services.AddSingleton<IGoogleIdentityValidator, GoogleIdentityValidator>();
 builder.Services.AddHttpClient<CloudinaryMedia>(client => client.Timeout = TimeSpan.FromSeconds(30))
     .RemoveAllLoggers()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -239,6 +242,7 @@ if (app.Environment.IsDevelopment())
 else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
+
 app.MapMembers();
 app.MapWebOrders();
 app.MapWebPaymentLinks();

@@ -22,7 +22,10 @@
     reverse_proxy next-web:3000
   }
   @portal path /login /admin /admin/* /seller /seller/* /receipt /dang-nhap /dang-ky /quen-mat-khau /dat-lai-mat-khau /tai-khoan /dat-hoa
+  @googleAuth path /dang-nhap /dang-ky
   handle @portal {
+    header @googleAuth Referrer-Policy no-referrer-when-downgrade
+    header @googleAuth Cross-Origin-Opener-Policy same-origin-allow-popups
     reverse_proxy next-web:3000
   }
 

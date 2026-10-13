@@ -165,10 +165,10 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["TECHNICIAN", "SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/transition");
         Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/stock");
         Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/stock");
-        Add([], "POST", "/api/auth/register", "/api/auth/forgot-password", "/api/auth/reset-password");
+        Add([], "POST", "/api/auth/register", "/api/auth/register/verify", "/api/auth/google", "/api/auth/forgot-password", "/api/auth/reset-password");
         Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
-        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop");
+        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
@@ -180,7 +180,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "POST", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
-        Add([], "GET", "/health", "/api/packages", "/api/kiosks");
+        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config");
         Add([], "POST", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
         Add(["ADMIN"], "GET", "/openapi/{documentName}.json",
             "/api/admin/sellers", "/api/admin/slots",

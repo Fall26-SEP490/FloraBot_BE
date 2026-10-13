@@ -44,8 +44,13 @@ public sealed class EmailUnavailableException : Exception
     public EmailUnavailableException() : base("Transactional email was not confirmed as accepted. Reconcile before retrying.") { }
 }
 
+public interface ITransactionalEmailSender
+{
+    Task SendAsync(TransactionalEmail email, CancellationToken ct);
+}
+
 // Acceptance by a provider is not proof of inbox delivery. No automatic send retries here.
-public sealed class TransactionalEmailSender(HttpClient client, EmailSettings settings)
+public sealed class TransactionalEmailSender(HttpClient client, EmailSettings settings) : ITransactionalEmailSender
 {
     public async Task SendAsync(TransactionalEmail email, CancellationToken ct)
     {

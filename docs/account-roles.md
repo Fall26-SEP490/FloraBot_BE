@@ -198,3 +198,11 @@ ID thao tác được giữ trong sessionStorage khi chưa xác nhận được 
 cùng ID và nội dung trả kết quả cũ, kể cả sau khi Admin duyệt; đổi nội dung trả
 409. Sau bàn giao, người phụ trách cũ không còn quyền thực hiện hoặc khôi phục
 qua endpoint này. Trạng thái triển khai và kết quả kiểm thử ghi tại tracker.
+
+### Xác thực tài khoản Google và OTP đăng ký
+
+- `GET /api/auth/config`: Cung cấp cấu hình công khai `{ googleClientId, googleEnabled, registrationEmailEnabled }`.
+- `POST /api/auth/register`: Bắt đầu xác thực email cho `{ fullName, email, password }`, tạo mã OTP 6 chữ số ngẫu nhiên mật mã học, lưu HMAC và băm bcrypt mật khẩu trong Valkey (hạn 10 phút, cooldown gửi lại 60 giây, khóa sau 5 lần nhập sai). Trả về `{ challengeId, expiresInSeconds: 600, resendAfterSeconds: 60, message }`.
+- `POST /api/auth/register/verify`: Xác thực `{ challengeId, code }`, tạo tài khoản `CUSTOMER` trong cơ sở dữ liệu và cấp cookie phiên (`florabot_access`, `florabot_refresh`).
+- `POST /api/auth/google`: Xác thực Google ID Token bằng `GoogleJsonWebSignature`. Tài khoản mới được gán vai trò `CUSTOMER` và lưu liên kết danh tính ngoại vi (migration 022 `identity.external_identities`). Tài khoản `SELLER` giữ nguyên vai trò. Các tài khoản quản trị/nhân viên (`ADMIN`, `OPERATIONS_MANAGER`, `TECHNICIAN`, `SELLER_STAFF`, `STAFF`) bị từ chối (403). Email đã tồn tại chưa liên kết trả về 409.
+- `POST /api/member/google/link`: Cho phép tài khoản `CUSTOMER`/`SELLER` đã đăng nhập liên kết rõ ràng với Google (email phải trùng khớp và không đổi vai trò).

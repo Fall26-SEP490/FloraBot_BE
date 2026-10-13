@@ -6,7 +6,7 @@ using StackExchange.Redis;
 namespace FloraBot.Api.Modules.Notify;
 
 // Best-effort duplicate suppression, not exactly-once delivery across provider/Valkey failures.
-public sealed class EmailDelivery(IConnectionMultiplexer redis, NpgsqlDataSource data, TransactionalEmailSender sender)
+public sealed class EmailDelivery(IConnectionMultiplexer redis, NpgsqlDataSource data, ITransactionalEmailSender sender)
 {
     private const string Release = "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end";
 
