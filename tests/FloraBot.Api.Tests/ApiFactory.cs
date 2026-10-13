@@ -23,7 +23,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             ["PAYOS_CHECKSUM_KEY"] = "test-only-checksum-key",
             ["JOBS_ENABLED"] = "false",
             ["MQTT_ENABLED"] = "false",
-            ["EMAIL_PROVIDER"] = "Disabled"
+            ["EMAIL_PROVIDER"] = "Disabled",
+            ["ALLOW_TEST_AUTH"] = "true",
+            ["Authentication:Google:ClientId"] = "test-google-client-id"
         };
         foreach (var pair in settings) builder.UseSetting(pair.Key, pair.Value);
     }

@@ -1,3 +1,4 @@
+using Google.Apis.Auth;
 using System.Security.Claims;
 using FloraBot.Api.Data;
 using FloraBot.Api.Data.Entities;
@@ -6,12 +7,88 @@ using Microsoft.EntityFrameworkCore;
 namespace FloraBot.Api.Auth;
 
 public sealed record LoginRequest(string Email, string Password);
+public sealed record GoogleAuthRequest(string IdToken);
 public sealed record SessionResponse(Guid Id, string Name, string Role, Guid? SellerId, string? SellerStatus, DateOnly? PackageExpiresAt);
 
 public static class AuthEndpoints
 {
     public static void MapAuth(this WebApplication app)
     {
+        app.MapPost("/api/auth/google", async (GoogleAuthRequest request, FloraDbContext db, TokenService tokens, IConfiguration config, IHostEnvironment env, HttpContext http, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.IdToken)) return Results.BadRequest();
+
+            GoogleJsonWebSignature.Payload payload;
+            var clientId = config["Authentication:Google:ClientId"] ?? Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID");
+            var allowTestMock = env.IsEnvironment("Testing") && (config["ALLOW_TEST_AUTH"] == "true" || Environment.GetEnvironmentVariable("ALLOW_TEST_AUTH") == "true");
+
+            if (allowTestMock && request.IdToken.StartsWith("mock-google-token:"))
+            {
+                var parts = request.IdToken.Split(':');
+                payload = new GoogleJsonWebSignature.Payload
+                {
+                    Email = parts.Length > 1 ? parts[1] : "customer@test.com",
+                    Name = parts.Length > 2 ? parts[2] : "Test Customer",
+                    EmailVerified = true
+                };
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(clientId))
+                {
+                    return Results.Problem(statusCode: 500, detail: "Google Auth chưa được cấu hình Client ID.");
+                }
+
+                try
+                {
+                    var settings = new GoogleJsonWebSignature.ValidationSettings
+                    {
+                        Audience = [clientId]
+                    };
+                    payload = await GoogleJsonWebSignature.ValidateAsync(request.IdToken, settings);
+                }
+                catch (Exception)
+                {
+                    return Results.Unauthorized();
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(payload.Email) || !payload.EmailVerified)
+                return Results.BadRequest(new { error = "Email xác thực từ Google là bắt buộc." });
+
+            var email = payload.Email.Trim().ToLowerInvariant();
+            var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, ct);
+            if (user is null)
+            {
+                user = new User
+                {
+                    Id = Guid.CreateVersion7(),
+                    Email = email,
+                    FullName = !string.IsNullOrWhiteSpace(payload.Name) ? payload.Name.Trim() : email,
+                    Role = "CUSTOMER",
+                    Status = "ACTIVE",
+                    PasswordHash = null,
+                    LoyaltyPoints = 0,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                db.Users.Add(user);
+                await db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                // Bảo mật chống Account Takeover: Google Auth chỉ dành cho CUSTOMER và SELLER.
+                // Các tài khoản quản trị/vận hành (ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER_STAFF)
+                // bắt buộc phải đăng nhập qua cổng phân quyền nội bộ với mật khẩu.
+                if (user.Role is not ("CUSTOMER" or "SELLER"))
+                    return Results.StatusCode(403);
+
+                if (user.Status != "ACTIVE") return Results.Unauthorized();
+            }
+
+            return await SignIn(user, db, tokens, http);
+        }).AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
+
         app.MapPost("/api/auth/login", (LoginRequest request, FloraDbContext db, TokenService tokens, HttpContext http) =>
             Login(request, db, tokens, http, ["CUSTOMER", "SELLER", "SELLER_STAFF"]))
             .AllowAnonymous().RequireRateLimiting("auth").WithTags("Auth").Produces<SessionResponse>();
