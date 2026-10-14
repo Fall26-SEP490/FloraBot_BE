@@ -10,6 +10,12 @@ FROM identity.users
 GROUP BY role, status
 ORDER BY role;
 
+\echo '=== 1b. OPTIONAL TEAM DEMO ACCOUNTS (df000000-*) ==='
+SELECT id, email, role, status, full_name, (seller_id IS NOT NULL) AS has_seller, (password_hash IS NOT NULL) AS has_password
+FROM identity.users
+WHERE id::text LIKE 'df000000-%'
+ORDER BY id;
+
 \echo '=== 2. DEMO KIOSK (SIMULATED - NO HARDWARE) ==='
 SELECT id, code, name, status, hardware_id, (last_heartbeat_at IS NULL) AS truthful_no_heartbeat, (api_key_hash IS NOT NULL) AS has_api_key_hash
 FROM kiosk_ops.kiosks

@@ -77,6 +77,13 @@ DECLARE
   v_key_hash text;
   v_opt_in boolean := false;
   v_reset_state boolean := false;
+  v_team_mode boolean := false;
+  v_team_admin_id uuid := 'df000000-0000-0000-0000-000000000001'::uuid;
+  v_team_mgr_id uuid := 'df000000-0000-0000-0000-000000000002'::uuid;
+  v_team_tech_id uuid := 'df000000-0000-0000-0000-000000000003'::uuid;
+  v_team_seller_id uuid := 'df000000-0000-0000-0000-000000000004'::uuid;
+  v_team_staff_id uuid := 'df000000-0000-0000-0000-000000000005'::uuid;
+  v_team_customer_id uuid := 'df000000-0000-0000-0000-000000000006'::uuid;
 BEGIN
   -- 1. Read required device key hash from temp config table (fails closed)
   SELECT value INTO v_key_hash FROM demo_input_config WHERE key = 'device_api_key_hash';
@@ -90,34 +97,65 @@ BEGIN
   SELECT (value = 'true') INTO v_reset_state FROM demo_input_config WHERE key = 'reset_state';
   IF v_reset_state IS NULL THEN v_reset_state := false; END IF;
 
-  -- 2. Non-secret identity lookup (preferring known local test accounts)
-  SELECT id INTO v_admin_id FROM identity.users
-  WHERE role = 'ADMIN' AND status = 'ACTIVE'
-  ORDER BY (id = '01a135a0-f838-770d-97dd-a30e419f7d51'::uuid) DESC, id LIMIT 1;
+  SELECT (value = 'true') INTO v_team_mode FROM demo_input_config WHERE key = 'enable_team_accounts';
+  IF v_team_mode IS NULL THEN v_team_mode := false; END IF;
 
-  SELECT id INTO v_mgr_id FROM identity.users
-  WHERE role = 'OPERATIONS_MANAGER' AND status = 'ACTIVE'
-  ORDER BY (id = '01a1390e-10be-7da1-8748-48678b0065a9'::uuid) DESC, id LIMIT 1;
+  -- 2. Non-secret identity lookup
+  IF v_team_mode THEN
+    -- Team mode selects team account IDs preferentially and validates all six
+    SELECT id INTO v_admin_id FROM identity.users
+    WHERE id = v_team_admin_id AND role = 'ADMIN' AND status = 'ACTIVE';
 
-  SELECT id INTO v_tech_id FROM identity.users
-  WHERE role = 'TECHNICIAN' AND status = 'ACTIVE'
-  ORDER BY (id = '01a1390e-1174-7a25-8cd9-1edc73e2ff1f'::uuid) DESC, id LIMIT 1;
+    SELECT id INTO v_mgr_id FROM identity.users
+    WHERE id = v_team_mgr_id AND role = 'OPERATIONS_MANAGER' AND status = 'ACTIVE';
 
-  SELECT id INTO v_seller_user_id FROM identity.users
-  WHERE role = 'SELLER' AND seller_id = v_seller_id AND status = 'ACTIVE'
-  ORDER BY (id = '01a1390e-1241-7103-a2fe-61229b5e2046'::uuid) DESC, id LIMIT 1;
+    SELECT id INTO v_tech_id FROM identity.users
+    WHERE id = v_team_tech_id AND role = 'TECHNICIAN' AND status = 'ACTIVE';
 
-  SELECT id INTO v_staff_id FROM identity.users
-  WHERE role = 'SELLER_STAFF' AND seller_id = v_seller_id AND status = 'ACTIVE'
-  ORDER BY (id = '01a1390e-1301-78c6-a05c-8a9e1d97f225'::uuid) DESC, id LIMIT 1;
-  IF v_staff_id IS NULL THEN v_staff_id := v_seller_user_id; END IF;
+    SELECT id INTO v_seller_user_id FROM identity.users
+    WHERE id = v_team_seller_id AND role = 'SELLER' AND seller_id = v_seller_id AND status = 'ACTIVE';
 
-  SELECT id INTO v_customer_id FROM identity.users
-  WHERE role = 'CUSTOMER' AND status = 'ACTIVE'
-  ORDER BY (id = '01a135ad-4d12-771a-bbdd-0559a5018c5e'::uuid) DESC, id LIMIT 1;
+    SELECT id INTO v_staff_id FROM identity.users
+    WHERE id = v_team_staff_id AND role = 'SELLER_STAFF' AND seller_id = v_seller_id AND status = 'ACTIVE';
 
-  IF v_admin_id IS NULL OR v_seller_user_id IS NULL OR v_customer_id IS NULL THEN
-    RAISE EXCEPTION 'Missing fundamental active accounts in database (ADMIN, SELLER, CUSTOMER required)';
+    SELECT id INTO v_customer_id FROM identity.users
+    WHERE id = v_team_customer_id AND role = 'CUSTOMER' AND status = 'ACTIVE';
+
+    IF v_admin_id IS NULL OR v_mgr_id IS NULL OR v_tech_id IS NULL OR
+       v_seller_user_id IS NULL OR v_staff_id IS NULL OR v_customer_id IS NULL THEN
+      RAISE EXCEPTION 'Team mode requires all six active team accounts in namespace df000000-* (ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER)'
+        USING ERRCODE = '22023';
+    END IF;
+  ELSE
+    -- Default identity lookup (preferring known local test accounts) UNCHANGED
+    SELECT id INTO v_admin_id FROM identity.users
+    WHERE role = 'ADMIN' AND status = 'ACTIVE'
+    ORDER BY (id = '01a135a0-f838-770d-97dd-a30e419f7d51'::uuid) DESC, id LIMIT 1;
+
+    SELECT id INTO v_mgr_id FROM identity.users
+    WHERE role = 'OPERATIONS_MANAGER' AND status = 'ACTIVE'
+    ORDER BY (id = '01a1390e-10be-7da1-8748-48678b0065a9'::uuid) DESC, id LIMIT 1;
+
+    SELECT id INTO v_tech_id FROM identity.users
+    WHERE role = 'TECHNICIAN' AND status = 'ACTIVE'
+    ORDER BY (id = '01a1390e-1174-7a25-8cd9-1edc73e2ff1f'::uuid) DESC, id LIMIT 1;
+
+    SELECT id INTO v_seller_user_id FROM identity.users
+    WHERE role = 'SELLER' AND seller_id = v_seller_id AND status = 'ACTIVE'
+    ORDER BY (id = '01a1390e-1241-7103-a2fe-61229b5e2046'::uuid) DESC, id LIMIT 1;
+
+    SELECT id INTO v_staff_id FROM identity.users
+    WHERE role = 'SELLER_STAFF' AND seller_id = v_seller_id AND status = 'ACTIVE'
+    ORDER BY (id = '01a1390e-1301-78c6-a05c-8a9e1d97f225'::uuid) DESC, id LIMIT 1;
+    IF v_staff_id IS NULL THEN v_staff_id := v_seller_user_id; END IF;
+
+    SELECT id INTO v_customer_id FROM identity.users
+    WHERE role = 'CUSTOMER' AND status = 'ACTIVE'
+    ORDER BY (id = '01a135ad-4d12-771a-bbdd-0559a5018c5e'::uuid) DESC, id LIMIT 1;
+
+    IF v_admin_id IS NULL OR v_seller_user_id IS NULL OR v_customer_id IS NULL THEN
+      RAISE EXCEPTION 'Missing fundamental active accounts in database (ADMIN, SELLER, CUSTOMER required)';
+    END IF;
   END IF;
 
   -- 3. Create or update Simulated Kiosk Device (explicitly OFFLINE and no hardware)
