@@ -206,3 +206,9 @@ qua endpoint này. Trạng thái triển khai và kết quả kiểm thử ghi t
 - `POST /api/auth/register/verify`: Xác thực `{ challengeId, code }`, tạo tài khoản `CUSTOMER` trong cơ sở dữ liệu và cấp cookie phiên (`florabot_access`, `florabot_refresh`).
 - `POST /api/auth/google`: Xác thực Google ID Token bằng `GoogleJsonWebSignature`. Tài khoản mới được gán vai trò `CUSTOMER` và lưu liên kết danh tính ngoại vi (migration 022 `identity.external_identities`). Tài khoản `SELLER` giữ nguyên vai trò. Các tài khoản quản trị/nhân viên (`ADMIN`, `OPERATIONS_MANAGER`, `TECHNICIAN`, `SELLER_STAFF`, `STAFF`) bị từ chối (403). Email đã tồn tại chưa liên kết trả về 409.
 - `POST /api/member/google/link`: Cho phép tài khoản `CUSTOMER`/`SELLER` đã đăng nhập liên kết rõ ràng với Google (email phải trùng khớp và không đổi vai trò).
+
+## Account management hierarchy — 2026-10-14
+
+Admin creates/manages Operations Managers; Operations Managers create/manage Technicians. Customers register themselves and become Sellers only after the approved paid-package flow (that flow is a separate pending increment). Sellers create/manage Seller Staff belonging to their own seller_id.
+
+Seller staff account management uses GET `/api/sellers/{sellerId}/staff/accounts` for all statuses (ACTIVE, LOCKED, DISABLED), POST `/api/sellers/{sellerId}/staff`, and PATCH `/api/sellers/{sellerId}/staff/{staffId}/status`. These three routes require Seller and SameSeller authorization; Admin has no personnel mutation privilege here. The existing GET `/api/sellers/{sellerId}/staff` remains the active-only task-assignment picker. Manager/Technician account directories retain their existing platform-wide scope; regional technician ownership is not implemented by this increment.

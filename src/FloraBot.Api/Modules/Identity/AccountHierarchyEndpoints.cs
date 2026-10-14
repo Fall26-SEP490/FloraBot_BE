@@ -233,7 +233,18 @@ public static partial class AccountHierarchyEndpoints
             await audit.ExecuteNonQueryAsync(ct);
 
             return Results.Created($"/api/sellers/{sellerId}/staff/{staff.Id}", ToDirectoryItem(staff));
-        }).RequireAuthorization("Merchant", "SameSeller").RequireRateLimiting("auth").WithTags("Identity").Produces<AccountDirectoryItem>(201);
+        }).RequireAuthorization("Seller", "SameSeller").RequireRateLimiting("auth").WithTags("Identity").Produces<AccountDirectoryItem>(201);
+
+        app.MapGet("/api/sellers/{sellerId:guid}/staff/accounts", async (Guid sellerId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            var staff = await db.Users.AsNoTracking()
+                .Where(x => x.Role == "SELLER_STAFF" && x.SellerId == sellerId)
+                .OrderByDescending(x => x.CreatedAt)
+                .Select(x => new AccountDirectoryItem(x.Id, x.Email ?? "", x.FullName, x.Phone, x.Status, x.Role, x.CreatedAt))
+                .ToListAsync(ct);
+            return Results.Ok(staff);
+        }).RequireAuthorization("Seller", "SameSeller").WithTags("Identity").Produces<List<AccountDirectoryItem>>();
 
         app.MapPatch("/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status", async (Guid sellerId, Guid staffId, UpdateAccountStatusRequest request, FloraDbContext db, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
         {
@@ -257,7 +268,7 @@ public static partial class AccountHierarchyEndpoints
             await audit.ExecuteNonQueryAsync(ct);
 
             return Results.Ok(ToDirectoryItem(staff));
-        }).RequireAuthorization("Merchant", "SameSeller").WithTags("Identity").Produces<AccountDirectoryItem>();
+        }).RequireAuthorization("Seller", "SameSeller").WithTags("Identity").Produces<AccountDirectoryItem>();
     }
 
     private static IResult? ValidateAccountInput(CreateAccountRequest request)

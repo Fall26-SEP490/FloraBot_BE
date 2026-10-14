@@ -160,8 +160,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/technicians");
         Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/technicians/{id:guid}/status");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff", "/api/sellers/{sellerId:guid}/staff-delivery-scopes", "/api/sellers/{sellerId:guid}/staff-tasks");
-        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff");
-        Add(["ADMIN", "SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff/accounts");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff");
+        Add(["SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
         Add(["ADMIN"], "POST", "/api/admin/staff-tasks", "/api/admin/staff-tasks/{taskId:guid}/transition", "/api/admin/staff-tasks/{taskId:guid}/reassign");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/staff-tasks", "/api/operations/staff-tasks/{taskId:guid}/transition", "/api/operations/staff-tasks/{taskId:guid}/reassign");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff-tasks", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/transition", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign");
