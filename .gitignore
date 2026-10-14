@@ -10,3 +10,6 @@ artifacts/
 infra/secrets/
 **/.pio/
 firmware/esp32/include/config.local.h
+
+.vs/
+*.csproj.user

@@ -168,6 +168,7 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("SellerStaff", p => p.RequireRole("SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("PreorderCustomer", p => p.RequireRole("CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Kiosk", p => p.RequireRole("KIOSK"))
     .AddPolicy("Customer", p => p.RequireRole("CUSTOMER").RequireClaim("kiosk_id"))
     .AddPolicy("KioskMember", p => p.RequireRole("CUSTOMER", "SELLER").RequireClaim("kiosk_id"))
@@ -180,6 +181,9 @@ builder.Services.AddRateLimiter(options =>
     foreach (var name in new[] { "auth", "receipt" })
         options.AddPolicy(name, http => RateLimitPartition.GetFixedWindowLimiter(http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions { PermitLimit = name == "auth" ? 10 : 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("chat", http => RateLimitPartition.GetFixedWindowLimiter(
+        http.User.FindFirstValue("sub") ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 var origins = (builder.Configuration["ALLOWED_ORIGINS"] ?? (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing")
     ? "http://localhost:3010,http://localhost:4321,http://localhost:5173,http://localhost:5174,http://127.0.0.1:3010,http://127.0.0.1:4321,http://127.0.0.1:5173,http://127.0.0.1:5174"
@@ -246,6 +250,7 @@ app.MapAccountHierarchy();
 
 app.MapMembers();
 app.MapWebOrders();
+app.MapCustomerSellerChat();
 app.MapWebPaymentLinks();
 FloraBot.Api.ReadModels.WebCatalog.MapWebCatalog(app);
 app.MapOtp();

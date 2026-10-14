@@ -24,16 +24,16 @@ for (const [module, roles] of Object.entries(groups)) {
       if (!m) throw new Error(name + ': ' + s);
       return { name: m[1], type: m[2], optional: m[3] !== undefined };
     });
-    const injected = p => p.name === 'p_now' || actors.has(p.name) || (p.name === 'p_seller' && ['seller','sellerOnly'].includes(scope)) || (p.name === 'p_kiosk' && ['shopping','kiosk'].includes(scope)) || (p.name === 'p_customer' && ['shopping', 'customer'].includes(scope));
+    const injected = p => p.name === 'p_now' || actors.has(p.name) || (p.name === 'p_seller' && ['seller', 'sellerOnly'].includes(scope)) || (p.name === 'p_kiosk' && ['shopping', 'kiosk'].includes(scope)) || (p.name === 'p_customer' && ['shopping', 'customer'].includes(scope));
     const exposed = params.filter(p => !injected(p));
     const typeName = name.split('_').map(s => s[0].toUpperCase() + s.slice(1)).join('') + 'Request';
     code += `public sealed record ${typeName}(\n${exposed.map(p => `    ${types[p.type]}${p.optional || p.name === 'p_statement' ? '?' : ''} ${p.name}${p.optional ? ' = null' : ''}`).join(',\n')});\n\n`;
-    const path = ['seller','sellerOnly'].includes(scope) ? '/sellers/{sellerId:guid}' : ['shopping','kiosk','customer'].includes(scope) ? '/kiosks/{kioskId:guid}' : scope === 'receipt' ? '/receipts' : '/admin';
-    const policy = { seller:'Merchant', sellerOnly:'Seller', admin:'Admin', shopping:'Shopping', kiosk:'Kiosk', customer:'Customer', receipt:null }[scope];
+    const path = ['seller', 'sellerOnly'].includes(scope) ? '/sellers/{sellerId:guid}' : ['shopping', 'kiosk', 'customer'].includes(scope) ? '/kiosks/{kioskId:guid}' : scope === 'receipt' ? '/receipts' : '/admin';
+    const policy = { seller: 'Merchant', sellerOnly: 'Seller', admin: 'Admin', shopping: 'Shopping', kiosk: 'Kiosk', customer: 'Customer', receipt: null }[scope];
     let authorization = ['seller', 'sellerOnly'].includes(scope) ? `.RequireAuthorization("${policy}", "SameSeller")` : policy ? `.RequireAuthorization("${policy}")` : '.AllowAnonymous().RequireRateLimiting("receipt")';
     if (name === 'ai_suggest') authorization += '.RequireRateLimiting("advisor")';
     const responseType = { reconcile_gateway: 'GatewayReconciliationResult', reconcile_daily: 'DailyReconciliationResult' }[name] || 'FlowResult';
-    routes += `        app.MapPost("/api${path}/flows/${name}", async (${typeName} input, HttpContext http, FlowExecutor executor, ${name === "ai_suggest" ? "AiAdvisor advisor, " : ""}CancellationToken ct) =>\n            ${name === "ai_suggest" ? "await advisor.SuggestAsync(input, http, executor, ct)" : `await executor.ExecuteAsync("${name}", "${scope}", JsonSerializer.SerializeToElement(input), http, ct)`})\n            .WithName("${name}").WithTags("${module}").Produces<${responseType}>()${authorization};\n`;
+    routes += `        app.MapPost("/api${path}/flows/${name}", async (${['seller', 'sellerOnly'].includes(scope) ? 'Guid sellerId, ' : ''}${typeName} input, HttpContext http, FlowExecutor executor, ${name === "ai_suggest" ? "AiAdvisor advisor, " : ""}CancellationToken ct) =>\n            ${name === "ai_suggest" ? "await advisor.SuggestAsync(input, http, executor, ct)" : `await executor.ExecuteAsync("${name}", "${scope}", JsonSerializer.SerializeToElement(input), http, ct)`})\n            .WithName("${name}").WithTags("${module}").Produces<${responseType}>()${authorization};\n`;
     const setReturning = ['TABLE', 'SETOF'].includes(signatures.get(name).returns);
     catalog.push({ name, module, scope, params, setReturning });
   }

@@ -62,16 +62,16 @@ public static class KioskOpsEndpoints
 {
     public static void MapKioskOps(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/release_slot", async (ReleaseSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/release_slot", async (Guid sellerId, ReleaseSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("release_slot", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("release_slot").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/stock_bouquet", async (StockBouquetRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/stock_bouquet", async (Guid sellerId, StockBouquetRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("stock_bouquet", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("stock_bouquet").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/return_to_seller", async (ReturnToSellerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/return_to_seller", async (Guid sellerId, ReturnToSellerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("return_to_seller", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("return_to_seller").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/report_device_fault", async (ReportDeviceFaultRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/report_device_fault", async (Guid sellerId, ReportDeviceFaultRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("report_device_fault", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("report_device_fault").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/admin/flows/assign_slot", async (AssignSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
