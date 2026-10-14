@@ -33,13 +33,13 @@ public static class IdentityEndpoints
 {
     public static void MapIdentity(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_seller_bank", async (SetSellerBankRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_seller_bank", async (Guid sellerId, SetSellerBankRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_seller_bank", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_seller_bank").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_seller_tone", async (SetSellerToneRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_seller_tone", async (Guid sellerId, SetSellerToneRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_seller_tone", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_seller_tone").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/subscribe", async (SubscribeRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/subscribe", async (Guid sellerId, SubscribeRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("subscribe", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("subscribe").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/admin/flows/approve_seller", async (ApproveSellerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>

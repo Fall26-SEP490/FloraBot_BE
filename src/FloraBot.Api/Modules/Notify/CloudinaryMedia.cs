@@ -54,6 +54,7 @@ public sealed class CloudinaryMedia(HttpClient client, IConfiguration configurat
         var timestamp = clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
         var publicId = $"{(authenticated ? "florabot-evidence" : "florabot")}/{Guid.NewGuid():N}";
         var deliveryType = authenticated ? "authenticated" : "upload";
+        var deliverySignature = authenticated ? "s--[A-Za-z0-9_-]{8}--/" : "";
         var signature = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"overwrite=false&public_id={publicId}&timestamp={timestamp}{(authenticated ? "&type=authenticated" : "")}{secret}")));
         using var form = new MultipartFormDataContent();
@@ -77,7 +78,7 @@ public sealed class CloudinaryMedia(HttpClient client, IConfiguration configurat
             !Uri.TryCreate(urlValue.GetString(), UriKind.Absolute, out var url) ||
             url.Scheme != "https" || url.Host != "res.cloudinary.com" || !url.IsDefaultPort ||
             url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0 ||
-            !Regex.IsMatch(url.AbsolutePath, $"^/{Regex.Escape(cloud)}/image/{deliveryType}/v[0-9]+/{Regex.Escape(publicId)}\\.(png|jpg|jpeg|webp)$"))
+            !Regex.IsMatch(url.AbsolutePath, $"^/{Regex.Escape(cloud)}/image/{deliveryType}/{deliverySignature}v[0-9]+/{Regex.Escape(publicId)}\\.(png|jpg|jpeg|webp)$"))
             throw new MediaUnavailableException();
 
         // Read only the original asset at the fixed CDN host; redirects are disabled in DI.
@@ -102,7 +103,7 @@ public sealed class CloudinaryMedia(HttpClient client, IConfiguration configurat
         var secret = configuration["CLOUDINARY_API_SECRET"];
         if (string.IsNullOrWhiteSpace(cloud) || !Regex.IsMatch(cloud, "^[a-zA-Z0-9_-]+$") ||
             string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(secret)) throw new MediaUnavailableException();
-        var match = Regex.Match(value, $"^https://res\\.cloudinary\\.com/{Regex.Escape(cloud)}/image/authenticated/v[0-9]+/(florabot-evidence/[a-f0-9]{{32}})\\.(png|jpg|jpeg|webp)$");
+        var match = Regex.Match(value, $"^https://res\\.cloudinary\\.com/{Regex.Escape(cloud)}/image/authenticated/(?:s--[A-Za-z0-9_-]{{8}}--/)?v[0-9]+/(florabot-evidence/[a-f0-9]{{32}})\\.(png|jpg|jpeg|webp)$");
         if (!match.Success) throw new MediaUnavailableException();
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
         var fields = new SortedDictionary<string, string>(StringComparer.Ordinal)

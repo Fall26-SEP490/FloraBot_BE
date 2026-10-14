@@ -48,7 +48,7 @@ public static class PaymentEndpoints
 {
     public static void MapPayment(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/request_withdrawal", async (RequestWithdrawalRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/request_withdrawal", async (Guid sellerId, RequestWithdrawalRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("request_withdrawal", "sellerOnly", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("request_withdrawal").WithTags("Payment").Produces<FlowResult>().RequireAuthorization("Seller", "SameSeller");
         app.MapPost("/api/admin/flows/approve_withdrawal", async (ApproveWithdrawalRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>

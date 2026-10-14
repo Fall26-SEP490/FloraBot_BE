@@ -25,16 +25,16 @@ public static class CatalogEndpoints
 {
     public static void MapCatalog(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_product_status", async (SetProductStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_product_status", async (Guid sellerId, SetProductStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_product_status", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_product_status").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/update_product_price", async (UpdateProductPriceRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/update_product_price", async (Guid sellerId, UpdateProductPriceRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("update_product_price", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("update_product_price").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/add_product_photo", async (AddProductPhotoRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/add_product_photo", async (Guid sellerId, AddProductPhotoRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("add_product_photo", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("add_product_photo").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/restock_accessory", async (RestockAccessoryRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/sellers/{sellerId:guid}/flows/restock_accessory", async (Guid sellerId, RestockAccessoryRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("restock_accessory", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("restock_accessory").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
     }
