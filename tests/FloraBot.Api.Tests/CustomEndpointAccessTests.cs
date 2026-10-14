@@ -174,7 +174,22 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/stock");
         Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/stock");
         Add([], "POST", "/api/auth/register", "/api/auth/register/verify", "/api/auth/google", "/api/auth/forgot-password", "/api/auth/reset-password");
-        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me", "/api/account/profile");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "PUT", "/api/account/profile");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "POST",
+            "/api/account/profile/bank/reveal",
+            "/api/account/contact-email",
+            "/api/account/contact-email/verify",
+            "/api/account/contact-email/reset");
+        Add(["CUSTOMER"], "POST", "/api/member/chats/open");
+        Add(["CUSTOMER"], "GET", "/api/member/chats");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/chats");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM"], "GET",
+            "/api/chats/{chatId:guid}/messages",
+            "/api/chats/{chatId:guid}/messages/{messageId:guid}/image");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM"], "POST",
+            "/api/chats/{chatId:guid}/messages",
+            "/api/chats/{chatId:guid}/images");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");

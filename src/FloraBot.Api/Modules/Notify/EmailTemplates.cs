@@ -188,4 +188,40 @@ public static class EmailTemplates
 
         return WrapLayout("Đặt lại mật khẩu FloraBot", bodyHtml, "Mở liên kết để đặt lại mật khẩu trong 20 phút");
     }
+
+    public static string ContactEmailOtp(string code, string? fullName = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        var trimmedCode = code.Trim();
+        var encodedCode = Encode(trimmedCode);
+        var encodedName = string.IsNullOrWhiteSpace(fullName) ? null : Encode(fullName.Trim());
+
+        var greeting = encodedName is not null
+            ? $"Xin chào <strong>{encodedName}</strong>,"
+            : "Xin chào bạn,";
+
+        var bodyHtml = $"""
+            <h2 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 700; color: #1B4332; line-height: 1.4;">Xác thực email liên hệ FloraBot</h2>
+            <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #374151;">{greeting}</p>
+            <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #374151;">Chúng tôi nhận được yêu cầu cập nhật email liên hệ cho tài khoản của bạn tại <strong>FloraBot</strong>. Dưới đây là mã xác thực của bạn:</p>
+
+            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 24px 0;">
+              <tr>
+                <td align="center">
+                  <div style="background-color: #F0FDF4; border: 2px dashed #2D6A4F; border-radius: 8px; padding: 18px 16px; display: inline-block;">
+                    <span style="font-family: 'Courier New', Courier, Consolas, monospace; font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #1B4332; line-height: 1.2; white-space: nowrap;">{encodedCode}</span>
+                  </div>
+                </td>
+              </tr>
+            </table>
+
+            <div style="background-color: #FEF9C3; border-left: 4px solid #CA8A04; padding: 12px 16px; margin: 20px 0; border-radius: 0 6px 6px 0; font-size: 14px; color: #713F12; line-height: 1.5;">
+              <strong>Lưu ý:</strong> Mã có hiệu lực trong 10 phút. Không chia sẻ mã này với bất kỳ ai.
+            </div>
+
+            <p style="margin: 20px 0 0 0; font-size: 14px; color: #6B7280; line-height: 1.5;">Nếu bạn không thực hiện yêu cầu này, vui lòng bỏ qua email.</p>
+            """;
+
+        return WrapLayout("Xác thực email liên hệ FloraBot", bodyHtml, $"Mã xác thực email liên hệ FloraBot của bạn là: {trimmedCode}");
+    }
 }

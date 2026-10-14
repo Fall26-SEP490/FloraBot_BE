@@ -54,6 +54,8 @@ public partial class FloraDbContext : DbContext
 
     public virtual DbSet<User> Users { get; set; }
 
+    public virtual DbSet<UserProfile> UserProfiles { get; set; }
+
     public virtual DbSet<VSellerBalance> VSellerBalances { get; set; }
 
     public virtual DbSet<WithdrawalRequest> WithdrawalRequests { get; set; }
@@ -810,6 +812,32 @@ public partial class FloraDbContext : DbContext
             entity.HasOne(d => d.Seller).WithMany(p => p.Users)
                 .HasForeignKey(d => d.SellerId)
                 .HasConstraintName("users_seller_id_fkey");
+        });
+
+        modelBuilder.Entity<UserProfile>(entity =>
+        {
+            entity.HasKey(e => e.UserId).HasName("user_profiles_pkey");
+
+            entity.ToTable("user_profiles", "identity");
+
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Address).HasColumnName("address");
+            entity.Property(e => e.ContactEmail).HasColumnName("contact_email");
+            entity.Property(e => e.ContactEmailVerifiedAt).HasColumnName("contact_email_verified_at");
+            entity.Property(e => e.BankName).HasColumnName("bank_name");
+            entity.Property(e => e.AccountHolder).HasColumnName("account_holder");
+            entity.Property(e => e.AccountEncrypted).HasColumnName("account_encrypted");
+            entity.Property(e => e.AccountLast4).HasColumnName("account_last4");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("app_now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("app_now()")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.User).WithOne(p => p.Profile)
+                .HasForeignKey<UserProfile>(d => d.UserId)
+                .HasConstraintName("user_profiles_user_id_fkey");
         });
 
         modelBuilder.Entity<VSellerBalance>(entity =>

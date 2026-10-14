@@ -28,4 +28,6 @@ public partial class User
     public DateTime UpdatedAt { get; set; }
 
     public virtual Seller? Seller { get; set; }
+
+    public virtual UserProfile? Profile { get; set; }
 }

@@ -54,7 +54,7 @@ public sealed class CloudinaryMedia(HttpClient client, IConfiguration configurat
         var timestamp = clock.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
         var publicId = $"{(authenticated ? "florabot-evidence" : "florabot")}/{Guid.NewGuid():N}";
         var deliveryType = authenticated ? "authenticated" : "upload";
-        var deliverySignature = authenticated ? "s--[A-Za-z0-9_-]{8}--/" : "";
+        var deliverySignature = authenticated ? "(?:s--[A-Za-z0-9_-]{8}--/)?" : "";
         var signature = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"overwrite=false&public_id={publicId}&timestamp={timestamp}{(authenticated ? "&type=authenticated" : "")}{secret}")));
         using var form = new MultipartFormDataContent();
