@@ -165,10 +165,12 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Staff", p => p.RequireRole("TECHNICIAN", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("StaffWorker", p => p.RequireRole("TECHNICIAN", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("OperationsManager", p => p.RequireRole("OPERATIONS_MANAGER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("OperationsManagerOrAdmin", p => p.RequireRole("OPERATIONS_MANAGER", "ADMIN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Technician", p => p.RequireRole("TECHNICIAN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("SellerStaff", p => p.RequireRole("SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("KioskReconcile", p => p.RequireRole("CUSTOMER", "SELLER", "ADMIN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("PreorderCustomer", p => p.RequireRole("CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Kiosk", p => p.RequireRole("KIOSK"))
     .AddPolicy("Customer", p => p.RequireRole("CUSTOMER").RequireClaim("kiosk_id"))
@@ -281,6 +283,8 @@ app.MapProductPhotos();
 app.MapProducts();
 PrivateEvidence.MapPrivateEvidence(app);
 app.MapRegistration();
+app.MapOnboardingPackages();
+app.MapKioskApplications();
 app.MapPayOs();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();

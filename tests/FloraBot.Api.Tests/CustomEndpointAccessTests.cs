@@ -206,7 +206,17 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "POST", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
-        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config");
+        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
+        Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/kiosk-applications/current");
+        Add(["CUSTOMER", "SELLER", "ADMIN"], "POST", "/api/member/kiosk-applications/{id:guid}/reconcile");
+        Add(["ADMIN", "OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-applications", "/api/operations/kiosk-applications/{id:guid}", "/api/operations/kiosk-applications/{id:guid}/evidence/{attachmentId:guid}");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-applications/{id:guid}/confirm", "/api/operations/kiosk-applications/{id:guid}/schedule", "/api/operations/kiosk-applications/{id:guid}/rework", "/api/operations/kiosk-applications/{id:guid}/handover", "/api/operations/kiosk-applications/{id:guid}/reject", "/api/operations/kiosk-applications/{id:guid}/platform-failure", "/api/operations/kiosks/enroll", "/api/operations/kiosks/{id:guid}/provision-key");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/eligible-kiosks");
+        Add(["TECHNICIAN"], "GET", "/api/staff/kiosk-installations", "/api/staff/kiosk-installations/{id:guid}", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/evidence/{attachmentId:guid}");
+        Add(["TECHNICIAN"], "POST", "/api/staff/kiosk-installations/{id:guid}/start", "/api/staff/kiosk-installations/{id:guid}/evidence/upload", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/submit");
+        Add(["ADMIN"], "GET", "/api/admin/kiosk-applications/refunds", "/api/admin/kiosk-applications/{id:guid}/refund/proof/{attachmentId:guid}");
+        Add(["ADMIN"], "POST", "/api/admin/kiosk-applications/{id:guid}/refund/approve", "/api/admin/kiosk-applications/{id:guid}/refund/confirm", "/api/admin/kiosk-applications/{id:guid}/refund/bank-details", "/api/admin/kiosk-applications/{id:guid}/refund/evidence/upload");
         Add([], "POST", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
         Add(["ADMIN"], "GET", "/openapi/{documentName}.json",
             "/api/admin/sellers", "/api/admin/slots",

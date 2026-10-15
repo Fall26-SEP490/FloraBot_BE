@@ -54,12 +54,32 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         return new(orderCode, amount, uri.AbsoluteUri);
     }
 
+    public async Task<JsonElement> GetPaymentRequestAsync(long orderCode, CancellationToken ct)
+    {
+        if (!IsConfigured || orderCode is <= 0 or > 9007199254740991) throw new PaymentGatewayException();
+        using var lookup = Request(HttpMethod.Get, "v2/payment-requests/" + orderCode.ToString(CultureInfo.InvariantCulture));
+        var envelope = await SendAsync(lookup, ct);
+        return VerifiedData(envelope);
+    }
+
     private string Callback(string key)
     {
-        var value = config[key]!;
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https" || !string.IsNullOrEmpty(uri.UserInfo))
+        var value = config[key];
+        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || !string.IsNullOrEmpty(uri.UserInfo))
             throw new PaymentGatewayException();
-        return value;
+        var allowDevLoopback = string.Equals(config["PAYOS_ALLOW_DEV_LOOPBACK"], "true", StringComparison.OrdinalIgnoreCase);
+        if (uri.Scheme == "https")
+            return value;
+        if (allowDevLoopback && uri.Scheme == "http" && IsLoopbackHost(uri.Host))
+            return value;
+        throw new PaymentGatewayException();
+    }
+
+    private static bool IsLoopbackHost(string host)
+    {
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip)) return true;
+        return false;
     }
 
     private HttpRequestMessage Request(HttpMethod method, string path)
