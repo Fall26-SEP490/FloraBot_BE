@@ -692,8 +692,8 @@ BEGIN
   -- Validate kiosk
   PERFORM pg_advisory_xact_lock(hashtextextended('kiosk-reserve:' || p_kiosk_id::text, 0));
   SELECT * INTO k FROM kiosk_ops.kiosks WHERE id = p_kiosk_id FOR UPDATE;
-  IF NOT FOUND OR k.status = 'DISABLED' THEN
-    RAISE EXCEPTION 'Kiosk không tồn tại hoặc đã bị vô hiệu hóa' USING ERRCODE = 'P0001';
+  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') THEN
+    RAISE EXCEPTION 'Kiosk không tồn tại, đã bị vô hiệu hóa hoặc đang bảo trì' USING ERRCODE = 'P0001';
   END IF;
 
   SELECT
@@ -987,8 +987,8 @@ BEGIN
   END IF;
 
   SELECT * INTO k FROM kiosk_ops.kiosks WHERE id = app.assigned_kiosk_id FOR UPDATE;
-  IF NOT FOUND OR k.status = 'DISABLED' THEN
-    RAISE EXCEPTION 'Kiosk không tồn tại hoặc đã bị vô hiệu hóa' USING ERRCODE = 'P0001';
+  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') THEN
+    RAISE EXCEPTION 'Kiosk không tồn tại, đã bị vô hiệu hóa hoặc đang bảo trì' USING ERRCODE = 'P0001';
   END IF;
 
   -- Check exact zone capacities against immutable snapshots

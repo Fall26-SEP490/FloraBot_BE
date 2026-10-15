@@ -1072,6 +1072,21 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         var confRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin"));
         confRes.EnsureSuccessStatusCode();
 
+        // FREE slots alone cannot make a kiosk under maintenance eligible.
+        await using var kioskState = source.CreateCommand("UPDATE kiosk_ops.kiosks SET status=@status WHERE id=@id");
+        kioskState.Parameters.AddWithValue("id", kiosk.Id);
+        kioskState.Parameters.AddWithValue("status", "MAINTENANCE");
+        await kioskState.ExecuteNonQueryAsync();
+        var eligibleResponse = await mgrClient.GetAsync($"/api/operations/eligible-kiosks?packageId={trialPkg.Id}");
+        eligibleResponse.EnsureSuccessStatusCode();
+        var eligible = (await eligibleResponse.Content.ReadFromJsonAsync<List<EligibleKioskResponse>>())!;
+        Assert.DoesNotContain(eligible, asset => asset.Id == kiosk.Id);
+        var maintenanceSchedule = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
+            techId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)), "09:00 - 12:00", kiosk.Id));
+        Assert.Equal(HttpStatusCode.Conflict, maintenanceSchedule.StatusCode);
+        kioskState.Parameters["status"].Value = "OFFLINE";
+        await kioskState.ExecuteNonQueryAsync();
+
         // Schedule
         var schedRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
             techId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)), "09:00 - 12:00", kiosk.Id
@@ -1092,6 +1107,17 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         // Submit report
         var subRes = await techClient.PostAsJsonAsync($"/api/staff/kiosk-installations/{app.Id}/submit", new SubmitInstallationReportRequest("Hoàn thành lắp đặt đầy đủ thiết bị và kiểm tra nguồn"));
         subRes.EnsureSuccessStatusCode();
+
+        // A device that enters maintenance after installation still cannot be
+        // handed over. A rejected handover must not promote or grant the lease.
+        kioskState.Parameters["status"].Value = "MAINTENANCE";
+        await kioskState.ExecuteNonQueryAsync();
+        var maintenanceHandover = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/handover", new { });
+        Assert.Equal(HttpStatusCode.Conflict, maintenanceHandover.StatusCode);
+        Assert.Null((await db.KioskApplications.AsNoTracking().SingleAsync(x => x.Id == app.Id)).SellerId);
+        Assert.Equal("CUSTOMER", (await db.Users.AsNoTracking().SingleAsync(x => x.Id == customerId)).Role);
+        kioskState.Parameters["status"].Value = "OFFLINE";
+        await kioskState.ExecuteNonQueryAsync();
 
         // Handover
         var handRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/handover", new { });

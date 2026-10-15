@@ -713,7 +713,7 @@ public static partial class KioskApplications
                 .ToListAsync(ct);
 
             var kiosks = await db.Kiosks.AsNoTracking()
-                .Where(x => x.Status != "DISABLED" && !reservedKioskIds.Contains(x.Id))
+                .Where(x => x.Status != "DISABLED" && x.Status != "MAINTENANCE" && !reservedKioskIds.Contains(x.Id))
                 .Select(x => new
                 {
                     x.Id,
