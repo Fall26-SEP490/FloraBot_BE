@@ -1,13 +1,13 @@
 -- =============================================================================
 -- FloraBot Local Demo: Team Accounts Seeding Logic (Bounded Namespace: df000000-*)
--- Scope: Local Demonstration and Visual Verification for 6 Team Roles only.
+-- Scope: Local Demonstration and Visual Verification for 7 Team Accounts (6 Authenticated Roles) only.
 -- Invocation: Included within same transaction before seed-demo-data.sql in seed-local-demo.ps1.
 -- Requires temporary input tables:
 --   - demo_input_config (key text PRIMARY KEY, value text NOT NULL)
 --   - demo_input_team_accounts (id uuid PRIMARY KEY, email text NOT NULL, role text NOT NULL,
 --                               full_name text NOT NULL, seller_id uuid, raw_password text NOT NULL)
 -- Safety Invariants:
---   - 6 reserved UUIDs in namespace df000000-*.
+--   - 7 reserved UUIDs in namespace df000000-* (2 ADMIN, 1 OPERATIONS_MANAGER, 1 TECHNICIAN, 1 SELLER, 1 SELLER_STAFF, 1 CUSTOMER).
 --   - Assigned to same baseline Hoa Sai Gon seller (20000000-0000-0000-0000-000000000001).
 --   - Passwords hashed with bcrypt cost 12 via pgcrypto crypt/gen_salt.
 --   - Never overwrite existing passwords, roles, or status on rerun.
@@ -20,6 +20,7 @@ DECLARE
   v_team_mode boolean := false;
   v_seller_id uuid := '20000000-0000-0000-0000-000000000001'::uuid;
   v_admin_id uuid := 'df000000-0000-0000-0000-000000000001'::uuid;
+  v_admin2_id uuid := 'df000000-0000-0000-0000-000000000007'::uuid;
   v_mgr_id uuid := 'df000000-0000-0000-0000-000000000002'::uuid;
   v_tech_id uuid := 'df000000-0000-0000-0000-000000000003'::uuid;
   v_seller_user_id uuid := 'df000000-0000-0000-0000-000000000004'::uuid;
@@ -66,7 +67,7 @@ BEGIN
       USING ERRCODE = '28000';
   END IF;
 
-  -- 4. Insert the six team accounts if not already present.
+  -- 4. Insert the seven team accounts if not already present.
   -- ON CONFLICT (id) DO NOTHING ensures we NEVER overwrite existing passwords, roles, or status.
   INSERT INTO identity.users (
     id, email, phone, password_hash, full_name, role, seller_id, status, loyalty_points, created_at, updated_at
@@ -86,14 +87,15 @@ BEGIN
   FROM demo_input_team_accounts a
   ON CONFLICT (id) DO NOTHING;
 
-  -- 5. Verify all six accounts exist and are ACTIVE in identity.users
+  -- 5. Verify all seven accounts exist and are ACTIVE in identity.users
   IF NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_admin_id AND role = 'ADMIN' AND status = 'ACTIVE') OR
+     NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_admin2_id AND role = 'ADMIN' AND status = 'ACTIVE') OR
      NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_mgr_id AND role = 'OPERATIONS_MANAGER' AND status = 'ACTIVE') OR
      NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_tech_id AND role = 'TECHNICIAN' AND status = 'ACTIVE') OR
      NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_seller_user_id AND role = 'SELLER' AND seller_id = v_seller_id AND status = 'ACTIVE') OR
      NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_staff_id AND role = 'SELLER_STAFF' AND seller_id = v_seller_id AND status = 'ACTIVE') OR
      NOT EXISTS (SELECT 1 FROM identity.users WHERE id = v_customer_id AND role = 'CUSTOMER' AND status = 'ACTIVE') THEN
-    RAISE EXCEPTION 'Team accounts insertion failed: all six accounts must be active in identity.users.'
+    RAISE EXCEPTION 'Team accounts insertion failed: all seven accounts must be active in identity.users.'
       USING ERRCODE = '22023';
   END IF;
 

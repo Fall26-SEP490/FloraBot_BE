@@ -20,7 +20,7 @@
     Private local output file for generated team accounts credentials.
     Default: 'C:/Users/tamin/.config/florabot/ui-demo-accounts.local.json'.
 .PARAMETER CreateTeamAccounts
-    Opt-in switch: creates 6 local test accounts (ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER)
+    Opt-in switch: creates 7 local test accounts (2 ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER across 6 roles)
     in reserved namespace 'df000000-*' with random passwords. Reuses existing fixture if present.
 .PARAMETER IncludePendingSubscription
     Include an unpaid subscription example. Never activates the seller or grants entitlement.
@@ -65,10 +65,11 @@ try {
 
     $validDb = ($Database -eq 'florabot') -or
                ($Database -eq 'florabot_ui_seed_verify_20261014') -or
+               ($Database -eq 'florabot_onboarding_migration_final_20261015') -or
                ($Database -match '^florabot_[a-zA-Z0-9_]*test[a-zA-Z0-9_]*$')
 
     if (-not $validDb) {
-        throw "Target database '$Database' rejected. Target must be 'florabot', 'florabot_ui_seed_verify_20261014', or match 'florabot_*test*'."
+        throw "Target database '$Database' rejected. Target must be 'florabot', 'florabot_ui_seed_verify_20261014', 'florabot_onboarding_migration_final_20261015', or match 'florabot_*test*'."
     }
 
     $resolvedKioskPath = [System.IO.Path]::GetFullPath($PrivateKioskOutputPath)
@@ -202,6 +203,7 @@ try {
     if ($CreateTeamAccounts) {
         $teamAccountDefs = @(
             @{ role = 'ADMIN'; id = 'df000000-0000-0000-0000-000000000001'; email = 'ui-admin@florabot.test'; fullName = 'Admin Demo (Quản trị viên)'; sellerId = $null; loginRoute = '/api/auth/admin/login'; uiRoute = '/admin' }
+            @{ role = 'ADMIN'; id = 'df000000-0000-0000-0000-000000000007'; email = 'ui-admin2@florabot.test'; fullName = 'Admin 2 Demo (Quản trị viên 2)'; sellerId = $null; loginRoute = '/api/auth/admin/login'; uiRoute = '/admin' }
             @{ role = 'OPERATIONS_MANAGER'; id = 'df000000-0000-0000-0000-000000000002'; email = 'ui-operations-manager@florabot.test'; fullName = 'Operations Manager Demo (Quản lý Vận hành)'; sellerId = $null; loginRoute = '/api/auth/admin/login'; uiRoute = '/operations' }
             @{ role = 'TECHNICIAN'; id = 'df000000-0000-0000-0000-000000000003'; email = 'ui-technician@florabot.test'; fullName = 'Technician Demo (Kỹ thuật viên)'; sellerId = $null; loginRoute = '/api/auth/admin/login'; uiRoute = '/technician' }
             @{ role = 'SELLER'; id = 'df000000-0000-0000-0000-000000000004'; email = 'ui-seller@florabot.test'; fullName = 'Seller Demo (Chủ shop Hoa Sài Gòn)'; sellerId = '20000000-0000-0000-0000-000000000001'; loginRoute = '/api/auth/login'; uiRoute = '/seller/products' }
@@ -224,44 +226,67 @@ try {
                 throw "Private accounts config belongs to another target ($($existingAccountsFixture.containerName)/$($existingAccountsFixture.database)). Cross-DB reuse is prohibited; use a separate output path."
             }
 
-            if (-not $existingAccountsFixture.accounts -or @($existingAccountsFixture.accounts).Count -ne 6) {
-                throw "Existing private accounts fixture does not contain exactly 6 accounts."
+            $existingAccountsList = @($existingAccountsFixture.accounts)
+            if ($existingAccountsList.Count -ne 6 -and $existingAccountsList.Count -ne 7) {
+                throw "Existing private accounts fixture does not contain 6 or 7 accounts (found: $($existingAccountsList.Count))."
             }
 
+            $charSet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*+='
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+
             foreach ($def in $teamAccountDefs) {
-                $matching = @($existingAccountsFixture.accounts | Where-Object { $_.role -eq $def.role })
-                if ($matching.Count -ne 1) {
-                    throw "Existing private accounts fixture must contain exactly one entry for role '$($def.role)'. Found: $($matching.Count)"
-                }
-                $acc = $matching[0]
-                if ($acc.id -ne $def.id) {
-                    throw "Existing private accounts fixture contains mismatched ID for role '$($def.role)' (found: '$($acc.id)', expected: '$($def.id)')."
-                }
-                if ($acc.email -ne $def.email) {
-                    throw "Existing private accounts fixture contains mismatched email for role '$($def.role)' (found: '$($acc.email)', expected: '$($def.email)')."
-                }
-                if (-not $acc.password) {
-                    throw "Existing private accounts fixture is missing password for role '$($def.role)'."
-                }
-                $pwBytes = [System.Text.Encoding]::UTF8.GetByteCount([string]$acc.password)
-                if ($pwBytes -lt 12 -or $pwBytes -gt 72) {
-                    throw "Existing private accounts fixture password for role '$($def.role)' must be between 12 and 72 UTF-8 bytes (found: $pwBytes bytes)."
+                $matching = @($existingAccountsList | Where-Object { $_.id -eq $def.id })
+                if ($matching.Count -gt 1) {
+                    throw "Existing private accounts fixture contains duplicate entries for ID '$($def.id)'."
                 }
 
-                $teamAccountsToSeed += [ordered]@{
-                    role = $def.role
-                    id = $def.id
-                    email = $def.email
-                    fullName = $def.fullName
-                    sellerId = $def.sellerId
-                    password = [string]$acc.password
-                    loginRoute = $def.loginRoute
-                    uiRoute = $def.uiRoute
+                if ($matching.Count -eq 1) {
+                    $acc = $matching[0]
+                    if ($acc.role -ne $def.role) {
+                        throw "Existing private accounts fixture contains mismatched role for account '$($def.id)' (found: '$($acc.role)', expected: '$($def.role)')."
+                    }
+                    if ($acc.email -ne $def.email) {
+                        throw "Existing private accounts fixture contains mismatched email for account '$($def.id)' (found: '$($acc.email)', expected: '$($def.email)')."
+                    }
+                    if (-not $acc.password) {
+                        throw "Existing private accounts fixture is missing password for account '$($def.id)'."
+                    }
+                    $pwBytes = [System.Text.Encoding]::UTF8.GetByteCount([string]$acc.password)
+                    if ($pwBytes -lt 12 -or $pwBytes -gt 72) {
+                        throw "Existing private accounts fixture password for account '$($def.id)' must be between 12 and 72 UTF-8 bytes (found: $pwBytes bytes)."
+                    }
+
+                    $teamAccountsToSeed += [ordered]@{
+                        role = $def.role
+                        id = $def.id
+                        email = $def.email
+                        fullName = $def.fullName
+                        sellerId = $def.sellerId
+                        password = [string]$acc.password
+                        loginRoute = $def.loginRoute
+                        uiRoute = $def.uiRoute
+                    }
+                } else {
+                    $passBytes = [byte[]]::new(20)
+                    $rng.GetBytes($passBytes)
+                    $passChars = foreach ($b in $passBytes) { $charSet[$b % $charSet.Length] }
+                    $generatedPassword = ($passChars -join '')
+
+                    $teamAccountsToSeed += [ordered]@{
+                        role = $def.role
+                        id = $def.id
+                        email = $def.email
+                        fullName = $def.fullName
+                        sellerId = $def.sellerId
+                        password = $generatedPassword
+                        loginRoute = $def.loginRoute
+                        uiRoute = $def.uiRoute
+                    }
                 }
             }
 
             $reusingAccountsFixture = $true
-            Write-Host "Team Accounts         : Reusing existing private fixture bound to this target." -ForegroundColor Yellow
+            Write-Host "Team Accounts         : Reusing existing private fixture bound to this target ($(if ($existingAccountsList.Count -eq 6) { 'extended to 7 accounts' } else { '7 accounts verified' }))." -ForegroundColor Yellow
         } else {
             # Missing fixture for already-generated users must fail rather than reset
             if ($existingTeamUsersCount -gt 0) {
@@ -269,7 +294,7 @@ try {
             }
 
             # Check for collisions with reserved IDs or reserved emails
-            $collisionCheckQuery = "SELECT id || ' ' || email FROM identity.users WHERE id::text LIKE 'df000000-%' OR lower(trim(email)) IN ('ui-admin@florabot.test', 'ui-operations-manager@florabot.test', 'ui-operations_manager@florabot.test', 'ui-technician@florabot.test', 'ui-seller@florabot.test', 'ui-seller-staff@florabot.test', 'ui-seller_staff@florabot.test', 'ui-customer@florabot.test');"
+            $collisionCheckQuery = "SELECT id || ' ' || email FROM identity.users WHERE id::text LIKE 'df000000-%' OR lower(trim(email)) IN ('ui-admin@florabot.test', 'ui-admin2@florabot.test', 'ui-operations-manager@florabot.test', 'ui-operations_manager@florabot.test', 'ui-technician@florabot.test', 'ui-seller@florabot.test', 'ui-seller-staff@florabot.test', 'ui-seller_staff@florabot.test', 'ui-customer@florabot.test');"
             $rawCollisions = @(docker exec $ContainerName psql -U florabot -d $Database -tAc $collisionCheckQuery)
             if ($LASTEXITCODE -ne 0) { throw "Could not verify database account collisions." }
             $collisions = ($rawCollisions -join "`n").Trim()
@@ -299,7 +324,7 @@ try {
                 }
             }
 
-            Write-Host "Team Accounts         : Generated cryptographically secure passwords for 6 test accounts." -ForegroundColor Green
+            Write-Host "Team Accounts         : Generated cryptographically secure passwords for 7 test accounts (2 Admins, 6 roles)." -ForegroundColor Green
         }
     }
 
@@ -311,7 +336,7 @@ try {
         Write-Host " - Demo Kiosk: $kioskId ($kioskCode), status OFFLINE (Simulated - No Hardware)"
         Write-Host " - Private Config Target: $resolvedKioskPath"
         if ($CreateTeamAccounts) {
-            Write-Host " - Team Accounts: 6 test accounts (ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER) in df000000-*"
+            Write-Host " - Team Accounts: 7 test accounts (2 ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER) in df000000-*"
             Write-Host " - Private Accounts Target: $resolvedAccountsPath"
         }
         Write-Host " - Products to seed: 4 active artificial bouquets + 2 draft bouquets"

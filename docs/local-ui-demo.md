@@ -24,9 +24,15 @@ Chạy thử nghiệm an toàn không ghi dữ liệu (`-DryRun`):
 pwsh scripts/local-demo/seed-local-demo.ps1 -ContainerName florabot_demo_team-postgres-1 -CreateTeamAccounts -DryRun
 ```
 
-Lệnh chính thức khởi tạo toàn bộ dữ liệu kiosk demo kèm 6 tài khoản kiểm thử nhóm:
+Lệnh chính thức khởi tạo toàn bộ dữ liệu kiosk demo kèm 7 tài khoản kiểm thử nhóm (2 Admin cho quy trình hoàn tiền kiosk 2 bước):
 ```powershell
 pwsh scripts/local-demo/seed-local-demo.ps1 -ContainerName florabot_demo_team-postgres-1 -CreateTeamAccounts
+```
+
+Khởi tạo kho thiết bị kiosk mẫu chưa gán (unassigned) cho quy trình Onboarding Kiosk thường niên (Trial 1+1, Pro 4+4, Max 6+6):
+```powershell
+pwsh scripts/local-demo/seed-onboarding-assets.ps1 -ContainerName florabot_demo_team-postgres-1 -DryRun
+pwsh scripts/local-demo/seed-onboarding-assets.ps1 -ContainerName florabot_demo_team-postgres-1
 ```
 
 Nếu không truyền `-CreateTeamAccounts`, script hoạt động ở chế độ mặc định: chỉ tạo dữ liệu kiosk demo trong namespace `de000000-*` và giữ nguyên tra cứu danh tính tài khoản baseline ban đầu.
@@ -43,17 +49,18 @@ Nếu không truyền `-CreateTeamAccounts`, script hoạt động ở chế đ�
   ```
 - **Tính nguyên tử & Serialization:** Cả tài khoản nhóm và dữ liệu kiosk demo được thực thi trong cùng **MỘT transaction duy nhất** (`BEGIN ... COMMIT`) và được tuần tự hóa bằng `pg_advisory_xact_lock`. File thông tin bảo mật được staging tạm và chỉ publish bằng Move sau khi commit thành công. Nếu commit thành công nhưng xuất bản file sau commit gặp trục trặc, toàn bộ file staging tạm được giữ lại làm bản phục hồi (recovery) và không bao giờ bị xóa.
 
-### 4. Bảng 6 tài khoản kiểm thử nhóm & UI Route Map
-Tất cả 6 tài khoản được cấp UUID cố định trong dải `df000000-*` và liên kết với cửa hàng Hoa Sài Gòn baseline (`20000000-0000-0000-0000-000000000001`):
+### 4. Bảng 7 tài khoản kiểm thử nhóm & UI Route Map
+Bảy tài khoản có UUID cố định trong dải `df000000-*`: hai ADMIN và năm tài khoản còn lại, tổng cộng sáu vai trò đăng nhập. Chỉ SELLER và SELLER_STAFF được gắn với shop Hoa Sài Gòn baseline (`20000000-0000-0000-0000-000000000001`); các tài khoản nền tảng và khách giữ phạm vi riêng.
 
 | Vai trò (Role) | Email đăng nhập | UUID cố định | API Đăng nhập | Màn hình UI chính | Phân công dữ liệu demo |
 |---|---|---|---|---|---|
-| **ADMIN** | `ui-admin@florabot.test` | `df000000-0000-0000-0000-000000000001` | `/api/auth/admin/login` | `/admin`, `/admin/slots`, `/admin/incidents`, `/admin/tasks`, `/admin/orders` | Quản trị viên, phân bổ 8 hộc tủ mô phỏng, giám sát sự cố hộc tủ, quản lý đơn hàng |
-| **OPERATIONS_MANAGER** | `ui-operations-manager@florabot.test` | `df000000-0000-0000-0000-000000000002` | `/api/auth/admin/login` | `/operations`, `/operations/technicians` | Quản lý vận hành được gán trực tiếp vào K-DEMO-SIM, tạo & giao việc kỹ thuật |
-| **TECHNICIAN** | `ui-technician@florabot.test` | `df000000-0000-0000-0000-000000000003` | `/api/auth/admin/login` | `/technician` | Kỹ thuật viên nhận 2 nhiệm vụ khắc phục lỗi khóa P02 và đèn LED W02 |
+| **ADMIN** | `ui-admin@florabot.test` | `df000000-0000-0000-0000-000000000001` | `/api/auth/admin/login` | `/admin`, `/admin/slots`, `/admin/incidents`, `/admin/tasks`, `/admin/orders` | Quản trị viên 1, phân bổ 8 hộc tủ mô phỏng, duyệt hoàn tiền kiosk, quản lý đơn hàng |
+| **ADMIN** | `ui-admin2@florabot.test` | `df000000-0000-0000-0000-000000000007` | `/api/auth/admin/login` | `/admin/kiosk-refunds` | Quản trị viên 2, thực thi chi trả hoàn tiền kiosk độc lập (nghiệp vụ tách quyền: người chi khác người duyệt) |
+| **OPERATIONS_MANAGER** | `ui-operations-manager@florabot.test` | `df000000-0000-0000-0000-000000000002` | `/api/auth/admin/login` | `/operations`, `/operations/technicians` | Quản lý vận hành được gán trực tiếp vào K-DEMO-SIM, tạo & giao việc kỹ thuật, cấp khóa thiết bị kiosk |
+| **TECHNICIAN** | `ui-technician@florabot.test` | `df000000-0000-0000-0000-000000000003` | `/api/auth/admin/login` | `/technician` | Kỹ thuật viên nhận 2 nhiệm vụ khắc phục lỗi khóa P02 và đèn LED W02, nhận việc lắp đặt kiosk |
 | **SELLER** | `ui-seller@florabot.test` | `df000000-0000-0000-0000-000000000004` | `/api/auth/login` | `/seller/products`, `/seller/stock`, `/seller/tasks`, `/seller/orders` | Chủ shop Hoa Sài Gòn, quản lý 6 sản phẩm hoa lụa, theo dõi 4 bó hoa trong tủ, phản hồi báo giá preorder |
 | **SELLER_STAFF** | `ui-seller-staff@florabot.test` | `df000000-0000-0000-0000-000000000005` | `/api/auth/login` | `/staff` | Nhân viên Hoa Sài Gòn, nhận 2 nhiệm vụ nạp hàng ô W03/W04 và vệ sinh hộc P01 |
-| **CUSTOMER** | `ui-customer@florabot.test` | `df000000-0000-0000-0000-000000000006` | `/api/auth/login` | `/tai-khoan`, `/ho-so` | Khách hàng sở hữu 1 đơn chờ thanh toán FBDEMO-000001 và 2 yêu cầu đặt làm hoa lụa |
+| **CUSTOMER** | `ui-customer@florabot.test` | `df000000-0000-0000-0000-000000000006` | `/api/auth/login` | `/tai-khoan`, `/ho-so` | Khách hàng sở hữu 1 đơn chờ thanh toán FBDEMO-000001, đăng ký kiosk onboarding thường niên |
 
 ### 5. Đường dẫn tệp cục bộ riêng tư (Private Local File Paths)
 Các tệp này chứa thông tin nhạy cảm (khóa API thiết bị, mật khẩu ngẫu nhiên), được tạo ngoài thư mục Git (`$env:USERPROFILE\.config\florabot`), script từ chối nếu cấu hình trỏ vào trong Git worktree. Tuyệt đối **không commit, không in ra terminal, không truyền qua tham số process**:
@@ -67,8 +74,9 @@ Các tệp này chứa thông tin nhạy cảm (khóa API thiết bị, mật kh
   - Được lưu trữ trên Cloudinary công khai, kiểm tra toàn vẹn bằng SHA-256 và dung lượng tệp.
 
 ### 7. Giới hạn offline & không có đặc quyền trả phí (Known Unpaid & Offline Limits)
-- **Thiết bị mô phỏng trung thực:** Kiosk `K-DEMO-SIM` ở trạng thái `OFFLINE` và không có thiết bị phần cứng thật (`last_heartbeat_at = NULL`). Không tạo nhịp tim giả lập.
-- **Hộc tủ mô phỏng (Simulated Slots):** 8 hộc tủ W01–W04 và P01–P04 là các bản ghi dữ liệu phần mềm mô phỏng cho hoa lụa nhân tạo; không có thiết bị phần cứng hay hợp đồng thuê hộc tủ vật lý thực tế nào được cấp.
+- **Thiết bị mô phỏng trung thực:** Kiosk `K-DEMO-SIM` và 3 kiosk onboarding (`K-ONBOARD-TRIAL`, `K-ONBOARD-PRO`, `K-ONBOARD-MAX`) ở trạng thái `OFFLINE` và không có thiết bị phần cứng thật (`last_heartbeat_at = NULL`). Không tạo nhịp tim giả lập.
+- **Vô hiệu hóa xác thực thiết bị mới (Disabled Device Auth):** 3 kiosk onboarding unassigned có `api_key_hash = NULL` (không nhúng khóa bí mật, không in khóa). Thiết bị chỉ có thể xác thực sau khi Quản lý Vận hành (Operations Manager) chủ động gọi API cấp khóa: `POST /api/operations/kiosks/{id}/provision-key`.
+- **Hộc tủ mô phỏng (Simulated Slots):** 8 hộc tủ demo gán dữ liệu cho Hoa Sài Gòn và 22 hộc tủ onboarding ở trạng thái `FREE` chưa gán (unassigned); không có thiết bị phần cứng hay hợp đồng thuê hộc tủ vật lý thực tế nào được cấp trước.
 - **Không có đặc quyền trả phí (No Paid Entitlement Granted):** Cửa hàng Hoa Sài Gòn ở trạng thái cơ bản APPROVED, không được tự động cấp gói dịch vụ trả tiền hoạt động. Gói thuê bao (nếu bật opt-in) chỉ ở trạng thái `PENDING_PAYMENT` làm dữ liệu mẫu; theo đúng quy tắc nghiệp vụ backend, catalog mở bán công khai vẫn có thể rỗng hoặc giao dịch tạo đơn mới bị từ chối cho đến khi người dùng thanh toán thật qua cổng PayOS.
 - **Đơn hàng mẫu chờ thanh toán:** Đơn `FBDEMO-000001` ở trạng thái `AWAITING_PAYMENT`, không tạo biên lai giả mạo tiền thật, không giả mở cửa hay xác nhận lấy hàng thành công.
 - **Không có thông báo thật:** Không gửi email, SMS hay thông báo push ra các kênh thật bên ngoài.
@@ -87,11 +95,12 @@ Get-Content scripts/local-demo/verify-demo-data.sql -Raw |
 ### Dataset Structure Summary
 - **Simulated Kiosk:** 1 kiosk (`de000000-0000-0000-0001-000000000001`), OFFLINE.
 - **Slots:** 8 hộc tủ mô phỏng phần mềm (W01–W04 khu WALK_IN, P01–P04 khu PREORDER) gán dữ liệu cho Hoa Sài Gòn.
+- **Onboarding Kiosk Assets (da000000-*):** 3 kiosk unassigned OFFLINE (Trial: 1W+1P = 2 ô, Pro: 4W+4P = 8 ô, Max: 6W+6P = 12 ô, tổng 22 ô FREE, không gán seller, không ledger, auth disabled).
 - **Products:** 4 ACTIVE hoa nhân tạo có ảnh đính kèm đã xác thực SHA-256 + 2 DRAFT.
 - **Bouquets:** 4 bó hoa lụa lưu kho hạn vô hạn (`sellable_until = 'infinity'`).
 - **Incidents & Tasks:** 3 sự cố thiết bị (2 OPEN, 1 RESOLVED) và 4 nhiệm vụ nhân viên (2 kỹ thuật, 2 giao hàng).
 - **Orders & Preorders:** 1 đơn hàng chờ thanh toán + 2 yêu cầu đặt hoa lụa (1 QUOTED, 1 REQUESTED).
-- **Accounts:** 6 tài khoản kiểm thử nhóm trong dải `df000000-*` (khi bật `-CreateTeamAccounts`) hoặc tái sử dụng toàn bộ baseline accounts có sẵn.
+- **Accounts:** 7 tài khoản kiểm thử nhóm trong dải `df000000-*` (2 ADMIN, OPERATIONS_MANAGER, TECHNICIAN, SELLER, SELLER_STAFF, CUSTOMER across 6 authenticated roles) khi bật `-CreateTeamAccounts` hoặc tái sử dụng toàn bộ baseline accounts có sẵn.
 
 ### Rollback / Cleanup
 Để xóa dữ liệu mô phỏng demo (chỉ xóa trong namespace `de000000-*`, bảo toàn các tài khoản người dùng và thông tin seller):
