@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
@@ -105,9 +106,11 @@ builder.Services.AddHttpClient<AdvisorClient>(client => client.Timeout = TimeSpa
 builder.Services.AddScoped<AiAdvisor>();
 builder.Services.AddScoped<AdvisorCache>();
 builder.Services.AddSignalR(options => { options.MaximumReceiveMessageSize = 4096; options.EnableDetailedErrors = false; });
+builder.Services.AddSingleton<IUserIdProvider, JwtSubjectUserIdProvider>();
 builder.Services.AddSingleton<PortalConnections>();
 builder.Services.AddScoped<PortalAudience>();
 builder.Services.AddScoped<PortalNotifier>();
+builder.Services.AddScoped<CustomerSellerChatNotifier>();
 builder.Services.AddSingleton<JobRunner>();
 if (builder.Configuration.GetValue("JOBS_ENABLED", !builder.Environment.IsEnvironment("Testing")))
     builder.Services.AddHostedService<FloraJobs>();
@@ -240,6 +243,8 @@ app.UseAuthorization();
 app.UseRateLimiter();
 
 app.MapHub<PortalHub>("/hub/portal", options => options.CloseOnAuthenticationExpiration = true).RequireAuthorization("Portal");
+app.MapHub<CustomerSellerChatHub>("/hub/chat", options => options.CloseOnAuthenticationExpiration = true)
+    .RequireAuthorization("MemberIdentity");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 if (app.Environment.IsDevelopment())
     app.MapOpenApi().AllowAnonymous();

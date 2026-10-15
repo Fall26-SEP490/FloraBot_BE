@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using FloraBot.Api.Modules.Notify;
+using FloraBot.Api.Realtime;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using NpgsqlTypes;
@@ -268,7 +269,7 @@ public static partial class CustomerSellerChatEndpoints
     }
 
     private static async Task<IResult> SendMessageAsync(Guid chatId, CustomerSellerChatMessageInput input, HttpContext http,
-        NpgsqlDataSource source, PrivateEvidence tickets, CancellationToken ct)
+        NpgsqlDataSource source, PrivateEvidence tickets, CustomerSellerChatNotifier chatNotifier, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         var actor = Actor(http);
@@ -289,6 +290,7 @@ public static partial class CustomerSellerChatEndpoints
         await using var connection = await source.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         if (!await CanAccessAsync(connection, transaction, chatId, actor, ct)) return Results.NotFound();
+        var recipientUserIds = await ChatRecipientUserIdsAsync(connection, transaction, chatId, actor, ct);
         Guid messageId;
         DateTimeOffset createdAt;
         await using (var insert = new NpgsqlCommand("""
@@ -332,8 +334,31 @@ public static partial class CustomerSellerChatEndpoints
         await transaction.CommitAsync(ct);
 
         var senderName = await SenderDisplayNameAsync(source, chatId, actor, ct) ?? "Bạn";
-        return Results.Ok(new CustomerSellerChatMessage(messageId, senderName, true, content, createdAt,
-            image is null ? null : $"/api/chats/{chatId}/messages/{messageId}/image"));
+        var imageUrl = image is null ? null : $"/api/chats/{chatId}/messages/{messageId}/image";
+        await chatNotifier.MessageReceivedAsync(recipientUserIds,
+            new CustomerSellerChatMessageReceived(chatId, messageId, senderName, actor.Role, content, createdAt, imageUrl));
+        return Results.Ok(new CustomerSellerChatMessage(messageId, senderName, true, content, createdAt, imageUrl));
+    }
+
+    private static async Task<Guid[]> ChatRecipientUserIdsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid chatId, ChatActor actor, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT DISTINCT recipient.id
+            FROM ordering.customer_seller_chats c
+            JOIN identity.users recipient ON recipient.status='ACTIVE'
+            WHERE c.id=@chat AND (
+                (@role='CUSTOMER' AND recipient.role='SELLER' AND recipient.seller_id=c.seller_id)
+                OR (@role='SELLER' AND recipient.role='CUSTOMER' AND recipient.id=c.customer_id)
+            )
+            ORDER BY recipient.id
+            """, connection, transaction);
+        command.Parameters.AddWithValue("chat", chatId);
+        command.Parameters.AddWithValue("role", actor.Role);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var recipients = new List<Guid>();
+        while (await reader.ReadAsync(ct)) recipients.Add(reader.GetGuid(0));
+        return recipients.ToArray();
     }
 
     private static async Task<IResult> UploadImageAsync(Guid chatId, HttpContext http, NpgsqlDataSource source,
