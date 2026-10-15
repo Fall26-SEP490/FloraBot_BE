@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using FloraBot.Api.Modules.Notify;
+using FloraBot.Api.Realtime;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using NpgsqlTypes;
@@ -16,7 +17,8 @@ public sealed record CustomerSellerChatItem(
     DateTimeOffset? LastMessageAt,
     string? LastMessage,
     bool LastMessageHasImage,
-    string? ProductContext);
+    string? ProductContext,
+    long UnreadCount);
 public sealed record CustomerSellerChatPage(List<CustomerSellerChatItem> Items, int Page, bool HasMore);
 public sealed record CustomerSellerChatMessageInput(string? Content, string? ImageReference = null);
 public sealed record CustomerSellerChatMessage(
@@ -25,8 +27,16 @@ public sealed record CustomerSellerChatMessage(
     bool IsMine,
     string? Content,
     DateTimeOffset CreatedAt,
-    string? ImageUrl);
+    string? ImageUrl,
+    DateTimeOffset? ReadAt);
 public sealed record CustomerSellerChatMessagePage(List<CustomerSellerChatMessage> Items, int Page, bool HasMore);
+public sealed record CustomerSellerChatReadResult(
+    Guid ChatId,
+    int MessagesMarkedRead,
+    long UnreadCount,
+    Guid? ReadThroughMessageId,
+    DateTimeOffset? ReadThroughCreatedAt,
+    DateTimeOffset? ReadAt);
 
 public static partial class CustomerSellerChatEndpoints
 {
@@ -73,6 +83,15 @@ public static partial class CustomerSellerChatEndpoints
             .RequireAuthorization()
             .Produces<CustomerSellerChatMessagePage>()
             .ProducesProblem(400).ProducesProblem(401).ProducesProblem(404);
+
+        app.MapPost("/api/chats/{chatId:guid}/read", MarkMessagesReadAsync)
+            .WithTags("Customer Seller Chat")
+            .WithSummary("Đánh dấu các tin nhắn nhận được là đã đọc")
+            .WithDescription("Gọi sau khi lịch sử cuộc trò chuyện đã hiển thị. Thao tác lặp lại an toàn; người gửi nhận sự kiện ChatMessagesRead qua SignalR.")
+            .RequireAuthorization()
+            .RequireRateLimiting("chat")
+            .Produces<CustomerSellerChatReadResult>()
+            .ProducesProblem(401).ProducesProblem(404).ProducesProblem(429);
 
         app.MapPost("/api/chats/{chatId:guid}/messages", SendMessageAsync)
             .WithTags("Customer Seller Chat")
@@ -194,7 +213,7 @@ public static partial class CustomerSellerChatEndpoints
             SELECT c.id,
               CASE WHEN @role='CUSTOMER' THEN s.shop_name ELSE customer.full_name END,
               c.created_at,c.last_message_at,last.content,
-              COALESCE(last.has_image,false),context.product_name
+              COALESCE(last.has_image,false),context.product_name,COALESCE(unread.unread_count,0)
             FROM ordering.customer_seller_chats c
             JOIN identity.users customer ON customer.id=c.customer_id
             JOIN identity.sellers s ON s.id=c.seller_id
@@ -208,6 +227,13 @@ public static partial class CustomerSellerChatEndpoints
               FROM ordering.customer_seller_chat_products p
               WHERE p.chat_id=c.id ORDER BY p.first_opened_at DESC,p.product_id DESC LIMIT 1
             ) context ON true
+            LEFT JOIN LATERAL (
+              SELECT count(*)::bigint AS unread_count
+              FROM ordering.customer_seller_chat_messages m
+              WHERE m.chat_id=c.id AND m.read_at IS NULL
+                AND ((@role='CUSTOMER' AND m.sender_user_id<>c.customer_id)
+                  OR (@role='SELLER' AND m.sender_user_id=c.customer_id))
+            ) unread ON true
             WHERE (@role='CUSTOMER' AND c.customer_id=@user)
                OR (@role='SELLER' AND c.seller_id=@seller)
             ORDER BY c.last_message_at DESC NULLS LAST,c.created_at DESC,c.id DESC
@@ -222,7 +248,8 @@ public static partial class CustomerSellerChatEndpoints
         while (await reader.ReadAsync(ct))
             rows.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetFieldValue<DateTimeOffset>(2),
                 reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetBoolean(5), reader.IsDBNull(6) ? null : reader.GetString(6)));
+                reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetBoolean(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6), reader.GetInt64(7)));
         return Results.Ok(new CustomerSellerChatPage(rows.Take(25).ToList(), number, rows.Count > 25));
     }
 
@@ -237,7 +264,7 @@ public static partial class CustomerSellerChatEndpoints
             SELECT m.id,
               CASE WHEN m.sender_user_id=c.customer_id THEN customer.full_name ELSE s.shop_name END,
               m.sender_user_id=@user,m.content,m.created_at,
-              EXISTS(SELECT 1 FROM ordering.customer_seller_chat_images i WHERE i.message_id=m.id)
+              EXISTS(SELECT 1 FROM ordering.customer_seller_chat_images i WHERE i.message_id=m.id),m.read_at
             FROM ordering.customer_seller_chat_messages m
             JOIN ordering.customer_seller_chats c ON c.id=m.chat_id
             JOIN identity.users customer ON customer.id=c.customer_id
@@ -259,7 +286,8 @@ public static partial class CustomerSellerChatEndpoints
             var id = reader.GetGuid(0);
             var hasImage = reader.GetBoolean(5);
             rows.Add(new(id, reader.GetString(1), reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.GetFieldValue<DateTimeOffset>(4), hasImage ? $"/api/chats/{chatId}/messages/{id}/image" : null));
+                reader.GetFieldValue<DateTimeOffset>(4), hasImage ? $"/api/chats/{chatId}/messages/{id}/image" : null,
+                reader.IsDBNull(6) ? null : reader.GetFieldValue<DateTimeOffset>(6)));
         }
         var hasMore = rows.Count > PageSize;
         rows = rows.Take(PageSize).ToList();
@@ -268,7 +296,7 @@ public static partial class CustomerSellerChatEndpoints
     }
 
     private static async Task<IResult> SendMessageAsync(Guid chatId, CustomerSellerChatMessageInput input, HttpContext http,
-        NpgsqlDataSource source, PrivateEvidence tickets, CancellationToken ct)
+        NpgsqlDataSource source, PrivateEvidence tickets, CustomerSellerChatNotifier chatNotifier, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         var actor = Actor(http);
@@ -289,6 +317,7 @@ public static partial class CustomerSellerChatEndpoints
         await using var connection = await source.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         if (!await CanAccessAsync(connection, transaction, chatId, actor, ct)) return Results.NotFound();
+        var recipientUserIds = await ChatRecipientUserIdsAsync(connection, transaction, chatId, actor, ct);
         Guid messageId;
         DateTimeOffset createdAt;
         await using (var insert = new NpgsqlCommand("""
@@ -329,11 +358,106 @@ public static partial class CustomerSellerChatEndpoints
             update.Parameters.AddWithValue("chat", chatId);
             await update.ExecuteNonQueryAsync(ct);
         }
+        var recipientRole = actor.Role == "CUSTOMER" ? "SELLER" : "CUSTOMER";
+        var recipientUnreadCount = await UnreadCountAsync(connection, transaction, chatId, recipientRole, ct);
         await transaction.CommitAsync(ct);
 
         var senderName = await SenderDisplayNameAsync(source, chatId, actor, ct) ?? "Bạn";
-        return Results.Ok(new CustomerSellerChatMessage(messageId, senderName, true, content, createdAt,
-            image is null ? null : $"/api/chats/{chatId}/messages/{messageId}/image"));
+        var imageUrl = image is null ? null : $"/api/chats/{chatId}/messages/{messageId}/image";
+        await chatNotifier.MessageReceivedAsync(recipientUserIds,
+            new CustomerSellerChatMessageReceived(chatId, messageId, senderName, actor.Role, content, createdAt, imageUrl, recipientUnreadCount));
+        return Results.Ok(new CustomerSellerChatMessage(messageId, senderName, true, content, createdAt, imageUrl, null));
+    }
+
+    private static async Task<IResult> MarkMessagesReadAsync(Guid chatId, HttpContext http, NpgsqlDataSource source,
+        CustomerSellerChatNotifier chatNotifier, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        var actor = Actor(http);
+        if (actor is null) return Results.NotFound();
+
+        await using var connection = await source.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        if (!await CanAccessAsync(connection, transaction, chatId, actor, ct)) return Results.NotFound();
+        var recipientUserIds = await ChatRecipientUserIdsAsync(connection, transaction, chatId, actor, ct);
+        var marked = new List<(Guid Id, DateTimeOffset CreatedAt, DateTimeOffset ReadAt)>();
+        await using (var update = new NpgsqlCommand("""
+            UPDATE ordering.customer_seller_chat_messages m
+            SET read_at=public.app_now()
+            FROM ordering.customer_seller_chats c
+            WHERE c.id=@chat AND m.chat_id=c.id AND m.read_at IS NULL
+              AND ((@role='CUSTOMER' AND m.sender_user_id<>c.customer_id)
+                OR (@role='SELLER' AND m.sender_user_id=c.customer_id))
+            RETURNING m.id,m.created_at,m.read_at
+            """, connection, transaction))
+        {
+            update.Parameters.AddWithValue("chat", chatId);
+            update.Parameters.AddWithValue("role", actor.Role);
+            await using var reader = await update.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                marked.Add((reader.GetGuid(0), reader.GetFieldValue<DateTimeOffset>(1), reader.GetFieldValue<DateTimeOffset>(2)));
+        }
+
+        var unreadCount = await UnreadCountAsync(connection, transaction, chatId, actor.Role, ct);
+        await transaction.CommitAsync(ct);
+
+        Guid? readThroughId = null;
+        DateTimeOffset? readThroughCreatedAt = null;
+        DateTimeOffset? readAt = null;
+        if (marked.Count > 0)
+        {
+            var through = marked
+                .OrderByDescending(message => message.CreatedAt)
+                .ThenByDescending(message => message.Id.ToString("N"), StringComparer.Ordinal)
+                .First();
+            readThroughId = through.Id;
+            readThroughCreatedAt = through.CreatedAt;
+            readAt = through.ReadAt;
+            var readerName = await SenderDisplayNameAsync(source, chatId, actor, ct) ?? "Người tham gia";
+            await chatNotifier.MessagesReadAsync(recipientUserIds,
+                new CustomerSellerChatMessagesRead(chatId, readerName, actor.Role, through.Id,
+                    through.CreatedAt, through.ReadAt, marked.Count));
+        }
+
+        return Results.Ok(new CustomerSellerChatReadResult(chatId, marked.Count, unreadCount,
+            readThroughId, readThroughCreatedAt, readAt));
+    }
+
+    private static async Task<long> UnreadCountAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid chatId, string role, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT count(*)::bigint
+            FROM ordering.customer_seller_chat_messages m
+            JOIN ordering.customer_seller_chats c ON c.id=m.chat_id
+            WHERE c.id=@chat AND m.read_at IS NULL
+              AND ((@role='CUSTOMER' AND m.sender_user_id<>c.customer_id)
+                OR (@role='SELLER' AND m.sender_user_id=c.customer_id))
+            """, connection, transaction);
+        command.Parameters.AddWithValue("chat", chatId);
+        command.Parameters.AddWithValue("role", role);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    private static async Task<Guid[]> ChatRecipientUserIdsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid chatId, ChatActor actor, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT DISTINCT recipient.id
+            FROM ordering.customer_seller_chats c
+            JOIN identity.users recipient ON recipient.status='ACTIVE'
+            WHERE c.id=@chat AND (
+                (@role='CUSTOMER' AND recipient.role='SELLER' AND recipient.seller_id=c.seller_id)
+                OR (@role='SELLER' AND recipient.role='CUSTOMER' AND recipient.id=c.customer_id)
+            )
+            ORDER BY recipient.id
+            """, connection, transaction);
+        command.Parameters.AddWithValue("chat", chatId);
+        command.Parameters.AddWithValue("role", actor.Role);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var recipients = new List<Guid>();
+        while (await reader.ReadAsync(ct)) recipients.Add(reader.GetGuid(0));
+        return recipients.ToArray();
     }
 
     private static async Task<IResult> UploadImageAsync(Guid chatId, HttpContext http, NpgsqlDataSource source,
@@ -413,7 +537,9 @@ public static partial class CustomerSellerChatEndpoints
         Guid chatId, Guid customerId, string shopName, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT c.created_at,c.last_message_at,last.content,COALESCE(last.has_image,false),context.product_name
+            SELECT c.created_at,c.last_message_at,last.content,COALESCE(last.has_image,false),context.product_name,
+              (SELECT count(*)::bigint FROM ordering.customer_seller_chat_messages unread
+               WHERE unread.chat_id=c.id AND unread.read_at IS NULL AND unread.sender_user_id<>c.customer_id)
             FROM ordering.customer_seller_chats c
             LEFT JOIN LATERAL (
               SELECT m.content,EXISTS(SELECT 1 FROM ordering.customer_seller_chat_images i WHERE i.message_id=m.id) AS has_image
@@ -433,7 +559,7 @@ public static partial class CustomerSellerChatEndpoints
         return new(chatId, shopName, reader.GetFieldValue<DateTimeOffset>(0),
             reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1),
             reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetBoolean(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4));
+            reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5));
     }
 
     private static void AddActor(NpgsqlCommand command, ChatActor actor)
