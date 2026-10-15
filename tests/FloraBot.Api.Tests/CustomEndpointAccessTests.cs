@@ -192,7 +192,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/chats/{chatId:guid}/messages/{messageId:guid}/image");
         Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM"], "POST",
             "/api/chats/{chatId:guid}/messages",
-            "/api/chats/{chatId:guid}/images");
+            "/api/chats/{chatId:guid}/images",
+            "/api/chats/{chatId:guid}/read");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");
