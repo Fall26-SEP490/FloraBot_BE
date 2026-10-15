@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using System.Text.Json;
 using DotNetCore.CAP;
+using FloraBot.Api.Data;
 using FloraBot.Api.Infrastructure;
+using FloraBot.Api.Modules.KioskOps;
 using FloraBot.Api.Modules.Notify;
 using Npgsql;
 using NpgsqlTypes;
@@ -23,9 +25,20 @@ public static class WebOrders
         app.MapGet("/api/member/preorders", (int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, User(http), null, true, page, ct)).RequireAuthorization("Member").Produces<WebRequestPage>();
         app.MapGet("/api/sellers/{sellerId:guid}/preorders", (Guid sellerId, int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, sellerId, false, page, ct)).RequireAuthorization("Merchant", "SameSeller").Produces<WebRequestPage>();
         app.MapGet("/api/admin/preorders", (int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, null, false, page, ct)).RequireAuthorization("Admin").Produces<WebRequestPage>();
-        app.MapPost("/api/member/preorders", async (WebRequestInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
+        app.MapPost("/api/member/preorders", async (WebRequestInput input, HttpContext http, NpgsqlDataSource source, FloraDbContext db, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (input.Id == Guid.Empty || input.Kind is not ("STOCK" or "CUSTOM") || input.Instructions is null || input.Instructions.Length > 2000 || input.Kind == "STOCK" && input.BouquetId is null) return Results.BadRequest();
+
+            // Retrying an existing preorder must preserve historical preorders and idempotency
+            if (!await Owns(source, input.Id, User(http), null, ct))
+            {
+                // New preorder must reject kiosks with missing address or map coordinates
+                if (!await KioskLocations.IsPreorderReadyAsync(db, input.KioskId, ct))
+                {
+                    return Results.Problem(statusCode: 400, title: "Yêu cầu chưa được thực hiện", detail: "Kiosk chưa có địa chỉ hoặc tọa độ đầy đủ để nhận đơn đặt trước.");
+                }
+            }
+
             return await Run(source, publisher, "SELECT flow.web_request(@id,@customer,@kind,@product,@kiosk,@bouquet,@pickup,@instructions)", command =>
             {
                 command.Parameters.AddWithValue("id", input.Id); command.Parameters.AddWithValue("customer", User(http));

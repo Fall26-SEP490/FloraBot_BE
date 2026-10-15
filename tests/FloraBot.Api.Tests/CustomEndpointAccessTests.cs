@@ -147,6 +147,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     {
         var entries = new List<Access>();
         Add([], "GET", "/api/shop/catalog");
+        Add([], "GET", "/api/kiosk-locations");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks");
+        Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location");
         Add(["TECHNICIAN"], "POST", "/api/staff/tasks/{taskId:guid}/resolve-incident");
         Add(["TECHNICIAN", "SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/evidence/upload", "/api/staff/tasks/{taskId:guid}/evidence");
         Add(["TECHNICIAN", "SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/evidence", "/api/staff/tasks/{taskId:guid}/evidence/{attachmentId:guid}");

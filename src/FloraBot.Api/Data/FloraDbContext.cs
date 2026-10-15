@@ -363,6 +363,8 @@ public partial class FloraDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.HardwareId).HasColumnName("hardware_id");
             entity.Property(e => e.LastHeartbeatAt).HasColumnName("last_heartbeat_at");
+            entity.Property(e => e.Latitude).HasColumnName("latitude");
+            entity.Property(e => e.Longitude).HasColumnName("longitude");
             entity.Property(e => e.MqttClientId).HasColumnName("mqtt_client_id");
             entity.Property(e => e.Name).HasColumnName("name");
             entity.Property(e => e.Region).HasColumnName("region");

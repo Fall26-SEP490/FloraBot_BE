@@ -276,6 +276,7 @@ app.MapCustomerHistory();
 app.MapCustomerPoints();
 app.MapAccessoryCatalog();
 app.MapSellerAccessories();
+app.MapKioskLocations();
 app.MapProductPhotos();
 app.MapProducts();
 PrivateEvidence.MapPrivateEvidence(app);

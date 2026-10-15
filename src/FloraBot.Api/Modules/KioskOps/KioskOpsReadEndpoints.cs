@@ -10,7 +10,18 @@ public static class KioskOpsReadEndpoints
     public static void MapKioskOpsReads(this WebApplication app)
     {
         app.MapGet("/api/kiosks", async (FloraDbContext db) => await db.Kiosks.AsNoTracking()
-            .Where(x => x.Status != "DISABLED").Select(x => new { x.Id, x.Code, x.Name, x.Address, x.Region, x.Status }).ToListAsync()).AllowAnonymous();
+            .Where(x => x.Status != "DISABLED").Select(x => new
+            {
+                x.Id,
+                x.Code,
+                x.Name,
+                x.Address,
+                x.Region,
+                x.Status,
+                x.Latitude,
+                x.Longitude,
+                LocationComplete = x.Latitude != null && x.Longitude != null && x.Address != null && x.Address.Trim() != ""
+            }).ToListAsync()).AllowAnonymous();
         app.MapGet("/api/sellers/{sellerId:guid}/slots", async (Guid sellerId, FloraDbContext db, HttpContext http) =>
         {
             if (!SameSeller(http, sellerId)) return Results.NotFound();
