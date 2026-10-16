@@ -169,6 +169,8 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("OperationsManager", p => p.RequireRole("OPERATIONS_MANAGER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Technician", p => p.RequireRole("TECHNICIAN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("SellerStaff", p => p.RequireRole("SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("SellerStaffChatParticipant", p => p.RequireRole("SELLER", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("ChatParticipant", p => p.RequireRole("CUSTOMER", "SELLER", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("PreorderCustomer", p => p.RequireRole("CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
@@ -244,7 +246,7 @@ app.UseRateLimiter();
 
 app.MapHub<PortalHub>("/hub/portal", options => options.CloseOnAuthenticationExpiration = true).RequireAuthorization("Portal");
 app.MapHub<CustomerSellerChatHub>("/hub/chat", options => options.CloseOnAuthenticationExpiration = true)
-    .RequireAuthorization("MemberIdentity");
+    .RequireAuthorization("ChatParticipant");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 if (app.Environment.IsDevelopment())
     app.MapOpenApi().AllowAnonymous();
@@ -256,6 +258,7 @@ app.MapAccountHierarchy();
 app.MapMembers();
 app.MapWebOrders();
 app.MapCustomerSellerChat();
+app.MapSellerStaffChat();
 app.MapWebPaymentLinks();
 FloraBot.Api.ReadModels.WebCatalog.MapWebCatalog(app);
 app.MapOtp();

@@ -4,11 +4,11 @@ using Microsoft.AspNetCore.SignalR;
 namespace FloraBot.Api.Realtime;
 
 /// <summary>
-/// Authenticated notification channel for customer-preorder and seller chat messages.
-/// Messages are addressed to the counterpart's user ID by CustomerSellerChatNotifier;
+/// Authenticated notification channel for customer-preorder/seller and seller/staff chat messages.
+/// Messages are addressed to authorized counterpart user IDs by CustomerSellerChatNotifier;
 /// clients do not choose or join arbitrary chat groups.
 /// </summary>
-[Authorize(Policy = "MemberIdentity")]
+[Authorize(Policy = "ChatParticipant")]
 public sealed class CustomerSellerChatHub : Hub
 {
 }
