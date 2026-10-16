@@ -28,6 +28,34 @@ public sealed class CloudinaryMediaTests
     }
 
     [Theory]
+    [InlineData("authenticated-signed")]
+    [InlineData("authenticated-unsigned")]
+    public async Task UploadAuthenticatedAcceptsCanonicalSignedAndUnsignedUrls(string mode)
+    {
+        using var handler = new Provider(mode);
+        using var http = new HttpClient(handler);
+        var result = await new CloudinaryMedia(http, Settings(), TimeProvider.System).UploadAsync(Png, default, authenticated: true);
+        Assert.Equal("image/png", result.MimeType);
+        Assert.Equal(Png.Length, result.SizeBytes);
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(Png)), result.Sha256);
+        Assert.Contains("/image/authenticated/", result.Url);
+        Assert.StartsWith("florabot-evidence/", result.PublicId);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("authenticated-public-url")]
+    [InlineData("authenticated-transformation")]
+    [InlineData("authenticated-wrong-host")]
+    [InlineData("authenticated-invalid-signature")]
+    public async Task UploadAuthenticatedRejectsPublicTransformationsAndForeignHosts(string mode)
+    {
+        using var handler = new Provider(mode);
+        using var http = new HttpClient(handler);
+        await Assert.ThrowsAsync<MediaUnavailableException>(() => new CloudinaryMedia(http, Settings(), TimeProvider.System).UploadAsync(Png, default, authenticated: true));
+    }
+
+    [Theory]
     [InlineData("wrong-host")]
     [InlineData("wrong-cloud")]
     [InlineData("wrong-id")]
@@ -64,10 +92,20 @@ public sealed class CloudinaryMediaTests
             Calls++;
             if (request.Method == HttpMethod.Get)
             {
+                if (request.RequestUri!.Host == "api.cloudinary.com")
+                {
+                    Assert.EndsWith("/image/download", request.RequestUri.AbsolutePath);
+                    var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
+                    Assert.Equal("authenticated", query["type"]);
+                    var canonical = string.Join("&", query.Where(x => x.Key is not ("api_key" or "signature")).OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{x.Key}={x.Value}"));
+                    Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical + "test-secret"))), query["signature"].ToString());
+                    var content = new ByteArrayContent(mode == "corrupt" ? "different"u8.ToArray() : Png);
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+                }
                 Assert.Equal("res.cloudinary.com", request.RequestUri!.Host);
-                var content = new ByteArrayContent(mode == "corrupt" ? "different"u8.ToArray() : Png);
-                if (mode == "oversized") content.Headers.ContentLength = CloudinaryMedia.MaximumBytes + 1;
-                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+                var storedContent = new ByteArrayContent(mode == "corrupt" ? "different"u8.ToArray() : Png);
+                if (mode == "oversized") storedContent.Headers.ContentLength = CloudinaryMedia.MaximumBytes + 1;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = storedContent };
             }
             Assert.Equal("https://api.cloudinary.com/v1_1/test-cloud/image/upload", request.RequestUri!.AbsoluteUri);
             var parts = Assert.IsType<MultipartFormDataContent>(request.Content);
@@ -84,16 +122,42 @@ public sealed class CloudinaryMediaTests
             }
             Assert.Equal("test-key", fields["api_key"]);
             Assert.Equal("false", fields["overwrite"]);
-            Assert.Matches(new Regex("^florabot/[0-9a-f]{32}$"), fields["public_id"]);
-            var signature = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"overwrite=false&public_id={fields["public_id"]}&timestamp={fields["timestamp"]}test-secret")));
-            Assert.Equal(signature, fields["signature"]);
+            var isAuthenticated = fields.TryGetValue("type", out var deliveryType) && deliveryType == "authenticated";
+            if (isAuthenticated)
+            {
+                Assert.Matches(new Regex("^florabot-evidence/[0-9a-f]{32}$"), fields["public_id"]);
+                var authSig = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"overwrite=false&public_id={fields["public_id"]}&timestamp={fields["timestamp"]}&type=authenticatedtest-secret")));
+                Assert.Equal(authSig, fields["signature"]);
+            }
+            else
+            {
+                Assert.Matches(new Regex("^florabot/[0-9a-f]{32}$"), fields["public_id"]);
+                var signature = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"overwrite=false&public_id={fields["public_id"]}&timestamp={fields["timestamp"]}test-secret")));
+                Assert.Equal(signature, fields["signature"]);
+            }
             Assert.DoesNotContain("test-secret", await parts.ReadAsStringAsync(cancellationToken));
             if (mode == "upload-failure") return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
             if (mode == "redirect") return new HttpResponseMessage(HttpStatusCode.Redirect);
-            var url = $"https://res.cloudinary.com/test-cloud/image/upload/v1/{fields["public_id"]}.png";
-            if (mode == "wrong-host") url = url.Replace("res.cloudinary.com", "example.invalid");
-            if (mode == "wrong-cloud") url = url.Replace("test-cloud", "another-cloud");
-            if (mode == "query") url += "?redirect=other";
+            string url;
+            if (isAuthenticated)
+            {
+                url = mode switch
+                {
+                    "authenticated-signed" => $"https://res.cloudinary.com/test-cloud/image/authenticated/s--Ab12-_34--/v1/{fields["public_id"]}.png",
+                    "authenticated-public-url" => $"https://res.cloudinary.com/test-cloud/image/upload/v1/{fields["public_id"]}.png",
+                    "authenticated-transformation" => $"https://res.cloudinary.com/test-cloud/image/authenticated/c_fill,w_100/v1/{fields["public_id"]}.png",
+                    "authenticated-wrong-host" => $"https://foreign.example.invalid/test-cloud/image/authenticated/v1/{fields["public_id"]}.png",
+                    "authenticated-invalid-signature" => $"https://res.cloudinary.com/test-cloud/image/authenticated/s--short--/v1/{fields["public_id"]}.png",
+                    _ => $"https://res.cloudinary.com/test-cloud/image/authenticated/v1/{fields["public_id"]}.png"
+                };
+            }
+            else
+            {
+                url = $"https://res.cloudinary.com/test-cloud/image/upload/v1/{fields["public_id"]}.png";
+                if (mode == "wrong-host") url = url.Replace("res.cloudinary.com", "example.invalid");
+                if (mode == "wrong-cloud") url = url.Replace("test-cloud", "another-cloud");
+                if (mode == "query") url += "?redirect=other";
+            }
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new { public_id = mode == "wrong-id" ? "other" : fields["public_id"], secure_url = url, bytes = 123, sha256 = "untrusted" })) };
         }
     }

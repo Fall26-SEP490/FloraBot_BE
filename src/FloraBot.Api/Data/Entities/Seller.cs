@@ -19,6 +19,10 @@ public partial class Seller
 
     public DateOnly? PackageExpiresAt { get; set; }
 
+    public DateTime? PackageExpiresAtTs { get; set; }
+
+    public string? ContactEmail { get; set; }
+
     public string? BrandTone { get; set; }
 
     public string? BankName { get; set; }

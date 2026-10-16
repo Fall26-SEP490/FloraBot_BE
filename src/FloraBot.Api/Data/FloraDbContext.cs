@@ -30,6 +30,8 @@ public partial class FloraDbContext : DbContext
 
     public virtual DbSet<Kiosk> Kiosks { get; set; }
 
+    public virtual DbSet<KioskApplication> KioskApplications { get; set; }
+
     public virtual DbSet<LedgerEntry> LedgerEntries { get; set; }
 
     public virtual DbSet<Order> Orders { get; set; }
@@ -53,6 +55,8 @@ public partial class FloraDbContext : DbContext
     public virtual DbSet<UnlockToken> UnlockTokens { get; set; }
 
     public virtual DbSet<User> Users { get; set; }
+
+    public virtual DbSet<UserProfile> UserProfiles { get; set; }
 
     public virtual DbSet<VSellerBalance> VSellerBalances { get; set; }
 
@@ -361,6 +365,8 @@ public partial class FloraDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.HardwareId).HasColumnName("hardware_id");
             entity.Property(e => e.LastHeartbeatAt).HasColumnName("last_heartbeat_at");
+            entity.Property(e => e.Latitude).HasColumnName("latitude");
+            entity.Property(e => e.Longitude).HasColumnName("longitude");
             entity.Property(e => e.MqttClientId).HasColumnName("mqtt_client_id");
             entity.Property(e => e.Name).HasColumnName("name");
             entity.Property(e => e.Region).HasColumnName("region");
@@ -370,6 +376,57 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("app_now()")
                 .HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<KioskApplication>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("kiosk_applications_pkey");
+            entity.ToTable("kiosk_applications", "kiosk_ops");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_v7()").HasColumnName("id");
+            entity.Property(e => e.CustomerId).HasColumnName("customer_id");
+            entity.Property(e => e.PackageId).HasColumnName("package_id");
+            entity.Property(e => e.ShopName).HasColumnName("shop_name");
+            entity.Property(e => e.Phone).HasColumnName("phone");
+            entity.Property(e => e.ContactEmail).HasColumnName("contact_email");
+            entity.Property(e => e.InstallationAddress).HasColumnName("installation_address");
+            entity.Property(e => e.Latitude).HasColumnName("latitude");
+            entity.Property(e => e.Longitude).HasColumnName("longitude");
+            entity.Property(e => e.BankName).HasColumnName("bank_name");
+            entity.Property(e => e.BankHolder).HasColumnName("bank_holder");
+            entity.Property(e => e.BankAccountNoEnc).HasColumnName("bank_account_no_enc");
+            entity.Property(e => e.Status).HasDefaultValueSql("'AWAITING_PAYMENT'::text").HasColumnName("status");
+            entity.Property(e => e.PackageName).HasColumnName("package_name");
+            entity.Property(e => e.AnnualFee).HasColumnName("annual_fee");
+            entity.Property(e => e.WalkInSlots).HasColumnName("walk_in_slots");
+            entity.Property(e => e.PreorderSlots).HasColumnName("preorder_slots");
+            entity.Property(e => e.TotalSlots).HasColumnName("total_slots");
+            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
+            entity.Property(e => e.AssignedTechnicianId).HasColumnName("assigned_technician_id");
+            entity.Property(e => e.AssignedKioskId).HasColumnName("assigned_kiosk_id");
+            entity.Property(e => e.ScheduledDate).HasColumnName("scheduled_date");
+            entity.Property(e => e.TimeWindow).HasColumnName("time_window");
+            entity.Property(e => e.StartTime).HasColumnName("start_time");
+            entity.Property(e => e.EndTime).HasColumnName("end_time");
+            entity.Property(e => e.ReviewNote).HasColumnName("review_note");
+            entity.Property(e => e.ConfirmedAt).HasColumnName("confirmed_at");
+            entity.Property(e => e.TechnicianReport).HasColumnName("technician_report");
+            entity.Property(e => e.ReworkReason).HasColumnName("rework_reason");
+            entity.Property(e => e.HandoverAt).HasColumnName("handover_at");
+            entity.Property(e => e.HandoverBy).HasColumnName("handover_by");
+            entity.Property(e => e.SellerId).HasColumnName("seller_id");
+            entity.Property(e => e.RefundApprovedBy).HasColumnName("refund_approved_by");
+            entity.Property(e => e.RefundPaidBy).HasColumnName("refund_paid_by");
+            entity.Property(e => e.RefundReference).HasColumnName("refund_reference");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("app_now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("app_now()").HasColumnName("updated_at");
+
+            entity.HasOne(d => d.Customer).WithMany().HasForeignKey(d => d.CustomerId).OnDelete(DeleteBehavior.ClientSetNull);
+            entity.HasOne(d => d.Package).WithMany().HasForeignKey(d => d.PackageId).OnDelete(DeleteBehavior.ClientSetNull);
+            entity.HasOne(d => d.Payment).WithMany().HasForeignKey(d => d.PaymentId);
+            entity.HasOne(d => d.AssignedTechnician).WithMany().HasForeignKey(d => d.AssignedTechnicianId);
+            entity.HasOne(d => d.AssignedKiosk).WithMany().HasForeignKey(d => d.AssignedKioskId);
+            entity.HasOne(d => d.Seller).WithMany().HasForeignKey(d => d.SellerId);
+            entity.HasOne(d => d.HandoverByUser).WithMany().HasForeignKey(d => d.HandoverBy);
         });
 
         modelBuilder.Entity<LedgerEntry>(entity =>
@@ -554,6 +611,8 @@ public partial class FloraDbContext : DbContext
                 .HasDefaultValueSql("app_now()")
                 .HasColumnName("created_at");
             entity.Property(e => e.PackageExpiresAt).HasColumnName("package_expires_at");
+            entity.Property(e => e.PackageExpiresAtTs).HasColumnName("package_expires_at_ts");
+            entity.Property(e => e.ContactEmail).HasColumnName("contact_email");
             entity.Property(e => e.PackageId).HasColumnName("package_id");
             entity.Property(e => e.Phone).HasColumnName("phone");
             entity.Property(e => e.ShopName).HasColumnName("shop_name");
@@ -597,6 +656,7 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.RelayChannel).HasColumnName("relay_channel");
             entity.Property(e => e.RowVersion).HasColumnName("row_version");
             entity.Property(e => e.SlotCode).HasColumnName("slot_code");
+            entity.Property(e => e.Zone).HasColumnName("zone");
             entity.Property(e => e.Status)
                 .HasDefaultValueSql("'FREE'::text")
                 .HasColumnName("status");
@@ -663,6 +723,8 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.PaymentId).HasColumnName("payment_id");
             entity.Property(e => e.PeriodFrom).HasColumnName("period_from");
             entity.Property(e => e.PeriodTo).HasColumnName("period_to");
+            entity.Property(e => e.PeriodFromTs).HasColumnName("period_from_ts");
+            entity.Property(e => e.PeriodToTs).HasColumnName("period_to_ts");
             entity.Property(e => e.Price).HasColumnName("price");
             entity.Property(e => e.SellerId).HasColumnName("seller_id");
             entity.Property(e => e.Status)
@@ -699,6 +761,10 @@ public partial class FloraDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.MaxSlots).HasColumnName("max_slots");
             entity.Property(e => e.MonthlyFee).HasColumnName("monthly_fee");
+            entity.Property(e => e.AnnualFee).HasColumnName("annual_fee");
+            entity.Property(e => e.WalkInSlots).HasColumnName("walk_in_slots");
+            entity.Property(e => e.PreorderSlots).HasColumnName("preorder_slots");
+            entity.Property(e => e.BillingCycle).HasDefaultValue("MONTHLY").HasColumnName("billing_cycle");
             entity.Property(e => e.Name).HasColumnName("name");
             entity.Property(e => e.Status)
                 .HasDefaultValueSql("'ACTIVE'::text")
@@ -810,6 +876,32 @@ public partial class FloraDbContext : DbContext
             entity.HasOne(d => d.Seller).WithMany(p => p.Users)
                 .HasForeignKey(d => d.SellerId)
                 .HasConstraintName("users_seller_id_fkey");
+        });
+
+        modelBuilder.Entity<UserProfile>(entity =>
+        {
+            entity.HasKey(e => e.UserId).HasName("user_profiles_pkey");
+
+            entity.ToTable("user_profiles", "identity");
+
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Address).HasColumnName("address");
+            entity.Property(e => e.ContactEmail).HasColumnName("contact_email");
+            entity.Property(e => e.ContactEmailVerifiedAt).HasColumnName("contact_email_verified_at");
+            entity.Property(e => e.BankName).HasColumnName("bank_name");
+            entity.Property(e => e.AccountHolder).HasColumnName("account_holder");
+            entity.Property(e => e.AccountEncrypted).HasColumnName("account_encrypted");
+            entity.Property(e => e.AccountLast4).HasColumnName("account_last4");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("app_now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("app_now()")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.User).WithOne(p => p.Profile)
+                .HasForeignKey<UserProfile>(d => d.UserId)
+                .HasConstraintName("user_profiles_user_id_fkey");
         });
 
         modelBuilder.Entity<VSellerBalance>(entity =>

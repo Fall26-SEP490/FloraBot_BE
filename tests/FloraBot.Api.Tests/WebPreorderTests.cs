@@ -39,8 +39,8 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
             INSERT INTO identity.users(id,email,full_name,role) VALUES(@customer,@customer::text || '@example.invalid','Customer','CUSTOMER'),(@stranger,@stranger::text || '@example.invalid','Other customer','CUSTOMER');
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
             VALUES(@product,@seller,'Test bouquet',350000,48,'ACTIVE');
-            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash,last_heartbeat_at)
-            VALUES(@kiosk,@kiosk::text,'Test kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash,CURRENT_TIMESTAMP);
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash,last_heartbeat_at,latitude,longitude)
+            VALUES(@kiosk,@kiosk::text,'Test kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash,CURRENT_TIMESTAMP,10.771918,106.698347);
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
             SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
             """);

@@ -66,17 +66,24 @@ public static class PayOsEndpoints
             await using (var reader = await find.ExecuteReaderAsync(ct))
             {
                 if (!await reader.ReadAsync(ct)) return Results.BadRequest(new { message = "Không tìm thấy khoản thanh toán." });
-                paymentId = reader.GetGuid(0); purpose = reader.GetString(1); target = reader.GetGuid(purpose == "SUBSCRIPTION" ? 3 : 2); expected = reader.GetInt64(4);
+                paymentId = reader.GetGuid(0);
+                purpose = reader.GetString(1);
+                var targetOrdinal = purpose == "SUBSCRIPTION" ? 3 : 2;
+                target = !reader.IsDBNull(targetOrdinal) ? reader.GetGuid(targetOrdinal) : Guid.Empty;
+                expected = reader.GetInt64(4);
                 alreadySucceeded = reader.GetString(5) == "SUCCEEDED";
                 if (await reader.ReadAsync(ct)) throw new InvalidOperationException("Duplicate gateway order code.");
             }
             if (amount != expected) return Results.BadRequest(new { message = "Số tiền thanh toán không khớp." });
             var success = statusValue.GetString() == "00";
-            if (purpose == "SUBSCRIPTION" && !success) return Results.BadRequest();
-            await using var command = new NpgsqlCommand(purpose == "SUBSCRIPTION" ? "SELECT flow.subscription_paid(@id,@txn)" : "SELECT flow.checkout_paid(@id,@txn,@success,@amount)", connection, transaction);
-            command.Parameters.AddWithValue("id", target);
+            if ((purpose == "SUBSCRIPTION" || purpose == "KIOSK_APPLICATION") && !success) return Results.BadRequest();
+            await using var command = new NpgsqlCommand(
+                purpose == "SUBSCRIPTION" ? "SELECT flow.subscription_paid(@id,@txn)" :
+                purpose == "KIOSK_APPLICATION" ? "SELECT flow.kiosk_application_paid(@id,@txn)" :
+                "SELECT flow.checkout_paid(@id,@txn,@success,@amount)", connection, transaction);
+            command.Parameters.AddWithValue("id", purpose == "KIOSK_APPLICATION" ? paymentId : target);
             command.Parameters.AddWithValue("txn", reference);
-            if (purpose != "SUBSCRIPTION") { command.Parameters.AddWithValue("success", success); command.Parameters.AddWithValue("amount", amount); }
+            if (purpose != "SUBSCRIPTION" && purpose != "KIOSK_APPLICATION") { command.Parameters.AddWithValue("success", success); command.Parameters.AddWithValue("amount", amount); }
             await command.ExecuteNonQueryAsync(ct);
             if (!alreadySucceeded) await PaymentEvents.PublishSucceededAsync(connection, transaction, publisher, paymentId, ct);
             await outbox.CommitAsync(ct);

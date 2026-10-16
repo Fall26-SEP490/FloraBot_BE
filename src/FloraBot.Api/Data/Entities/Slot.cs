@@ -11,6 +11,8 @@ public partial class Slot
 
     public string SlotCode { get; set; } = null!;
 
+    public string? Zone { get; set; }
+
     public string Status { get; set; } = null!;
 
     public Guid? CurrentSellerId { get; set; }

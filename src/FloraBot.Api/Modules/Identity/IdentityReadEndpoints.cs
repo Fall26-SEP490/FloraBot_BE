@@ -10,7 +10,7 @@ public static class IdentityReadEndpoints
     public static void MapIdentityReads(this WebApplication app)
     {
         app.MapGet("/api/packages", async (FloraDbContext db) => await db.SubscriptionPackages.AsNoTracking()
-            .Where(x => x.Status == "ACTIVE").OrderBy(x => x.MonthlyFee).Select(x => new PackageResponse(x.Id, x.Name, x.MonthlyFee, x.MaxSlots)).ToListAsync()).AllowAnonymous().Produces<List<PackageResponse>>();
+            .Where(x => x.Status == "ACTIVE" && x.BillingCycle == "MONTHLY").OrderBy(x => x.MonthlyFee).Select(x => new PackageResponse(x.Id, x.Name, x.MonthlyFee, x.MaxSlots)).ToListAsync()).AllowAnonymous().Produces<List<PackageResponse>>();
         app.MapGet("/api/sellers/{sellerId:guid}", async (Guid sellerId, FloraDbContext db, HttpContext http) =>
         {
             if (!SameSeller(http, sellerId)) return Results.NotFound();

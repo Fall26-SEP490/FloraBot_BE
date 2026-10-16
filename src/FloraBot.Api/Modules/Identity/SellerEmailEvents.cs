@@ -88,8 +88,19 @@ public sealed class SellerEmailReader(NpgsqlDataSource data)
             deliveryId = $"subscription-receipt:{message.SubscriptionId}";
         }
         await using var users = new NpgsqlCommand("""
-            SELECT id,email FROM identity.users
-            WHERE seller_id=@seller AND role='SELLER' AND status='ACTIVE' AND email IS NOT NULL ORDER BY id
+            SELECT u.id,
+                   COALESCE(
+                       CASE WHEN p.contact_email_verified_at IS NOT NULL AND btrim(p.contact_email) <> '' THEN p.contact_email END,
+                       u.email
+                   ) AS email
+            FROM identity.users u
+            LEFT JOIN identity.user_profiles p ON p.user_id = u.id
+            WHERE u.seller_id=@seller AND u.role='SELLER' AND u.status='ACTIVE'
+              AND COALESCE(
+                       CASE WHEN p.contact_email_verified_at IS NOT NULL AND btrim(p.contact_email) <> '' THEN p.contact_email END,
+                       u.email
+                   ) IS NOT NULL
+            ORDER BY u.id
             """, connection, transaction);
         users.Parameters.AddWithValue("seller", message.SellerId);
         var recipients = new List<SellerEmailRecipient>();

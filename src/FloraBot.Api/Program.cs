@@ -85,6 +85,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<OtpService>();
 builder.Services.AddScoped<RegistrationOtpService>();
+builder.Services.AddScoped<ContactEmailOtpService>();
 builder.Services.AddSingleton<IAuthorizationHandler, SameSellerHandler>();
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, TenantAuthorizationResultHandler>();
 builder.Services.AddHttpClient("sms", client => client.Timeout = TimeSpan.FromSeconds(5));
@@ -167,12 +168,14 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Staff", p => p.RequireRole("TECHNICIAN", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("StaffWorker", p => p.RequireRole("TECHNICIAN", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("OperationsManager", p => p.RequireRole("OPERATIONS_MANAGER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("OperationsManagerOrAdmin", p => p.RequireRole("OPERATIONS_MANAGER", "ADMIN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Technician", p => p.RequireRole("TECHNICIAN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("SellerStaff", p => p.RequireRole("SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("SellerStaffChatParticipant", p => p.RequireRole("SELLER", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("ChatParticipant", p => p.RequireRole("CUSTOMER", "SELLER", "SELLER_STAFF").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("MemberIdentity", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Member", p => p.RequireRole("CUSTOMER", "SELLER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
+    .AddPolicy("KioskReconcile", p => p.RequireRole("CUSTOMER", "SELLER", "ADMIN").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("PreorderCustomer", p => p.RequireRole("CUSTOMER").RequireAssertion(c => !c.User.HasClaim(claim => claim.Type == "kiosk_id")))
     .AddPolicy("Kiosk", p => p.RequireRole("KIOSK"))
     .AddPolicy("Customer", p => p.RequireRole("CUSTOMER").RequireClaim("kiosk_id"))
@@ -189,6 +192,9 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("chat", http => RateLimitPartition.GetFixedWindowLimiter(
         http.User.FindFirstValue("sub") ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("contact-email", http => RateLimitPartition.GetFixedWindowLimiter(
+        http.User.FindFirstValue("sub") ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 var origins = (builder.Configuration["ALLOWED_ORIGINS"] ?? (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing")
     ? "http://localhost:3010,http://localhost:4321,http://localhost:5173,http://localhost:5174,http://127.0.0.1:3010,http://127.0.0.1:4321,http://127.0.0.1:5173,http://127.0.0.1:5174"
@@ -203,7 +209,7 @@ app.Use(async (http, next) =>
         bodyLimit.MaxRequestBodySize = 8 * 1024 * 1024;
     http.Response.Headers["X-Content-Type-Options"] = "nosniff";
     http.Response.Headers["Referrer-Policy"] = "no-referrer";
-    if (http.Request.Path.StartsWithSegments("/api/auth") || http.Request.Path.StartsWithSegments("/api/member") || http.Request.Path.StartsWithSegments("/api/kiosks") || http.Request.Path.StartsWithSegments("/api/receipts") || http.Request.Path.StartsWithSegments("/api/admin/refunds") ||
+    if (http.Request.Path.StartsWithSegments("/api/auth") || http.Request.Path.StartsWithSegments("/api/account") || http.Request.Path.StartsWithSegments("/api/member") || http.Request.Path.StartsWithSegments("/api/kiosks") || http.Request.Path.StartsWithSegments("/api/receipts") || http.Request.Path.StartsWithSegments("/api/admin/refunds") ||
         http.Request.Path.StartsWithSegments("/api/admin/flows/reconcile_gateway") || http.Request.Path.StartsWithSegments("/api/admin/flows/reconcile_daily"))
         http.Response.Headers.CacheControl = "no-store";
     if (http.Request.Path.StartsWithSegments("/hub") && http.Request.Headers.Origin.Count > 0)
@@ -254,6 +260,7 @@ else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
 app.MapAccountHierarchy();
+app.MapPersonalProfile();
 
 app.MapMembers();
 app.MapWebOrders();
@@ -279,10 +286,13 @@ app.MapCustomerHistory();
 app.MapCustomerPoints();
 app.MapAccessoryCatalog();
 app.MapSellerAccessories();
+app.MapKioskLocations();
 app.MapProductPhotos();
 app.MapProducts();
 PrivateEvidence.MapPrivateEvidence(app);
 app.MapRegistration();
+app.MapOnboardingPackages();
+app.MapKioskApplications();
 app.MapPayOs();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();

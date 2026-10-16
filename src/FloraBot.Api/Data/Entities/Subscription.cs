@@ -15,6 +15,10 @@ public partial class Subscription
 
     public DateOnly PeriodTo { get; set; }
 
+    public DateTime? PeriodFromTs { get; set; }
+
+    public DateTime? PeriodToTs { get; set; }
+
     public long Price { get; set; }
 
     public string Status { get; set; } = null!;

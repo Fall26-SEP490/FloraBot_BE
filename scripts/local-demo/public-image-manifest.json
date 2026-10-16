@@ -1,0 +1,46 @@
+[
+  {
+    "slug": "rose",
+    "name": "Hồng lụa dịu dàng",
+    "url": "https://res.cloudinary.com/dcvgbasl0/image/upload/v1791994067/florabot/b8fe5c497c2b46ab9b1da4cadc6020b0.png",
+    "publicId": "florabot/b8fe5c497c2b46ab9b1da4cadc6020b0",
+    "localFile": "demo-silk-rose.png",
+    "provenance": "AI-generated artificial-flower illustration; not a photograph of actual stocked product",
+    "sha256": "793fc1ec7fa1effcfe136c2422922695ffa9851f09672dcd603a4ce8ea1e9d2b",
+    "sizeBytes": 2232129,
+    "mimeType": "image/png"
+  },
+  {
+    "slug": "pastel",
+    "name": "Tulip vải pastel",
+    "url": "https://res.cloudinary.com/dcvgbasl0/image/upload/v1791994068/florabot/250c40cd1d3d4224be84170e3e1b65d2.png",
+    "publicId": "florabot/250c40cd1d3d4224be84170e3e1b65d2",
+    "localFile": "demo-pastel-bouquet.png",
+    "provenance": "AI-generated artificial-flower illustration; not a photograph of actual stocked product",
+    "sha256": "bc61f26d8fabf34a840576fc677b7702db0d3c9809a352adba968aeec6fc9978",
+    "sizeBytes": 2602781,
+    "mimeType": "image/png"
+  },
+  {
+    "slug": "sunflower",
+    "name": "Hướng dương lụa",
+    "url": "https://res.cloudinary.com/dcvgbasl0/image/upload/v1791994070/florabot/2090c2c499a7455b8abb735d125936f8.png",
+    "publicId": "florabot/2090c2c499a7455b8abb735d125936f8",
+    "localFile": "demo-sunflower.png",
+    "provenance": "AI-generated artificial-flower illustration; not a photograph of actual stocked product",
+    "sha256": "4f81721d22bbc86a111feb615f9203708d3a26bb152ba0ada242df4e5454e8ce",
+    "sizeBytes": 2527187,
+    "mimeType": "image/png"
+  },
+  {
+    "slug": "mini",
+    "name": "Bó hồng lụa mini",
+    "url": "https://res.cloudinary.com/dcvgbasl0/image/upload/v1791994070/florabot/c0cc9cfedb25489db3fc9370f720d55b.png",
+    "publicId": "florabot/c0cc9cfedb25489db3fc9370f720d55b",
+    "localFile": "demo-mini-bouquet.png",
+    "provenance": "AI-generated artificial-flower illustration; not a photograph of actual stocked product",
+    "sha256": "472e525ecd1bacf2ed18673acec947b95f97076e35f28f5f986572bdb0a0d6e8",
+    "sizeBytes": 2493648,
+    "mimeType": "image/png"
+  }
+]

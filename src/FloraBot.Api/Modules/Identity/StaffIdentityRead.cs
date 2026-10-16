@@ -16,6 +16,10 @@ public static class StaffIdentityRead
         db.Users.AsNoTracking().Where(x => x.Role == "TECHNICIAN" && x.Status == "ACTIVE")
             .OrderBy(x => x.FullName).ThenBy(x => x.Id).Select(x => new StaffDirectoryItem(x.Id, x.FullName)).ToListAsync(ct);
 
+    public static Task<StaffDirectoryItem?> FindActiveTechnicianAsync(FloraDbContext db, Guid technicianId, CancellationToken ct) =>
+        db.Users.AsNoTracking().Where(x => x.Id == technicianId && x.Role == "TECHNICIAN" && x.Status == "ACTIVE")
+            .Select(x => new StaffDirectoryItem(x.Id, x.FullName)).SingleOrDefaultAsync(ct);
+
     public static Task<List<StaffDirectoryItem>> ActiveSellerStaff(FloraDbContext db, Guid sellerId, CancellationToken ct) =>
         db.Users.AsNoTracking().Where(x => x.Role == "SELLER_STAFF" && x.Status == "ACTIVE" && x.SellerId == sellerId)
             .OrderBy(x => x.FullName).ThenBy(x => x.Id).Select(x => new StaffDirectoryItem(x.Id, x.FullName)).ToListAsync(ct);

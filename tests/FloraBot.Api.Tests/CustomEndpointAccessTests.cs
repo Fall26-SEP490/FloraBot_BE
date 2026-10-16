@@ -147,6 +147,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     {
         var entries = new List<Access>();
         Add([], "GET", "/api/shop/catalog");
+        Add([], "GET", "/api/kiosk-locations");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks");
+        Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location");
         Add(["TECHNICIAN"], "POST", "/api/staff/tasks/{taskId:guid}/resolve-incident");
         Add(["TECHNICIAN", "SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/evidence/upload", "/api/staff/tasks/{taskId:guid}/evidence");
         Add(["TECHNICIAN", "SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/evidence", "/api/staff/tasks/{taskId:guid}/evidence/{attachmentId:guid}");
@@ -160,8 +163,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/technicians");
         Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/technicians/{id:guid}/status");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff", "/api/sellers/{sellerId:guid}/staff-delivery-scopes", "/api/sellers/{sellerId:guid}/staff-tasks");
-        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff");
-        Add(["ADMIN", "SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/staff/accounts");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff");
+        Add(["SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
         Add(["ADMIN"], "POST", "/api/admin/staff-tasks", "/api/admin/staff-tasks/{taskId:guid}/transition", "/api/admin/staff-tasks/{taskId:guid}/reassign");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/staff-tasks", "/api/operations/staff-tasks/{taskId:guid}/transition", "/api/operations/staff-tasks/{taskId:guid}/reassign");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff-tasks", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/transition", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign");
@@ -173,7 +177,23 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/stock");
         Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/stock");
         Add([], "POST", "/api/auth/register", "/api/auth/register/verify", "/api/auth/google", "/api/auth/forgot-password", "/api/auth/reset-password");
-        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/auth/me", "/api/account/profile");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "PUT", "/api/account/profile");
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "POST",
+            "/api/account/profile/bank/reveal",
+            "/api/account/contact-email",
+            "/api/account/contact-email/verify",
+            "/api/account/contact-email/reset");
+        Add(["CUSTOMER"], "POST", "/api/member/chats/open");
+        Add(["CUSTOMER"], "GET", "/api/member/chats");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/chats");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM"], "GET",
+            "/api/chats/{chatId:guid}/messages",
+            "/api/chats/{chatId:guid}/messages/{messageId:guid}/image");
+        Add(["ADMIN", "STAFF", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF", "KIOSK", "SYSTEM"], "POST",
+            "/api/chats/{chatId:guid}/messages",
+            "/api/chats/{chatId:guid}/images",
+            "/api/chats/{chatId:guid}/read");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");
@@ -187,7 +207,17 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "POST", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
-        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config");
+        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
+        Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/kiosk-applications/current");
+        Add(["CUSTOMER", "SELLER", "ADMIN"], "POST", "/api/member/kiosk-applications/{id:guid}/reconcile");
+        Add(["ADMIN", "OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-applications", "/api/operations/kiosk-applications/{id:guid}", "/api/operations/kiosk-applications/{id:guid}/evidence/{attachmentId:guid}");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-applications/{id:guid}/confirm", "/api/operations/kiosk-applications/{id:guid}/schedule", "/api/operations/kiosk-applications/{id:guid}/rework", "/api/operations/kiosk-applications/{id:guid}/handover", "/api/operations/kiosk-applications/{id:guid}/reject", "/api/operations/kiosk-applications/{id:guid}/platform-failure", "/api/operations/kiosks/enroll", "/api/operations/kiosks/{id:guid}/provision-key");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/eligible-kiosks");
+        Add(["TECHNICIAN"], "GET", "/api/staff/kiosk-installations", "/api/staff/kiosk-installations/{id:guid}", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/evidence/{attachmentId:guid}");
+        Add(["TECHNICIAN"], "POST", "/api/staff/kiosk-installations/{id:guid}/start", "/api/staff/kiosk-installations/{id:guid}/evidence/upload", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/submit");
+        Add(["ADMIN"], "GET", "/api/admin/kiosk-applications/refunds", "/api/admin/kiosk-applications/{id:guid}/refund/proof/{attachmentId:guid}");
+        Add(["ADMIN"], "POST", "/api/admin/kiosk-applications/{id:guid}/refund/approve", "/api/admin/kiosk-applications/{id:guid}/refund/confirm", "/api/admin/kiosk-applications/{id:guid}/refund/bank-details", "/api/admin/kiosk-applications/{id:guid}/refund/evidence/upload");
         Add([], "POST", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
         Add(["ADMIN"], "GET", "/openapi/{documentName}.json",
             "/api/admin/sellers", "/api/admin/slots",

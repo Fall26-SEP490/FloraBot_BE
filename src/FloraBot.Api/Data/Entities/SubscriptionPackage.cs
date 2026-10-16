@@ -11,6 +11,14 @@ public partial class SubscriptionPackage
 
     public long MonthlyFee { get; set; }
 
+    public long AnnualFee { get; set; }
+
+    public int WalkInSlots { get; set; }
+
+    public int PreorderSlots { get; set; }
+
+    public string BillingCycle { get; set; } = "MONTHLY";
+
     public int MaxSlots { get; set; }
 
     public string Status { get; set; } = null!;
