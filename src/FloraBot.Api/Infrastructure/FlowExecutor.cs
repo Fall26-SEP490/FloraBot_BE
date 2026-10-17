@@ -1,6 +1,7 @@
 using System.Data;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using FloraBot.Api.Realtime;
 using Microsoft.AspNetCore.DataProtection;
 using Npgsql;
@@ -14,7 +15,9 @@ namespace FloraBot.Api.Infrastructure;
 
 public sealed record FlowParameter(string Name, string Type, bool Optional);
 public sealed record FlowDefinition(string Name, string Module, string Scope, FlowParameter[] Params, bool SetReturning);
-public sealed record FlowResult(JsonElement? Result);
+public sealed record FlowResult(
+    JsonElement? Result,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? BatchId = null);
 
 public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionProvider protection, PortalNotifier notifier, ICapPublisher publisher, CloudinaryMedia media, PrivateEvidence evidence)
 {
@@ -31,6 +34,13 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
         if (scope != "receipt" && user.IsInRole("SELLER") && !user.HasClaim(c => c.Type == "kiosk_id") && sellerRoute != user.FindFirstValue("seller_id")) return Results.NotFound();
         if (kioskRoute is not null && kioskRoute != user.FindFirstValue("kiosk_id")) return Results.Forbid();
         var args = input.EnumerateObject().Where(p => p.Value.ValueKind != JsonValueKind.Null).ToDictionary(p => p.Name, p => p.Value.Clone());
+        if (name == "stock_bouquet")
+        {
+            if (!args.TryGetValue("p_batch", out var requestedBatch))
+                args["p_batch"] = JsonSerializer.SerializeToElement(Guid.CreateVersion7());
+            else if (requestedBatch.ValueKind != JsonValueKind.String || !requestedBatch.TryGetGuid(out var batchId) || batchId == Guid.Empty)
+                return Results.BadRequest();
+        }
         foreach (var parameter in Definitions[name].Params)
         {
             if (parameter.Name is "p_user" or "p_admin" or "p_actor" or "p_staff" or "p_reporter" or "p_approver")
@@ -134,7 +144,8 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
                 args.TryGetValue("p_seller", out var sellerValue) && sellerValue.ValueKind == JsonValueKind.String && sellerValue.TryGetGuid(out var sellerId) ? sellerId : null;
             await notifier.RefreshAsync(targetSeller);
         }
-        return Results.Ok(new FlowResult(result));
+        var generatedBatchId = name == "stock_bouquet" ? args["p_batch"].GetGuid() : (Guid?)null;
+        return Results.Ok(new FlowResult(result, generatedBatchId));
     }
 
     public static async Task<JsonElement?> CallAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string name,

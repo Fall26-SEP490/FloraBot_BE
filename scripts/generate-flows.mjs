@@ -12,6 +12,7 @@ const groups = {
   Notify: { admin: ['attach'] },
 };
 const actors = new Set(['p_user', 'p_admin', 'p_actor', 'p_staff', 'p_reporter', 'p_approver']);
+const requestOptional = new Set(['stock_bouquet:p_batch']);
 const types = { uuid: 'Guid', text: 'string', int: 'int', bigint: 'long', numeric: 'decimal', boolean: 'bool', date: 'DateOnly', jsonb: 'JsonElement', 'uuid[]': 'Guid[]' };
 const signatures = new Map([...source.matchAll(/CREATE OR REPLACE FUNCTION flow\.(\w+)\(([\s\S]*?)\)\s*RETURNS\s+(\w+)/g)].map(m => [m[1], { args: m[2].replace(/\s+/g, ' '), returns: m[3] }]));
 const catalog = [];
@@ -26,8 +27,10 @@ for (const [module, roles] of Object.entries(groups)) {
     });
     const injected = p => p.name === 'p_now' || actors.has(p.name) || (p.name === 'p_seller' && ['seller', 'sellerOnly'].includes(scope)) || (p.name === 'p_kiosk' && ['shopping', 'kiosk'].includes(scope)) || (p.name === 'p_customer' && ['shopping', 'customer'].includes(scope));
     const exposed = params.filter(p => !injected(p));
+    const isRequestOptional = p => p.optional || p.name === 'p_statement' || requestOptional.has(`${name}:${p.name}`);
+    const orderedExposed = [...exposed.filter(p => !isRequestOptional(p)), ...exposed.filter(isRequestOptional)];
     const typeName = name.split('_').map(s => s[0].toUpperCase() + s.slice(1)).join('') + 'Request';
-    code += `public sealed record ${typeName}(\n${exposed.map(p => `    ${types[p.type]}${p.optional || p.name === 'p_statement' ? '?' : ''} ${p.name}${p.optional ? ' = null' : ''}`).join(',\n')});\n\n`;
+    code += `public sealed record ${typeName}(\n${orderedExposed.map(p => `    ${types[p.type]}${isRequestOptional(p) ? '?' : ''} ${p.name}${isRequestOptional(p) ? ' = null' : ''}`).join(',\n')});\n\n`;
     const path = ['seller', 'sellerOnly'].includes(scope) ? '/sellers/{sellerId:guid}' : ['shopping', 'kiosk', 'customer'].includes(scope) ? '/kiosks/{kioskId:guid}' : scope === 'receipt' ? '/receipts' : '/admin';
     const policy = { seller: 'Merchant', sellerOnly: 'Seller', admin: 'Admin', shopping: 'Shopping', kiosk: 'Kiosk', customer: 'Customer', receipt: null }[scope];
     let authorization = ['seller', 'sellerOnly'].includes(scope) ? `.RequireAuthorization("${policy}", "SameSeller")` : policy ? `.RequireAuthorization("${policy}")` : '.AllowAnonymous().RequireRateLimiting("receipt")';

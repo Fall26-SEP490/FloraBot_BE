@@ -10,10 +10,10 @@ public sealed record ReleaseSlotRequest(
     string p_reason);
 
 public sealed record StockBouquetRequest(
-    Guid p_batch,
     Guid p_product,
     Guid p_slot,
-    string p_qr);
+    string p_qr,
+    Guid? p_batch = null);
 
 public sealed record ReturnToSellerRequest(
     Guid p_slot,

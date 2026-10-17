@@ -44,7 +44,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
             var invalidBody = new CreateProductRequest(
-                Guid.NewGuid(), name, "Desc", price, [tag], length, width, height);
+                name, "Desc", price, [tag], length, width, height);
 
             var response = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", invalidBody);
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -87,7 +87,6 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             // 1. Raw JSON: tags is null
             var jsonNullTags = $$"""
                 {
-                  "id": "{{Guid.NewGuid()}}",
                   "name": "Hoa Vải",
                   "description": "Mô tả",
                   "price": 100000,
@@ -104,7 +103,6 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             // 2. Raw JSON: tags contains null element
             var jsonTagWithNull = $$"""
                 {
-                  "id": "{{Guid.NewGuid()}}",
                   "name": "Hoa Vải",
                   "description": "Mô tả",
                   "price": 100000,
@@ -138,7 +136,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         var seller = Guid.NewGuid();
         var user = Guid.NewGuid();
-        var productId = Guid.NewGuid();
+        var productId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
@@ -157,9 +155,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             // POST with null description
             var postBody = new CreateProductRequest(
-                productId, "Hoa Không Mô Tả", null, 200000, ["TAG1"], 15, 15, 20);
+                "Hoa Không Mô Tả", null, 200000, ["TAG1"], 15, 15, 20);
             var postRes = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", postBody);
             Assert.Equal(HttpStatusCode.Created, postRes.StatusCode);
+            var createdResult = await postRes.Content.ReadFromJsonAsync<ProductIdResponse>();
+            Assert.NotNull(createdResult);
+            Assert.NotEqual(Guid.Empty, createdResult.Id);
+            productId = createdResult.Id;
 
             // GET verifies description is null
             var getRes1 = await client.GetAsync($"/api/sellers/{seller}/products");
@@ -290,7 +292,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             // Foreign seller write returns 404 (SameSeller tenant protection)
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: ownUser, sellerId: ownSeller));
-            var body = new CreateProductRequest(Guid.NewGuid(), "Flower", "Desc", 50000, ["rose"], 10, 10, 10);
+            var body = new CreateProductRequest("Flower", "Desc", 50000, ["rose"], 10, 10, 10);
             var foreignResponse = await client.PostAsJsonAsync($"/api/sellers/{foreignSeller}/products", body);
             Assert.Equal(HttpStatusCode.NotFound, foreignResponse.StatusCode);
 
@@ -318,14 +320,14 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
     }
 
     [Fact]
-    public async Task CreateArtificialProductPersistsMetadataAndRejectsDuplicateIdWithConflict()
+    public async Task CreateArtificialProductPersistsMetadataAndGeneratesId()
     {
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
 
         var seller = Guid.NewGuid();
         var user = Guid.NewGuid();
-        var productId = Guid.NewGuid();
+        var productId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
@@ -343,18 +345,15 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
             var createBody = new CreateProductRequest(
-                productId, "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
+                "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
 
             var createResponse = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", createBody);
             Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
             var createdResult = await createResponse.Content.ReadFromJsonAsync<ProductIdResponse>();
             Assert.NotNull(createdResult);
-            Assert.Equal(productId, createdResult.Id);
-
-            // Duplicate ID must return 409 Conflict without creating a duplicate
-            var duplicateResponse = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", createBody);
-            Assert.Equal(HttpStatusCode.Conflict, duplicateResponse.StatusCode);
+            Assert.NotEqual(Guid.Empty, createdResult.Id);
+            productId = createdResult.Id;
 
             // Verify metadata via GET /api/sellers/{sellerId}/products
             var getResponse = await client.GetAsync($"/api/sellers/{seller}/products");
@@ -553,13 +552,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             // 4. Inactive seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: inactiveUser, sellerId: inactiveSeller));
             var postInactive = await client.PostAsJsonAsync($"/api/sellers/{inactiveSeller}/products",
-                new CreateProductRequest(Guid.NewGuid(), "Name", null, 100000, ["TAG"], 10, 10, 10));
+                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postInactive.StatusCode);
 
             // 5. Expired subscription seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: expiredUser, sellerId: expiredSeller));
             var postExpired = await client.PostAsJsonAsync($"/api/sellers/{expiredSeller}/products",
-                new CreateProductRequest(Guid.NewGuid(), "Name", null, 100000, ["TAG"], 10, 10, 10));
+                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postExpired.StatusCode);
         }
         finally

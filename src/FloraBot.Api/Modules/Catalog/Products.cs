@@ -7,7 +7,6 @@ namespace FloraBot.Api.Modules.Catalog;
 public sealed record ProductIdResponse(Guid Id);
 
 public sealed record CreateProductRequest(
-    Guid Id,
     string Name,
     string? Description,
     long Price,
@@ -51,7 +50,6 @@ public static class Products
     private static async Task<IResult> CreateAsync(Guid sellerId, CreateProductRequest request, HttpContext http, NpgsqlDataSource data, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
-        if (request.Id == Guid.Empty) return Results.BadRequest();
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120) return Results.BadRequest();
         if (request.Description is not null && request.Description.Length > 2000) return Results.BadRequest();
         if (request.Price <= 0) return Results.BadRequest();
@@ -63,12 +61,13 @@ public static class Products
 
         if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId)) return Results.Unauthorized();
 
+        var productId = Guid.CreateVersion7();
         await using var connection = await data.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         try
         {
             await using var command = new NpgsqlCommand("SELECT flow.create_artificial_product(@id, @seller, @actor, @name, @desc, @price, @tags, @length, @width, @height)", connection, transaction);
-            command.Parameters.Add("id", NpgsqlDbType.Uuid).Value = request.Id;
+            command.Parameters.Add("id", NpgsqlDbType.Uuid).Value = productId;
             command.Parameters.Add("seller", NpgsqlDbType.Uuid).Value = sellerId;
             command.Parameters.Add("actor", NpgsqlDbType.Uuid).Value = actorId;
             command.Parameters.Add("name", NpgsqlDbType.Text).Value = request.Name.Trim();
