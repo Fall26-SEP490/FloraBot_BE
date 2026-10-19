@@ -10,10 +10,8 @@ public sealed record ReleaseSlotRequest(
     string p_reason);
 
 public sealed record StockBouquetRequest(
-    Guid p_product,
-    Guid p_slot,
-    string p_qr,
-    Guid? p_batch = null);
+    Guid ProductId,
+    Guid SlotId);
 
 public sealed record ReturnToSellerRequest(
     Guid p_slot,
@@ -27,8 +25,8 @@ public sealed record ReportDeviceFaultRequest(
     string p_desc,
     string p_photo);
 
-public sealed record AssignSlotRequest(
-    Guid p_slot,
+public sealed record AssignKioskRequest(
+    Guid p_kiosk,
     Guid p_seller);
 
 public sealed record AdminDisposeSlotRequest(
@@ -65,18 +63,18 @@ public static class KioskOpsEndpoints
         app.MapPost("/api/sellers/{sellerId:guid}/flows/release_slot", async (Guid sellerId, ReleaseSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("release_slot", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("release_slot").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/stock_bouquet", async (Guid sellerId, StockBouquetRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
-            await executor.ExecuteAsync("stock_bouquet", "seller", JsonSerializer.SerializeToElement(input), http, ct))
-            .WithName("stock_bouquet").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
+        app.MapPost("/api/me/flows/stock_bouquet", async (StockBouquetRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+            await executor.ExecuteAsync("stock_bouquet", "seller", JsonSerializer.SerializeToElement(new { p_product = input.ProductId, p_slot = input.SlotId }), http, ct))
+            .WithName("stock_bouquet").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Seller");
         app.MapPost("/api/sellers/{sellerId:guid}/flows/return_to_seller", async (Guid sellerId, ReturnToSellerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("return_to_seller", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("return_to_seller").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/sellers/{sellerId:guid}/flows/report_device_fault", async (Guid sellerId, ReportDeviceFaultRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("report_device_fault", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("report_device_fault").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/admin/flows/assign_slot", async (AssignSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
-            await executor.ExecuteAsync("assign_slot", "admin", JsonSerializer.SerializeToElement(input), http, ct))
-            .WithName("assign_slot").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Admin");
+        app.MapPost("/api/admin/flows/assign_kiosk", async (AssignKioskRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+            await executor.ExecuteAsync("assign_kiosk", "admin", JsonSerializer.SerializeToElement(input), http, ct))
+            .WithName("assign_kiosk").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Admin");
         app.MapPost("/api/admin/flows/admin_dispose_slot", async (AdminDisposeSlotRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("admin_dispose_slot", "admin", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("admin_dispose_slot").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Admin");

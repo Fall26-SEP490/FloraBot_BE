@@ -32,9 +32,8 @@ public sealed class CatalogSubscriptionTests(ApiFactory factory) : IClassFixture
         {
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
-            var route = $"/api/sellers/{seller}/flows/";
-            var price = await client.PostAsJsonAsync(route + "update_product_price", new { p_product = product, p_price = 351000 });
-            var availability = await client.PostAsJsonAsync(route + "set_product_status", new { p_product = product, p_status = "ACTIVE" });
+            var price = await client.PostAsJsonAsync($"/api/sellers/{seller}/flows/update_product_price", new { p_product = product, p_price = 351000 });
+            var availability = await client.PostAsJsonAsync("/api/me/flows/set_product_status", new { productId = product, status = "ACTIVE" });
             Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Conflict, price.StatusCode);
             Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Conflict, availability.StatusCode);
             await using var check = data.CreateCommand("SELECT price FROM catalog.flower_products WHERE id=@id");

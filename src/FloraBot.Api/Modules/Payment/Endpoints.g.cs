@@ -39,7 +39,7 @@ public sealed record ConfirmRefundRequest(
 
 public sealed record ReconcileGatewayRequest(
     DateOnly p_date,
-    JsonElement? p_statement);
+    JsonElement? p_statement = null);
 
 public sealed record ReconcileDailyRequest(
     DateOnly p_date);

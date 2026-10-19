@@ -14,21 +14,21 @@ public static class ProductPhotos
 {
     public static void MapProductPhotos(this WebApplication app)
     {
-        app.MapGet("/api/sellers/{sellerId:guid}/products/{productId:guid}/photos", async (Guid sellerId, Guid productId, int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) =>
+        app.MapGet("/api/me/products/{productId:guid}/photos", async (Guid productId, int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
             var current = page ?? 1;
             if (current is < 1 or > 100000) return Results.Problem(statusCode: 400, detail: "Trang ảnh không hợp lệ.");
             await using var connection = await source.OpenConnectionAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            if (!await CheckOwnerAsync(connection, transaction, productId, sellerId, Guid.Parse(http.User.FindFirstValue("sub")!), ct, editing: false)) return Results.NotFound();
+            if (!await CheckOwnerAsync(connection, transaction, productId, Guid.Parse(http.User.FindFirstValue("sub")!), ct, editing: false)) return Results.NotFound();
             var rows = await VerifiedAttachments.ProductPhotosAsync(connection, transaction, productId, current, ct);
             await transaction.CommitAsync(ct);
             return Results.Ok(new ProductPhotoPage(rows.Take(20).Select(x => new ProductPhotoResponse(x.Id, x.Url, x.MimeType, x.SizeBytes, x.Sha256)).ToList(), rows.Count > 20));
-        }).RequireAuthorization("Merchant", "SameSeller").WithTags("Catalog").Produces<ProductPhotoPage>();
+        }).RequireAuthorization("Merchant").WithTags("Catalog").Produces<ProductPhotoPage>();
 
-        app.MapPost("/api/sellers/{sellerId:guid}/products/{productId:guid}/photos", UploadAsync)
-            .RequireAuthorization("Merchant", "SameSeller").WithTags("Catalog")
+        app.MapPost("/api/me/products/{productId:guid}/photos", UploadAsync)
+            .RequireAuthorization("Merchant").WithTags("Catalog")
             .WithMetadata(new RequestSizeLimitAttribute(CloudinaryMedia.MaximumBytes))
             .Accepts<byte[]>("image/png", "image/jpeg", "image/webp")
             .AddOpenApiOperationTransformer((operation, context, cancellationToken) =>
@@ -40,7 +40,7 @@ public static class ProductPhotos
             .Produces<ProductPhotoResponse>().ProducesProblem(400).ProducesProblem(413).ProducesProblem(503);
     }
 
-    private static async Task<IResult> UploadAsync(Guid sellerId, Guid productId, HttpContext http, NpgsqlDataSource source, CloudinaryMedia media, CancellationToken ct)
+    private static async Task<IResult> UploadAsync(Guid productId, HttpContext http, NpgsqlDataSource source, CloudinaryMedia media, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         var actor = Guid.Parse(http.User.FindFirstValue("sub")!);
@@ -48,7 +48,7 @@ public static class ProductPhotos
         // Check before sending bytes externally, then lock and recheck before committing metadata.
         await using (var before = await connection.BeginTransactionAsync(ct))
         {
-            if (!await CheckOwnerAsync(connection, before, productId, sellerId, actor, ct)) return Results.NotFound();
+            if (!await CheckOwnerAsync(connection, before, productId, actor, ct)) return Results.NotFound();
             await before.CommitAsync(ct);
         }
         if (http.Request.ContentType is not ("image/png" or "image/jpeg" or "image/webp"))
@@ -76,7 +76,7 @@ public static class ProductPhotos
             return Results.Problem(statusCode: 503, detail: "Chưa xác minh được ảnh đã lưu. Liên hệ đội ngũ để kiểm tra trước khi tải lại.");
         }
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        if (!await CheckOwnerAsync(connection, transaction, productId, sellerId, actor, ct)) return Results.NotFound();
+        if (!await CheckOwnerAsync(connection, transaction, productId, actor, ct)) return Results.NotFound();
         await using var attach = new NpgsqlCommand("SELECT flow.add_product_photo(@product,@actor,@url)", connection, transaction);
         attach.Parameters.AddWithValue("product", productId);
         attach.Parameters.AddWithValue("actor", actor);
@@ -87,14 +87,14 @@ public static class ProductPhotos
         return Results.Ok(new ProductPhotoResponse(id, uploaded.Url, uploaded.MimeType, uploaded.SizeBytes, uploaded.Sha256));
     }
 
-    private static async Task<bool> CheckOwnerAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid product, Guid seller, Guid actor, CancellationToken ct, bool editing = true)
+    private static async Task<bool> CheckOwnerAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid product, Guid actor, CancellationToken ct, bool editing = true)
     {
         await using var command = new NpgsqlCommand("SELECT seller_id FROM catalog.flower_products WHERE id=@product FOR UPDATE", connection, transaction);
         command.Parameters.AddWithValue("product", product);
-        if (await command.ExecuteScalarAsync(ct) is not Guid owner || owner != seller) return false;
+        if (await command.ExecuteScalarAsync(ct) is not Guid owner) return false;
         await using var access = new NpgsqlCommand(editing ? "SELECT flow.check_catalog_editor(@product,@actor)" : "SELECT flow.check_seller_user(@actor,@seller)", connection, transaction);
         access.Parameters.AddWithValue("actor", actor);
-        access.Parameters.AddWithValue(editing ? "product" : "seller", editing ? product : seller);
+        access.Parameters.AddWithValue(editing ? "product" : "seller", editing ? product : owner);
         await access.ExecuteNonQueryAsync(ct);
         return true;
     }

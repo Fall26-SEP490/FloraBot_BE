@@ -42,7 +42,7 @@ public sealed class ProductPhotoTests(ApiFactory factory) : IClassFixture<ApiFac
         await setup.ExecuteNonQueryAsync();
         using var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: actor, sellerId: seller));
-        var own = $"/api/sellers/{seller}/products/{product}/photos";
+        var own = $"/api/me/products/{product}/photos";
         var foreign = own.Replace(product.ToString(), "30000000-0000-0000-0000-000000000003");
         HttpContent Content(byte[]? value = null, string mime = "image/png")
         {
@@ -51,7 +51,6 @@ public sealed class ProductPhotoTests(ApiFactory factory) : IClassFixture<ApiFac
             return result;
         }
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync(foreign, Content())).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync(own.Replace(seller.ToString(), "20000000-0000-0000-0000-000000000002"), Content())).StatusCode);
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, (await client.PostAsync(own, Content(mime: "image/svg+xml"))).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync(own, Content("not an image"u8.ToArray()))).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync(own, Content(mime: "image/jpeg"))).StatusCode);

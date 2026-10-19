@@ -164,7 +164,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             productId = createdResult.Id;
 
             // GET verifies description is null
-            var getRes1 = await client.GetAsync($"/api/sellers/{seller}/products");
+            var getRes1 = await client.GetAsync("/api/me/products");
             var items1 = await getRes1.Content.ReadFromJsonAsync<List<ProductResponse>>();
             var created = Assert.Single(items1!, p => p.Id == productId);
             Assert.Null(created.Description);
@@ -176,7 +176,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             Assert.Equal(HttpStatusCode.OK, putRes.StatusCode);
 
             // GET verifies update with null description
-            var getRes2 = await client.GetAsync($"/api/sellers/{seller}/products");
+            var getRes2 = await client.GetAsync("/api/me/products");
             var items2 = await getRes2.Content.ReadFromJsonAsync<List<ProductResponse>>();
             var updated = Assert.Single(items2!, p => p.Id == productId);
             Assert.Equal("Hoa Đã Đổi Tên", updated.Name);
@@ -355,8 +355,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             Assert.NotEqual(Guid.Empty, createdResult.Id);
             productId = createdResult.Id;
 
-            // Verify metadata via GET /api/sellers/{sellerId}/products
-            var getResponse = await client.GetAsync($"/api/sellers/{seller}/products");
+            // Verify metadata via the authenticated seller's self-service endpoint.
+            var getResponse = await client.GetAsync("/api/me/products");
             Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
 
             var products = await getResponse.Content.ReadFromJsonAsync<List<ProductResponse>>();

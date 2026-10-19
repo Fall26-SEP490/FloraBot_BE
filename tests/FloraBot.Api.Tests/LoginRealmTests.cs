@@ -147,8 +147,8 @@ public sealed class LoginRealmTests
             var me = await client.GetAsync("/api/auth/me");
             Assert.Equal(HttpStatusCode.OK, me.StatusCode);
 
-            // Cross-shop access is denied
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/sellers/{shopB}/products")).StatusCode);
+            // Seller staff cannot access the seller-only product catalog.
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/me/products")).StatusCode);
 
             // Reassign seller to shopB in database -> existing token with shopA claim is revoked
             await using var reassign = data.CreateCommand("UPDATE identity.users SET seller_id=@shopB WHERE id=@id");

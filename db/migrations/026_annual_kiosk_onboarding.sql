@@ -2,6 +2,10 @@
 -- Forward-only additive migration preserving existing data and historical records. Idempotent.
 BEGIN;
 
+-- Kiosk ownership is exclusive: one kiosk is assigned to at most one seller.
+ALTER TABLE kiosk_ops.kiosks
+  ADD COLUMN IF NOT EXISTS seller_id uuid;
+
 -- 1. Extend identity.subscription_packages with annual billing and slot zone capacities
 ALTER TABLE identity.subscription_packages
   ADD COLUMN IF NOT EXISTS annual_fee bigint NOT NULL DEFAULT 0,
@@ -692,7 +696,7 @@ BEGIN
   -- Validate kiosk
   PERFORM pg_advisory_xact_lock(hashtextextended('kiosk-reserve:' || p_kiosk_id::text, 0));
   SELECT * INTO k FROM kiosk_ops.kiosks WHERE id = p_kiosk_id FOR UPDATE;
-  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') THEN
+  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') OR k.seller_id IS NOT NULL THEN
     RAISE EXCEPTION 'Kiosk không tồn tại, đã bị vô hiệu hóa hoặc đang bảo trì' USING ERRCODE = 'P0001';
   END IF;
 
@@ -987,7 +991,7 @@ BEGIN
   END IF;
 
   SELECT * INTO k FROM kiosk_ops.kiosks WHERE id = app.assigned_kiosk_id FOR UPDATE;
-  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') THEN
+  IF NOT FOUND OR k.status IN ('DISABLED', 'MAINTENANCE') OR k.seller_id IS NOT NULL THEN
     RAISE EXCEPTION 'Kiosk không tồn tại, đã bị vô hiệu hóa hoặc đang bảo trì' USING ERRCODE = 'P0001';
   END IF;
 
@@ -1054,7 +1058,7 @@ BEGIN
 
   -- 3. Update Kiosk location and assign slots (preserve OFFLINE status)
   UPDATE kiosk_ops.kiosks
-  SET address = app.installation_address, latitude = app.latitude, longitude = app.longitude, updated_at = v_now
+  SET seller_id = v_seller_id, address = app.installation_address, latitude = app.latitude, longitude = app.longitude, updated_at = v_now
   WHERE id = k.id;
 
   -- Insert active whole-kiosk rental assignments

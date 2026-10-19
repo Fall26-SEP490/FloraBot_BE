@@ -190,7 +190,7 @@ public static class KioskLocations
             http.Response.Headers.CacheControl = "no-store";
 
             var kiosks = await db.Kiosks.AsNoTracking()
-                .Where(k => db.Slots.Any(s => s.KioskId == k.Id && s.CurrentSellerId == sellerId))
+                .Where(k => k.SellerId == sellerId)
                 .OrderBy(k => k.Code)
                 .ThenBy(k => k.Id)
                 .ToListAsync(ct);
@@ -200,25 +200,9 @@ public static class KioskLocations
                 return Results.Ok(new List<SellerKioskDto>());
             }
 
-            var kioskIds = kiosks.Select(k => k.Id).ToList();
-            var slotStats = await db.Slots.AsNoTracking()
-                .Where(s => kioskIds.Contains(s.KioskId))
-                .GroupBy(s => s.KioskId)
-                .Select(g => new
-                {
-                    KioskId = g.Key,
-                    TotalSlots = g.Count(),
-                    SellerSlots = g.Count(s => s.CurrentSellerId == sellerId)
-                })
-                .ToDictionaryAsync(x => x.KioskId, ct);
-
             var result = kiosks.Select(k =>
             {
-                var hasStats = slotStats.TryGetValue(k.Id, out var stats);
-                var totalSlots = hasStats ? stats!.TotalSlots : 0;
-                var sellerSlots = hasStats ? stats!.SellerSlots : 0;
-                var isWhollyAssigned = totalSlots > 0 && sellerSlots == totalSlots;
-                var canEditLocation = isWhollyAssigned && k.Status != "DISABLED";
+                var canEditLocation = k.SellerId == sellerId && k.Status != "DISABLED";
                 var isComplete = !string.IsNullOrWhiteSpace(k.Address) && k.Latitude.HasValue && k.Longitude.HasValue;
                 var coords = k.Latitude.HasValue && k.Longitude.HasValue
                     ? new KioskCoordinates(k.Latitude.Value, k.Longitude.Value)
@@ -280,7 +264,7 @@ public static class KioskLocations
             await using var transaction = await connection.BeginTransactionAsync(ct);
 
             await using var lockCmd = new NpgsqlCommand(
-                "SELECT id, code, name, status, region FROM kiosk_ops.kiosks WHERE id = @id FOR UPDATE",
+                "SELECT id, code, name, status, region, seller_id FROM kiosk_ops.kiosks WHERE id = @id FOR UPDATE",
                 connection, transaction);
             lockCmd.Parameters.AddWithValue("id", kioskId);
             await using var reader = await lockCmd.ExecuteReaderAsync(ct);
@@ -294,6 +278,7 @@ public static class KioskLocations
             var name = reader.GetString(2);
             var status = reader.GetString(3);
             var region = reader.GetString(4);
+            var kioskSellerId = reader.IsDBNull(5) ? (Guid?)null : reader.GetGuid(5);
             await reader.CloseAsync();
 
             if (status == "DISABLED")
@@ -302,34 +287,11 @@ public static class KioskLocations
                 return Results.Problem(statusCode: 400, title: "Kiosk bị vô hiệu hóa", detail: "Không thể chỉnh sửa vị trí cho kiosk đang bị vô hiệu hóa.");
             }
 
-            // Whole-kiosk ownership check: lock all slot rows deterministically using CTE before aggregating
-            await using var slotCmd = new NpgsqlCommand(
-                @"WITH locked_slots AS (
-                      SELECT id, current_seller_id
-                      FROM kiosk_ops.slots
-                      WHERE kiosk_id = @kioskId
-                      ORDER BY id
-                      FOR UPDATE
-                  )
-                  SELECT count(*) AS total_slots,
-                         count(CASE WHEN current_seller_id = @sellerId THEN 1 END) AS seller_slots,
-                         count(CASE WHEN current_seller_id IS NULL OR current_seller_id <> @sellerId THEN 1 END) AS unassigned_or_foreign
-                  FROM locked_slots",
-                connection, transaction);
-            slotCmd.Parameters.AddWithValue("kioskId", kioskId);
-            slotCmd.Parameters.AddWithValue("sellerId", sellerId);
-            await using var slotReader = await slotCmd.ExecuteReaderAsync(ct);
-            await slotReader.ReadAsync(ct);
-            var totalSlots = slotReader.GetInt64(0);
-            var sellerSlots = slotReader.GetInt64(1);
-            var unassignedOrForeign = slotReader.GetInt64(2);
-            await slotReader.CloseAsync();
-
-            if (totalSlots == 0 || unassignedOrForeign > 0 || sellerSlots != totalSlots)
+            if (kioskSellerId != sellerId)
             {
                 await transaction.RollbackAsync(ct);
                 return Results.Problem(statusCode: 403, title: "Không có quyền chỉnh sửa",
-                    detail: "Seller chỉ được chỉnh sửa vị trí cho kiosk được phân bổ toàn quyền (không có ô dùng chung hoặc chưa gán).");
+                    detail: "Seller chỉ được chỉnh sửa vị trí của kiosk đã được admin gán cho mình.");
             }
 
             var trimmedAddress = input.Address.Trim();

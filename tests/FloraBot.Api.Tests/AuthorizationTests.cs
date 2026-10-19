@@ -21,9 +21,10 @@ public sealed class AuthorizationTests(ApiFactory factory) : IClassFixture<ApiFa
         return client;
     }
     [Fact]
-    public async Task SellerCannotReadAnotherSeller()
+    public async Task SellerProductListUsesSessionAndLegacyGetRouteIsGone()
     {
         using var client = Seller();
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/me/products")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/sellers/20000000-0000-0000-0000-000000000002/products")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/sellers/20000000-0000-0000-0000-000000000002/subscriptions")).StatusCode);
     }

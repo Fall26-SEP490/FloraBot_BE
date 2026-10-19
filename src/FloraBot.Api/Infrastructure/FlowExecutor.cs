@@ -31,7 +31,7 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
         var actor = user.FindFirstValue("sub");
         var sellerRoute = http.Request.RouteValues["sellerId"]?.ToString();
         var kioskRoute = http.Request.RouteValues["kioskId"]?.ToString();
-        if (scope != "receipt" && user.IsInRole("SELLER") && !user.HasClaim(c => c.Type == "kiosk_id") && sellerRoute != user.FindFirstValue("seller_id")) return Results.NotFound();
+        if (scope != "receipt" && user.IsInRole("SELLER") && !user.HasClaim(c => c.Type == "kiosk_id") && sellerRoute is not null && sellerRoute != user.FindFirstValue("seller_id")) return Results.NotFound();
         if (kioskRoute is not null && kioskRoute != user.FindFirstValue("kiosk_id")) return Results.Forbid();
         var args = input.EnumerateObject().Where(p => p.Value.ValueKind != JsonValueKind.Null).ToDictionary(p => p.Name, p => p.Value.Clone());
         if (name == "stock_bouquet")
@@ -40,6 +40,7 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
                 args["p_batch"] = JsonSerializer.SerializeToElement(Guid.CreateVersion7());
             else if (requestedBatch.ValueKind != JsonValueKind.String || !requestedBatch.TryGetGuid(out var batchId) || batchId == Guid.Empty)
                 return Results.BadRequest();
+            args["p_qr"] = JsonSerializer.SerializeToElement($"FB-{Guid.CreateVersion7():N}");
         }
         foreach (var parameter in Definitions[name].Params)
         {
@@ -141,7 +142,8 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
         if (name != "ai_suggest")
         {
             Guid? targetSeller = Guid.TryParse(sellerRoute, out var routeId) ? routeId :
-                args.TryGetValue("p_seller", out var sellerValue) && sellerValue.ValueKind == JsonValueKind.String && sellerValue.TryGetGuid(out var sellerId) ? sellerId : null;
+                args.TryGetValue("p_seller", out var sellerValue) && sellerValue.ValueKind == JsonValueKind.String && sellerValue.TryGetGuid(out var sellerId) ? sellerId :
+                user.IsInRole("SELLER") && Guid.TryParse(user.FindFirstValue("seller_id"), out var claimSellerId) ? claimSellerId : null;
             await notifier.RefreshAsync(targetSeller);
         }
         var generatedBatchId = name == "stock_bouquet" ? args["p_batch"].GetGuid() : (Guid?)null;

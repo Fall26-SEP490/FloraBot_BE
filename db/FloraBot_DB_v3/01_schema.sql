@@ -2,7 +2,7 @@
 -- v3 so với v2.1: bỏ preorder, feedback, hoa hồng, voucher, ca làm, phiếu công việc, thông báo lưu DB, luật Apriori, order_events, incident_tickets riêng.
 --                 thêm tích điểm khách hàng (users.loyalty_points, orders.points_*), nạp hàng theo batch_id, disputes gánh luôn sự cố (kind), sellers.brand_tone cho AI.
 -- v3.1 (07/10): gói thuê bao theo BRD §7.1 — seller trả PHÍ GÓI theo kỳ (identity.subscriptions), gói hết hạn -> PAST_DUE khóa bán, trả tiền lại thì mở;
---                 admin GÁN Ô trong hạn mức gói (kiosk_ops.slot_assignments, không tính tiền theo ô). Bỏ slot_rentals (thuê từng ô).
+--                 admin gán toàn kiosk cho một seller duy nhất; các ô trong kiosk cùng thuộc seller đó.
 --                 Hoàn tiền cho khách: bằng tay (không có refund API VietQR) — khách tự khai STK trên e-receipt (orders.refund_bank_*), admin chi + đối soát hằng ngày (flow.reconcile_payments).
 -- Quy ước: FK thật CHỈ trong cùng schema; tham chiếu sang service khác là cột uuid "-- ref schema.table" (comment), không FK.
 -- Tiền VND: bigint (đồng). Thời gian: timestamptz. Khóa: UUID v7 (public.uuid_v7(); .NET sinh Guid.CreateVersion7()).
@@ -127,12 +127,12 @@ BEGIN
 END $$;
 
 -- ============ identity (4) — Identity & Merchant ============
--- gói thuê bao (BRD §7.1): phí cố định theo tháng, bao gồm tối đa max_slots ô; phí gói = nguồn thu duy nhất của nền tảng ở MVP (không hoa hồng)
+-- gói thuê bao (BRD §7.1): phí cố định theo kỳ; max_slots giới hạn sức chứa toàn kiosk mà seller được gán
 CREATE TABLE identity.subscription_packages (
   id                   uuid PRIMARY KEY DEFAULT public.uuid_v7(),
   name                 text NOT NULL UNIQUE,
   monthly_fee          bigint NOT NULL CHECK (monthly_fee > 0),             -- phí gói mỗi tháng (đồng), không tính thêm theo ô
-  max_slots            int NOT NULL CHECK (max_slots > 0),                  -- số ô tối đa admin được gán cho seller trong gói
+  max_slots            int NOT NULL CHECK (max_slots > 0),                  -- số ô tối đa seller được quản lý theo gói
   status               text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','INACTIVE')),
   created_at           timestamptz NOT NULL DEFAULT public.app_now(),
   updated_at           timestamptz NOT NULL DEFAULT public.app_now()
@@ -210,6 +210,7 @@ CREATE INDEX ON catalog.flower_products (seller_id, status);
 -- ============ kiosk_ops (8) — Kiosk & Operations (gồm IoT) ============
 CREATE TABLE kiosk_ops.kiosks (
   id                uuid PRIMARY KEY DEFAULT public.uuid_v7(),
+  seller_id         uuid,                         -- ref identity.sellers; chủ kiosk duy nhất
   code              text NOT NULL UNIQUE,
   name              text NOT NULL,
   address           text NOT NULL,
@@ -260,7 +261,7 @@ CREATE TABLE kiosk_ops.slots (
   CHECK (status = 'FREE' OR status IN ('LOCKED','FAULT') OR current_seller_id IS NOT NULL)
 );
 CREATE INDEX slots_hold_idx ON kiosk_ops.slots (hold_until) WHERE status = 'HELD';
--- admin gán ô cho seller trong hạn mức gói (BRD FR-ADM-01); không tính tiền theo ô (tiền nằm ở phí gói). Lịch sử gán/thu hồi giữ lại.
+-- Lịch sử các ô seller đang khai thác trong kiosk được admin gán ở cấp kiosk.
 CREATE TABLE kiosk_ops.slot_assignments (
   id             uuid PRIMARY KEY DEFAULT public.uuid_v7(),
   slot_id        uuid NOT NULL REFERENCES kiosk_ops.slots(id),
