@@ -8,7 +8,7 @@
 
 | Vấn đề | Quyết định | Trong CSDL |
 |---|---|---|
-| **A2. Mô hình gói** — code cũ thuê *từng ô* có giá, BRD §7.1 mô tả *gói thuê bao có phí, có kỳ, PAST_DUE khóa bán* | Theo BRD (mentor giao tôi quyết) | `subscription_packages.monthly_fee` (Cơ bản 400k/3 ô, Chuyên nghiệp 1,5tr/10 ô — rẻ hơn mỗi ô nhưng phải cam kết, nên cả hai gói đều có lý do tồn tại). Bảng mới `identity.subscriptions` (kỳ N tháng, trả payOS, không chồng kỳ). `sellers.status`: PENDING → APPROVED (admin duyệt) → ACTIVE (đã trả phí) ↔ PAST_DUE; `sellers.package_expires_at`. **Khóa bán theo ngày** (`flow.package_valid`), job `roll_subscriptions` chỉ đổi status + ẩn catalog; trả tiền lại → ACTIVE ngay; quá `past_due_grace_days` (7) → thu hồi toàn bộ ô. Admin gán ô trong hạn mức gói: `kiosk_ops.slot_assignments` (`flow.assign_slot` / `release_slot`), không tính tiền theo ô. Bỏ `slot_rentals`. Ledger `PLATFORM_SUBSCRIPTION`. |
+| **A2. Mô hình gói** — code cũ thuê *từng ô* có giá, BRD §7.1 mô tả *gói thuê bao có phí, có kỳ, PAST_DUE khóa bán* | Theo BRD; runtime hiện gán toàn kiosk cho một seller | `subscription_packages.monthly_fee` (gói theo kỳ) và `identity.subscriptions` (kỳ trả payOS, không chồng kỳ). `sellers.status`: PENDING → APPROVED → ACTIVE ↔ PAST_DUE; quá `past_due_grace_days` (7) → thu hồi ô. `kiosk_ops.kiosks.seller_id` là chủ kiosk duy nhất; Admin dùng `flow.assign_kiosk` để gán toàn kiosk và mọi ô cho seller. `slot_assignments` giữ lịch sử khai thác ô; không được chia các ô của một kiosk cho seller khác. Ledger `PLATFORM_SUBSCRIPTION`. |
 | **A1. Hoàn tiền cho khách vãng lai** — VietQR không có refund API | Hoàn bằng chuyển khoản tay (GVHD chấp nhận) + **đối soát** | Khách quét e-receipt → "Nhận hoàn tiền" → `flow.submit_refund_info(order, mã e-receipt, ngân hàng, STK mã hóa, tên)`; chỉ nhận khi đơn có lệnh hoàn chờ; audit không chứa PII. `confirm_refund` **chặn** nếu chưa có STK; chi hết lệnh hoàn thì **xóa STK** (`REFUND_INFO_CLEARED`, NĐ 13/2023). Màn hình `screen.v_refund_queue` (sẵn sàng chi / chờ khách khai STK / hoàn seller). Đối soát: `flow.reconcile_gateway(ngày, sao kê JSON, admin)` so khoản thu với sao kê cổng (MISSING_IN_DB / MISSING_IN_STATEMENT / AMOUNT_MISMATCH, có audit) và `flow.reconcile_daily(ngày)` (chứng từ = sổ cái GATEWAY_CLEARING cho thu / hoàn / rút; sổ cái cân; lệnh hoàn chờ > 48h; tiền chờ hoàn). Sửa BRD §9: "PII chỉ thu khi khách yêu cầu hoàn, do khách tự nhập, xóa sau khi chi". |
 | **A3. Phụ kiện giao bằng cách nào** | **Chưa chốt** — xem mục "A3" cuối file (khuyến nghị: phụ kiện gói sẵn trong bó) | Code giữ nguyên v3 (tồn kho theo kiosk, đơn chỉ-phụ-kiện giao ngay). Khi chốt sẽ sửa một lượt. |
 
@@ -79,7 +79,7 @@ PENDING ─admin duyệt (gán gói)─▶ APPROVED ─trả phí gói (webhook)
                                                                      └──────────────────────────────────────────▶ PAST_DUE ─quá 7 ngày─▶ thu hồi mọi ô (trống → FREE, còn hoa → PENDING_RELEASE)
 admin: SUSPENDED / CLOSED (CLOSED thu hồi ô)
 ```
-Kỳ gói (`subscriptions`): PENDING_PAYMENT (24h không trả → CANCELLED; tiền về muộn → lệnh hoàn seller) → ACTIVE → EXPIRED. Gia hạn nối liền ngày hết hạn; đã PAST_DUE thì kỳ mới từ hôm nay. Ô: admin gán (`assign_slot`, ≤ `max_slots`), thu hồi (`release_slot`); seller tự trả ô được.
+Kỳ gói (`subscriptions`): PENDING_PAYMENT (24h không trả → CANCELLED; tiền về muộn → lệnh hoàn seller) → ACTIVE → EXPIRED. Gia hạn nối liền ngày hết hạn; đã PAST_DUE thì kỳ mới từ hôm nay. Admin gán kiosk nguyên chiếc (`assign_kiosk`); một kiosk không thể chia giữa nhiều seller.
 
 ## AI Gift Advisor trong CSDL
 

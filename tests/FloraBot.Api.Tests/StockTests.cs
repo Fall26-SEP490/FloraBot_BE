@@ -14,7 +14,7 @@ public sealed class StockTests(ApiFactory factory) : IClassFixture<ApiFactory>
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
         var seller = Guid.NewGuid(); var foreignSeller = Guid.NewGuid(); var user = Guid.NewGuid();
-        var product = Guid.NewGuid(); var foreignProduct = Guid.NewGuid(); var kiosk = Guid.NewGuid();
+        var product = Guid.NewGuid(); var foreignProduct = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var foreignKiosk = Guid.NewGuid();
         var slot = Guid.NewGuid(); var emptySlot = Guid.NewGuid(); var foreignSlot = Guid.NewGuid(); var batch = Guid.NewGuid();
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
@@ -23,21 +23,21 @@ public sealed class StockTests(ApiFactory factory) : IClassFixture<ApiFactory>
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','Stock test','SELLER',@seller);
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
             VALUES(@product,@seller,'Stock flower',350000,48,'ACTIVE'),(@foreignProduct,@foreignSeller,'Foreign flower',999000,24,'ACTIVE');
-            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
-            VALUES(@kiosk,@kiosk::text,'Stock kiosk','Stock address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
+            VALUES(@kiosk,@kiosk::text,'Stock kiosk','Stock address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@seller),
+                  (@foreignKiosk,@foreignKiosk::text,'Foreign stock kiosk','Foreign stock address','HCM',@foreignKiosk::text,@foreignKiosk::text,'ONLINE',@foreignSeller);
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
-            VALUES(@slot,@kiosk,'A01',0),(@emptySlot,@kiosk,'A02',1),(@foreignSlot,@kiosk,'A03',2);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
-            SELECT flow.assign_slot(@emptySlot,@seller,'10000000-0000-0000-0000-000000000001');
-            SELECT flow.assign_slot(@foreignSlot,@foreignSeller,'10000000-0000-0000-0000-000000000001');
+            VALUES(@slot,@kiosk,'A01',0),(@emptySlot,@kiosk,'A02',1),(@foreignSlot,@foreignKiosk,'A01',0);
+            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
+            SELECT flow.assign_kiosk(@foreignKiosk,@foreignSeller,'10000000-0000-0000-0000-000000000001');
             """);
-        foreach (var (name, id) in new[] { ("seller", seller), ("foreignSeller", foreignSeller), ("user", user), ("product", product), ("foreignProduct", foreignProduct), ("kiosk", kiosk), ("slot", slot), ("emptySlot", emptySlot), ("foreignSlot", foreignSlot) }) setup.Parameters.AddWithValue(name, id);
+        foreach (var (name, id) in new[] { ("seller", seller), ("foreignSeller", foreignSeller), ("user", user), ("product", product), ("foreignProduct", foreignProduct), ("kiosk", kiosk), ("foreignKiosk", foreignKiosk), ("slot", slot), ("emptySlot", emptySlot), ("foreignSlot", foreignSlot) }) setup.Parameters.AddWithValue(name, id);
         await setup.ExecuteNonQueryAsync();
         // Fixtures stay in the isolated test database because inventory and audit are append-only.
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
         var route = $"/api/sellers/{seller}/flows/stock_bouquet";
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/sellers/{foreignSeller}/slots")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/me/kiosks/{foreignKiosk}/slots")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync(route, new { p_batch = batch, p_product = foreignProduct, p_slot = slot, p_qr = "foreign-product" })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync(route, new { p_batch = batch, p_product = product, p_slot = foreignSlot, p_qr = "foreign-slot" })).StatusCode);
         var before = DateTime.UtcNow;
@@ -47,7 +47,7 @@ public sealed class StockTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Single(results, response => response.StatusCode == HttpStatusCode.Conflict);
         await using var changePrice = data.CreateCommand("UPDATE catalog.flower_products SET price=400000 WHERE id=@id");
         changePrice.Parameters.AddWithValue("id", product); await changePrice.ExecuteNonQueryAsync();
-        var read = await client.GetAsync($"/api/sellers/{seller}/slots");
+        var read = await client.GetAsync($"/api/me/kiosks/{kiosk}/slots");
         Assert.True(read.Headers.CacheControl?.NoStore);
         var rows = await read.Content.ReadFromJsonAsync<List<SellerSlotResponse>>();
         Assert.Equal(2, rows!.Count);

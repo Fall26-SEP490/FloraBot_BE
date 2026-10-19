@@ -6,8 +6,8 @@ using FloraBot.Api.Infrastructure;
 namespace FloraBot.Api.Modules.Catalog;
 
 public sealed record SetProductStatusRequest(
-    Guid p_product,
-    string p_status);
+    Guid ProductId,
+    string Status);
 
 public sealed record UpdateProductPriceRequest(
     Guid p_product,
@@ -25,9 +25,9 @@ public static class CatalogEndpoints
 {
     public static void MapCatalog(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/set_product_status", async (Guid sellerId, SetProductStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
-            await executor.ExecuteAsync("set_product_status", "seller", JsonSerializer.SerializeToElement(input), http, ct))
-            .WithName("set_product_status").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
+        app.MapPost("/api/me/flows/set_product_status", async (SetProductStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+            await executor.ExecuteAsync("set_product_status", "sellerMe", JsonSerializer.SerializeToElement(new { p_product = input.ProductId, p_status = input.Status }), http, ct))
+            .WithName("set_product_status").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant");
         app.MapPost("/api/sellers/{sellerId:guid}/flows/update_product_price", async (Guid sellerId, UpdateProductPriceRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("update_product_price", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("update_product_price").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");

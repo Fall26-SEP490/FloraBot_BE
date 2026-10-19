@@ -7,6 +7,7 @@ namespace FloraBot.Api.Modules.Catalog;
 public sealed record ProductIdResponse(Guid Id);
 
 public sealed record CreateProductRequest(
+    Guid KioskId,
     string Name,
     string? Description,
     long Price,
@@ -28,8 +29,8 @@ public static class Products
 {
     public static void MapProducts(this WebApplication app)
     {
-        app.MapPost("/api/sellers/{sellerId:guid}/products", CreateAsync)
-            .RequireAuthorization("Seller", "SameSeller")
+        app.MapPost("/api/me/products", CreateAsync)
+            .RequireAuthorization("Seller")
             .WithTags("Catalog")
             .Produces<ProductIdResponse>(StatusCodes.Status201Created)
             .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -47,9 +48,11 @@ public static class Products
             .ProducesProblem(StatusCodes.Status409Conflict);
     }
 
-    private static async Task<IResult> CreateAsync(Guid sellerId, CreateProductRequest request, HttpContext http, NpgsqlDataSource data, CancellationToken ct)
+    private static async Task<IResult> CreateAsync(CreateProductRequest request, HttpContext http, NpgsqlDataSource data, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
+        if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
+        if (request.KioskId == Guid.Empty) return Results.BadRequest();
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120) return Results.BadRequest();
         if (request.Description is not null && request.Description.Length > 2000) return Results.BadRequest();
         if (request.Price <= 0) return Results.BadRequest();
@@ -66,6 +69,13 @@ public static class Products
         await using var transaction = await connection.BeginTransactionAsync(ct);
         try
         {
+            await using (var kiosk = new NpgsqlCommand("SELECT id FROM kiosk_ops.kiosks WHERE id = @kiosk AND seller_id = @seller FOR SHARE", connection, transaction))
+            {
+                kiosk.Parameters.Add("kiosk", NpgsqlDbType.Uuid).Value = request.KioskId;
+                kiosk.Parameters.Add("seller", NpgsqlDbType.Uuid).Value = sellerId;
+                if (await kiosk.ExecuteScalarAsync(ct) is null) return Results.NotFound();
+            }
+
             await using var command = new NpgsqlCommand("SELECT flow.create_artificial_product(@id, @seller, @actor, @name, @desc, @price, @tags, @length, @width, @height)", connection, transaction);
             command.Parameters.Add("id", NpgsqlDbType.Uuid).Value = productId;
             command.Parameters.Add("seller", NpgsqlDbType.Uuid).Value = sellerId;

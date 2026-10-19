@@ -229,12 +229,14 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/admin/withdrawals", "/api/admin/withdrawals/{withdrawalId:guid}");
         Add(["ADMIN"], "POST", "/api/admin/refunds/{refundId:guid}/bank-details", "/api/admin/withdrawals/{withdrawalId:guid}/bank-details");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}",
-            "/api/sellers/{sellerId:guid}/products", "/api/sellers/{sellerId:guid}/subscriptions",
-            "/api/sellers/{sellerId:guid}/slots", "/api/sellers/{sellerId:guid}/wallet",
+            "/api/sellers/{sellerId:guid}/subscriptions",
+            "/api/sellers/{sellerId:guid}/wallet",
             "/api/sellers/{sellerId:guid}/bank", "/api/sellers/{sellerId:guid}/accessories",
-            "/api/sellers/{sellerId:guid}/products/{productId:guid}/photos");
-        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/products/{productId:guid}/photos",
+            "/api/me/products/{productId:guid}/photos");
+        Add(["ADMIN", "SELLER"], "POST", "/api/me/products/{productId:guid}/photos",
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
+        Add(["SELLER"], "GET", "/api/me/products");
+        Add(["SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/slots");
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");

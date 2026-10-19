@@ -75,7 +75,7 @@ NEW_DESC = {
  ("subscriptions","status"): "PENDING_PAYMENT (chờ payOS, hủy sau subscription_payment_hours), ACTIVE (đã thu), EXPIRED (job roll_subscriptions), CANCELLED (không trả; tiền về muộn → lệnh hoàn).",
  ("subscriptions","payment_id"): "Tham chiếu logic tới payment.payments (CHARGE, purpose SUBSCRIPTION). Bắt buộc khi ACTIVE.",
  ("subscription_packages","monthly_fee"): "Phí gói mỗi tháng (đồng), cố định, không tính thêm theo ô. Nguồn thu duy nhất của nền tảng ở MVP.",
- ("subscription_packages","max_slots"): "Số ô tối đa admin được gán cho seller trong gói (flow.assign_slot kiểm hạn mức).",
+ ("subscription_packages","max_slots"): "Số ô tối đa seller được dùng trong các kiosk đã được gán (flow.assign_kiosk kiểm hạn mức).",
  ("slot_assignments","slot_id"): "FK → slots. Ô được gán.",
  ("slot_assignments","seller_id"): "Tham chiếu logic tới identity.sellers. Seller nhận ô; chép sang slots.current_seller_id.",
  ("slot_assignments","assigned_by"): "Tham chiếu logic tới identity.users. Admin gán ô (chỉ ADMIN).",

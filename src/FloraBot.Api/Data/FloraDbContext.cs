@@ -370,6 +370,7 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.MqttClientId).HasColumnName("mqtt_client_id");
             entity.Property(e => e.Name).HasColumnName("name");
             entity.Property(e => e.Region).HasColumnName("region");
+            entity.Property(e => e.SellerId).HasColumnName("seller_id");
             entity.Property(e => e.Status)
                 .HasDefaultValueSql("'OFFLINE'::text")
                 .HasColumnName("status");

@@ -119,6 +119,7 @@ erDiagram
   }
   kiosks["kiosks (kiosk-ops)"] {
     uuid id PK
+    uuid seller_id FK "ref identity.sellers; chủ kiosk duy nhất"
     text code UK "NOT NULL"
     text name "NOT NULL"
     text address "NOT NULL"
@@ -299,6 +300,7 @@ erDiagram
     timestamptz updated_at "NOT NULL"
   }
   kiosks ||--o{ slots : "kiosk_id"
+  sellers ||..o{ kiosks : "seller_id"
   subscription_packages o|--o{ sellers : "package_id"
   sellers ||--o{ subscriptions : "seller_id"
   subscription_packages ||--o{ subscriptions : "package_id"

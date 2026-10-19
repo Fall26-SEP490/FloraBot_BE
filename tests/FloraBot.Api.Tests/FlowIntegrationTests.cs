@@ -35,7 +35,7 @@ public sealed class FlowIntegrationTests(ApiFactory factory) : IClassFixture<Api
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
         var price = await client.PostAsJsonAsync(route + "update_product_price", new { p_product = product, p_price = 417000 });
         Assert.Equal(HttpStatusCode.OK, price.StatusCode);
-        var status = await client.PostAsJsonAsync(route + "set_product_status", new { p_product = product, p_status = "ACTIVE" });
+        var status = await client.PostAsJsonAsync("/api/me/flows/set_product_status", new { productId = product, status = "ACTIVE" });
         Assert.Equal(HttpStatusCode.OK, status.StatusCode);
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
@@ -52,8 +52,8 @@ public sealed class FlowIntegrationTests(ApiFactory factory) : IClassFixture<Api
     {
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
-        var response = await client.PostAsJsonAsync("/api/sellers/20000000-0000-0000-0000-000000000001/flows/set_product_status",
-            new { p_product = "30000000-0000-0000-0000-000000000003", p_status = "ACTIVE" });
+        var response = await client.PostAsJsonAsync("/api/me/flows/set_product_status",
+            new { productId = "30000000-0000-0000-0000-000000000003", status = "ACTIVE" });
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
@@ -80,6 +80,8 @@ public sealed class FlowIntegrationTests(ApiFactory factory) : IClassFixture<Api
         response.EnsureSuccessStatusCode();
         var document = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(document.GetProperty("paths").TryGetProperty("/api/sellers/{sellerId}/flows/subscribe", out _));
+        Assert.True(document.GetProperty("paths").TryGetProperty("/api/me/products", out _));
+        Assert.True(document.GetProperty("paths").TryGetProperty("/api/me/kiosks/{kioskId}/slots", out _));
         var schema = document.GetProperty("components").GetProperty("schemas").GetProperty("SubscribeRequest");
         Assert.False(schema.GetProperty("properties").TryGetProperty("p_now", out _));
         var exportPath = Environment.GetEnvironmentVariable("EXPORT_OPENAPI_PATH");

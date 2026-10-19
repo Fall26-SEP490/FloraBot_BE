@@ -160,7 +160,7 @@
   {
     "name": "set_product_status",
     "module": "Catalog",
-    "scope": "seller",
+    "scope": "sellerMe",
     "params": [
       {
         "name": "p_product",
@@ -392,12 +392,12 @@
     "setReturning": false
   },
   {
-    "name": "assign_slot",
+    "name": "assign_kiosk",
     "module": "KioskOps",
     "scope": "admin",
     "params": [
       {
-        "name": "p_slot",
+        "name": "p_kiosk",
         "type": "uuid",
         "optional": false
       },

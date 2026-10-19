@@ -29,7 +29,8 @@ FloraBot's business model assigns one Seller to lease one whole physical kiosk. 
 
 ## Decision
 
-1. **Additive Database Migration (026):**
+1. **Additive Database Migrations (026/027):**
+   - **`kiosk_ops.kiosks.seller_id`:** Records the single seller that owns the kiosk. Admin assignment changes the whole kiosk atomically; its slots cannot be assigned across sellers.
    - **`identity.subscription_packages`:** Adds `annual_fee` (bigint), `walk_in_slots` (int), `preorder_slots` (int), and `billing_cycle` (text DEFAULT 'MONTHLY'). Inserts or ensures the 3 annual packages: `Trial`, `Pro`, and `Max`.
    - **`kiosk_ops.slots`:** Adds `zone` (text CHECK (zone IS NULL OR zone IN ('WALK_IN', 'PREORDER'))). Legacy slots conservatively retain NULL to avoid inferring false historical allocation; explicit zones are assigned to newly enrolled or reconfigured whole kiosks.
    - **`kiosk_ops.kiosk_applications`:** New table storing onboarding applications:
@@ -42,6 +43,7 @@ FloraBot's business model assigns one Seller to lease one whole physical kiosk. 
      - `technician_report` (text), `rework_reason` (text), `handover_at` (timestamptz), `handover_by` (uuid), `seller_id` (uuid FK `identity.sellers`).
      - `refund_approved_by` (uuid), `refund_paid_by` (uuid), `refund_reference` (text).
      - Partial unique index ensuring only one in-flight active application per customer.
+   - **Stored Procedure / Flow `flow.assign_kiosk`:** Lets an Admin assign or safely transfer a whole empty kiosk to one active, subscribed Seller. Per-slot Admin assignment is retired.
    - **Stored Procedure / Flow `flow.kiosk_application_handover`:** Executes whole-kiosk assignment, seller creation, active subscription, user role promotion, and audit log atomically.
 
 2. **Module Ownership & Boundary Enforcement:**
