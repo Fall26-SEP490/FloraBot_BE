@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using Npgsql;
 using StackExchange.Redis;
 using DotNetCore.CAP;
@@ -37,6 +38,7 @@ if (args.FirstOrDefault() == "provision-user")
     return;
 }
 var builder = WebApplication.CreateBuilder(args);
+var publicSwaggerEnabled = builder.Configuration.GetValue("PUBLIC_SWAGGER_ENABLED", false);
 if (string.IsNullOrEmpty(builder.Configuration["JWT_SIGNING_KEY"]) && builder.Environment.IsDevelopment())
     builder.Configuration["JWT_SIGNING_KEY"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 var signingKey = builder.Configuration["JWT_SIGNING_KEY"] ?? throw new InvalidOperationException("JWT_SIGNING_KEY is required.");
@@ -121,7 +123,13 @@ if (!string.IsNullOrWhiteSpace(builder.Configuration["DATA_PROTECTION_KEYS_PATH"
 builder.Services.AddProblemDetails();
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 65536);
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow);
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(options =>
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        // Keep Swagger requests on the same origin and scheme as the UI behind the IIS/YARP proxy.
+        document.Servers = [new OpenApiServer { Url = "/" }];
+        return Task.CompletedTask;
+    }));
 builder.Services.AddAuthentication("selector")
     .AddPolicyScheme("selector", "Device or session", options => options.ForwardDefaultSelector = http =>
         http.Request.Headers.ContainsKey("X-Kiosk-Key") && !http.Request.Headers.ContainsKey("Authorization") ? "kiosk" : "bearer")
@@ -237,9 +245,9 @@ app.Use(async (http, next) =>
     }
 });
 app.UseCors();
-if (app.Environment.IsDevelopment())
+if (app.Environment.IsDevelopment() || publicSwaggerEnabled)
 {
-    // Keep local API documentation reachable even when the admin login is unavailable.
+    // Documentation may be public when explicitly enabled; API endpoint authorization remains unchanged.
     app.UseSwaggerUI(options =>
     {
         options.RoutePrefix = "openapi/ui";
@@ -254,7 +262,7 @@ app.MapHub<PortalHub>("/hub/portal", options => options.CloseOnAuthenticationExp
 app.MapHub<CustomerSellerChatHub>("/hub/chat", options => options.CloseOnAuthenticationExpiration = true)
     .RequireAuthorization("ChatParticipant");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
-if (app.Environment.IsDevelopment())
+if (app.Environment.IsDevelopment() || publicSwaggerEnabled)
     app.MapOpenApi().AllowAnonymous();
 else
     app.MapOpenApi().RequireAuthorization("Admin");
