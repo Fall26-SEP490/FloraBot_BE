@@ -11,9 +11,14 @@ GOOGLE_SMTP_APP_PASSWORD=your-app-password
 MEMBER_WEB_URL=http://localhost:8088
 ```
 
+In Production, Google SMTP remains disabled unless the operator explicitly sets
+`GOOGLE_SMTP_ALLOWED_IN_PRODUCTION=true`. Brevo remains the production provider
+specified by ADR 0045; use this opt-in only when intentionally operating Gmail
+SMTP for the deployment.
+
 Biến `EMAIL_SENDER_NAME` dùng cấu hình tên hiển thị người gửi email (From display name), mặc định là `FloraBot`. Tên này được xác thực độ dài tối đa 100 ký tự và không chứa ký tự điều khiển (CRLF).
 
-Giữ credential trong file local ignored hoặc secret manager; không commit và không đưa SMTP password vào FE. GoogleSmtp chỉ hỗ trợ Development. Google Client ID công khai; FE lấy từ `/api/auth/config`. Luồng Google Identity Services hiện tại không cần Client Secret.
+Giữ credential trong file local ignored hoặc secret manager; không commit và không đưa SMTP password vào FE. Google SMTP mặc định chỉ hỗ trợ Development; Production yêu cầu bật rõ `GOOGLE_SMTP_ALLOWED_IN_PRODUCTION=true`. Brevo vẫn là provider Production được chỉ định trong ADR 0045. Google Client ID công khai; FE lấy từ `/api/auth/config`. Luồng Google Identity Services hiện tại không cần Client Secret.
 
 Trong Google Auth Platform, cấu hình OAuth client Web application, thêm đúng Authorized JavaScript origin của FE, ví dụ `http://localhost:8088`. Không thêm `/dang-nhap`; `127.0.0.1` là origin khác. Google có thể mất 5 phút đến vài giờ để áp dụng thay đổi. Các thành viên dùng chung client cần cấu hình origin tương ứng cổng thực tế của họ.
 

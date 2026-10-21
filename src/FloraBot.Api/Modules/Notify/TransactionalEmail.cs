@@ -24,8 +24,9 @@ public sealed class EmailSettings
         if (selected == EmailProvider.Disabled) return new();
         var sender = configuration["EMAIL_SENDER"] ?? "";
         if (!IsAddress(sender)) throw new InvalidOperationException("EMAIL_SENDER must be a single email address.");
-        if (selected == EmailProvider.GoogleSmtp && !development)
-            throw new InvalidOperationException("GoogleSmtp is allowed only in Development.");
+        if (selected == EmailProvider.GoogleSmtp && !development &&
+            !configuration.GetValue<bool>("GOOGLE_SMTP_ALLOWED_IN_PRODUCTION"))
+            throw new InvalidOperationException("GoogleSmtp in Production requires GOOGLE_SMTP_ALLOWED_IN_PRODUCTION=true.");
         var key = selected == EmailProvider.Brevo ? "BREVO_API_KEY" : "GOOGLE_SMTP_APP_PASSWORD";
         var credential = configuration[key];
         if (string.IsNullOrWhiteSpace(credential) || credential.Any(char.IsControl))
