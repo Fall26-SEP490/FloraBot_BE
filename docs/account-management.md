@@ -4,9 +4,9 @@
 
 This document specifies the backend account management endpoints, authorization matrix, soft status lifecycle, sensitive banking data protection, and the seller onboarding constraint.
 
-## 1. 16 Bounded New Routes & Capability Matrix
+## 1. 14 Bounded New Routes & Capability Matrix
 
-The 16 newly delivered account management endpoints integrate with existing compatible hierarchy routes (such as Manager/Tech creation and Active Seller status toggle) without disrupting prior contracts:
+The 14 newly delivered account management endpoints integrate with existing compatible hierarchy routes (such as Manager/Tech creation and Active Seller status toggle) without disrupting prior contracts:
 
 | # | Method | Endpoint | Authorization | Description |
 | --- | --- | --- | --- | --- |
@@ -23,9 +23,7 @@ The 16 newly delivered account management endpoints integrate with existing comp
 | 11 | `GET` | `/api/operations/sellers/{sellerId}/accounts` | `OperationsManager` | Inspect safe owner account DTOs for a shop (`SellerAccountResponse`) |
 | 12 | `PUT` | `/api/operations/sellers/{sellerId}/accounts/{userId}` | `OperationsManager` | Edit Seller owner name, phone, address (scoped strictly to `Role == SELLER` and matching `sellerId`) |
 | 13 | `GET` | `/api/admin/accounts` | `Admin` | Paged directory across all 6 human roles with masked bank (excludes legacy `STAFF`) |
-| 14 | `GET` | `/api/admin/accounts/{userId}/profile` | `Admin` | Comprehensive profile for any of the 6 roles; separates personal bank from shop bank |
-| 15 | `POST` | `/api/admin/accounts/{userId}/bank/reveal` | `Admin` | Reveal personal bank (`personal-bank-account-v1`), audited, mandatory reason (5..1000) |
-| 16 | `POST` | `/api/admin/sellers/{sellerId}/bank/reveal` | `Admin` | Reveal shop bank (`bank-account-v1`), audited, mandatory reason (5..1000) |
+| 14 | `GET` | `/api/admin/accounts/{userId}/profile` | `Admin` | Comprehensive profile for any of the 6 roles; includes full personal bank and shop bank (if Seller) inside single call |
 
 ## 2. Role Hierarchy & Mutation Boundaries
 
@@ -34,7 +32,7 @@ FloraBot enforces strict role management boundaries:
 ```mermaid
 graph TD
     Admin[Admin] -->|Creates & Manages| OM[Operations Manager]
-    Admin -->|Inspects Profiles & Reveals Bank| AllRoles[All 6 Roles]
+    Admin -->|Inspects Unified Profiles & Bank| AllRoles[All 6 Roles]
     OM -->|Creates & Manages| Tech[Technician]
     OM -->|Creates & Manages| Cust[Customer]
     OM -->|Updates Shop & Owner Account| Seller[Seller]
@@ -49,7 +47,7 @@ graph TD
     end
 ```
 
-- **Admin Privilege**: Manages Operations Managers. Has global visibility across all 6 human roles (`ADMIN`, `OPERATIONS_MANAGER`, `TECHNICIAN`, `SELLER`, `SELLER_STAFF`, `CUSTOMER`) for manual transfer and compliance, including authorized bank disclosure.
+- **Admin Privilege**: Manages Operations Managers. Has global visibility across all 6 human roles (`ADMIN`, `OPERATIONS_MANAGER`, `TECHNICIAN`, `SELLER`, `SELLER_STAFF`, `CUSTOMER`) for manual transfer and compliance, including authorized bank disclosure in unified profile reads.
 - **Operations Manager Scope**: Restricted to platform operations (Technicians, Customers, Seller shops, and Seller owner accounts). Cannot create, modify, or lock Admins, fellow Operations Managers, or Seller Staff. Cannot access full banking credentials.
 - **Seller Scope**: Sellers manage only Seller Staff tied to their own `sellerId`.
 - **Target Role Validation**: Every mutation endpoint enforces target role checks (`Role == "OPERATIONS_MANAGER"`, `Role == "TECHNICIAN"`, `Role == "CUSTOMER"`, or `Role == "SELLER" && SellerId == sellerId`). Foreign or invalid role mutations return `404 Not Found`.
@@ -69,18 +67,18 @@ Banking data across FloraBot is partitioned by ownership and protected via ASP.N
    - Stored in `identity.user_profiles` (`account_encrypted`, `account_last4`, `bank_name`, `account_holder`).
    - Protected with purpose: `"personal-bank-account-v1"`.
    - Masked in all directory listings and profile summaries (returns `BankName`, `AccountHolder`, `AccountLast4`).
-   - Disclosed exclusively via `POST /api/admin/accounts/{userId}/bank/reveal`.
+   - Disclosed in full directly inside `GET /api/admin/accounts/{userId}/profile` for authenticated Admins (and `GET /api/account/profile` for self).
 2. **Seller Shop Payout Bank**:
    - Stored in `identity.sellers` (`bank_account_no_enc`, `bank_name`, `bank_holder`).
    - Protected with purpose: `"bank-account-v1"`.
-   - Distinct from personal banking: Admin profiles for Sellers present `PersonalBank` and `ShopBank` in clearly separate DTO structures.
-   - Disclosed exclusively via `POST /api/admin/sellers/{sellerId}/bank/reveal`.
-3. **Audit Before Disclosure & No-Store**:
-   - Reveal endpoints require a non-empty `reason` between 5 and 1000 characters.
-   - An audit row is persisted (`ADMIN_PERSONAL_BANK_REVEALED` or `ADMIN_SELLER_BANK_REVEALED`) *prior* to disclosure.
-   - The audit payload logs the reason and actor, but **never** plaintext banking secrets or ciphertext.
-   - All sensitive responses return `Cache-Control: no-store`.
-   - Missing bank configuration returns `404 Not Found`; decryption failures return `409 Conflict` (never `500 Internal Server Error`).
+   - Distinct from personal banking: Admin profiles for Sellers present `PersonalBank` and `ShopBank` in clearly separate DTO structures to avoid confusing personal bank with shop payout.
+   - Disclosed in full directly inside `GET /api/admin/accounts/{userId}/profile` for authenticated Admins.
+3. **Consolidated Disclosure, Audit Before Disclosure & No-Store**:
+   - The two separate reveal endpoints (`POST /api/admin/accounts/{userId}/bank/reveal` and `POST /api/admin/sellers/{sellerId}/bank/reveal`) have been removed in favor of the consolidated `GET /api/admin/accounts/{userId}/profile` endpoint.
+   - Profile reads execute inside a transaction with an active admin recheck and row lock (`FOR SHARE`).
+   - An audit row is persisted (`ADMIN_ACCOUNT_PROFILE_VIEWED`) *prior* to full bank disclosure logging actor, target user ID, and bank presence (`has_personal_bank`, `has_shop_bank`), but **never** plaintext banking secrets or ciphertext.
+   - All sensitive profile responses return `Cache-Control: no-store`.
+   - Missing bank configuration returns `null` inside the profile; decryption failures return `status: "NEEDS_UPDATE"` and `accountNumber: null` without failing with 500 or blocking profile access.
 
 ## 5. Seller Onboarding Exception
 
@@ -95,8 +93,16 @@ Banking data across FloraBot is partitioned by ownership and protected via ASP.N
 - **Provider Mocking**: In automated test suites, email delivery and identity provider validations use local loopback mocks; no real emails are dispatched and no real third-party services are invoked.
 - **No Hard Deletion**: All user accounts, seller configurations, and audit events are permanent. Deactivation is exclusively soft (`LOCKED` or `DISABLED`), retaining historic records for auditing and reconciliation.
 - **Regional Scoping**: Platform operations directories for Technicians maintain global visibility; regional technician ownership boundaries are outside the scope of this increment.
+
 ## Acceptance evidence
 
-The independently executed local suite passed59/59 tests:16 account-management tests,5 hierarchy regressions,18 personal-profile regressions,11 seller moderation tests, and9 bank/withdrawal regressions. It uses HTTP TestServer and a separate PostgreSQL database. It does not verify real bank ownership, provider delivery, UI or VPS deployment.
+The independently executed local suite passed 73/73 tests across the related suites:
+- 17 account-management tests (`AccountManagementCompletionTests`)
+- 14 consolidated profile tests (`ProfileConsolidationTests`)
+- 18 personal-profile tests (`PersonalProfileTests`)
+- 11 manager seller moderation tests (`ManagerSellerModerationTests`)
+- 5 Google auth and hierarchy tests (`GoogleAuthAndHierarchyTests`)
+- 7 seller bank tests (`SellerBankTests`)
+- 1 admin withdrawals test (`AdminWithdrawalsTests`)
 
-Touched C# files pass `dotnet format --verify-no-changes`. The repository-wide module-boundary test has one pre-existing failure in Catalog/chat; none of the new account-management classes appears in its violation list. No migrations, FE, chat or payment execution flows were changed.
+The test suite executes against an isolated PostgreSQL database (`florabot_batch_20261022`) using HTTP TestServer and includes additive migration `029_profile_demographics.sql`. It does not verify real bank ownership, provider delivery, UI or VPS deployment. Touched C# files pass formatting checks.

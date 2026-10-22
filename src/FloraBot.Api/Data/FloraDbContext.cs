@@ -893,6 +893,8 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.AccountHolder).HasColumnName("account_holder");
             entity.Property(e => e.AccountEncrypted).HasColumnName("account_encrypted");
             entity.Property(e => e.AccountLast4).HasColumnName("account_last4");
+            entity.Property(e => e.Gender).HasColumnName("gender");
+            entity.Property(e => e.DateOfBirth).HasColumnName("date_of_birth");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("app_now()")
                 .HasColumnName("created_at");

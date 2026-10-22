@@ -38,7 +38,8 @@ public sealed record AdminShopBankInfo(
     string? BankName,
     string? BankHolder,
     string? AccountSuffix,
-    string Status);
+    string Status,
+    string? AccountNumber = null);
 
 public sealed record AdminAccountProfileResponse(
     Guid Id,
@@ -54,14 +55,9 @@ public sealed record AdminAccountProfileResponse(
     PersonalBankInfo? PersonalBank,
     AdminShopBankInfo? ShopBank,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
-
-public sealed record RevealBankRequest(string Reason);
-
-public sealed record RevealBankDetailResponse(
-    string BankName,
-    string AccountHolder,
-    string AccountNumber);
+    DateTime UpdatedAt,
+    string? Gender = null,
+    DateOnly? DateOfBirth = null);
 
 public static class AdminAccountEndpoints
 {
@@ -176,27 +172,90 @@ public static class AdminAccountEndpoints
         {
             http.Response.Headers.CacheControl = "no-store";
 
-            var user = await db.Users.AsNoTracking()
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var adminId))
+                return Results.Unauthorized();
+
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+            // Recheck active admin status within transaction
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT flow.require_active_admin({adminId})", ct);
+
+            // Row-level lock on target user and profile for consistent read
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT id FROM identity.users WHERE id = {userId} FOR SHARE", ct);
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT user_id FROM identity.user_profiles WHERE user_id = {userId} FOR SHARE", ct);
+
+            var user = await db.Users
                 .Include(u => u.Profile)
                 .SingleOrDefaultAsync(u => u.Id == userId, ct);
 
             if (user is null)
+            {
+                await tx.RollbackAsync(ct);
                 return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Tài khoản không tồn tại.");
+            }
 
             PersonalBankInfo? personalBank = null;
-            if (user.Profile is not null && (!string.IsNullOrWhiteSpace(user.Profile.BankName) || !string.IsNullOrWhiteSpace(user.Profile.AccountLast4)))
+            bool hasPersonalBank = false;
+            var prof = user.Profile;
+            if (prof is not null && (!string.IsNullOrWhiteSpace(prof.BankName) || !string.IsNullOrWhiteSpace(prof.AccountLast4)))
             {
-                personalBank = new PersonalBankInfo(
-                    user.Profile.BankName ?? "",
-                    user.Profile.AccountHolder ?? "",
-                    user.Profile.AccountLast4 ?? "",
-                    true);
+                if (string.IsNullOrWhiteSpace(prof.AccountEncrypted))
+                {
+                    personalBank = new PersonalBankInfo(
+                        prof.BankName ?? "",
+                        prof.AccountHolder ?? "",
+                        prof.AccountLast4 ?? "",
+                        true,
+                        null,
+                        "NEEDS_UPDATE");
+                }
+                else
+                {
+                    hasPersonalBank = true;
+                    try
+                    {
+                        var raw = protection.CreateProtector("personal-bank-account-v1").Unprotect(prof.AccountEncrypted);
+                        if (!SellerBankInput.ValidAccount(raw))
+                        {
+                            personalBank = new PersonalBankInfo(
+                                prof.BankName ?? "",
+                                prof.AccountHolder ?? "",
+                                prof.AccountLast4 ?? "",
+                                true,
+                                null,
+                                "NEEDS_UPDATE");
+                        }
+                        else
+                        {
+                            personalBank = new PersonalBankInfo(
+                                prof.BankName ?? "",
+                                prof.AccountHolder ?? "",
+                                prof.AccountLast4 ?? "",
+                                true,
+                                raw,
+                                "READY");
+                        }
+                    }
+                    catch (CryptographicException)
+                    {
+                        personalBank = new PersonalBankInfo(
+                            prof.BankName ?? "",
+                            prof.AccountHolder ?? "",
+                            prof.AccountLast4 ?? "",
+                            true,
+                            null,
+                            "NEEDS_UPDATE");
+                    }
+                }
             }
 
             AdminShopBankInfo? shopBank = null;
+            bool hasShopBank = false;
             if (user.Role == "SELLER" && user.SellerId.HasValue)
             {
-                var seller = await db.Sellers.AsNoTracking()
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT id FROM identity.sellers WHERE id = {user.SellerId.Value} FOR SHARE", ct);
+
+                var seller = await db.Sellers
                     .Where(s => s.Id == user.SellerId.Value)
                     .Select(s => new { s.BankName, s.BankHolder, s.BankAccountNoEnc })
                     .SingleOrDefaultAsync(ct);
@@ -205,25 +264,43 @@ public static class AdminAccountEndpoints
                 {
                     if (string.IsNullOrWhiteSpace(seller.BankAccountNoEnc))
                     {
-                        shopBank = new AdminShopBankInfo(null, null, null, "MISSING");
+                        shopBank = new AdminShopBankInfo(null, null, null, "MISSING", null);
                     }
                     else
                     {
+                        hasShopBank = true;
                         try
                         {
                             var account = protection.CreateProtector("bank-account-v1").Unprotect(seller.BankAccountNoEnc);
                             if (!SellerBankInput.ValidAccount(account) || string.IsNullOrWhiteSpace(seller.BankName) || string.IsNullOrWhiteSpace(seller.BankHolder))
-                                shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, null, "NEEDS_UPDATE");
+                            {
+                                shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, null, "NEEDS_UPDATE", null);
+                            }
                             else
-                                shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, account.Length > 4 ? account[^4..] : account[^2..], "READY");
+                            {
+                                var suffix = account.Length > 4 ? account[^4..] : account;
+                                shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, suffix, "READY", account);
+                            }
                         }
                         catch (CryptographicException)
                         {
-                            shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, null, "NEEDS_UPDATE");
+                            shopBank = new AdminShopBankInfo(seller.BankName, seller.BankHolder, null, "NEEDS_UPDATE", null);
                         }
                     }
                 }
             }
+
+            // Audit before disclosure - no banking secrets in payload!
+            var auditPayload = JsonSerializer.Serialize(new
+            {
+                target_user_id = user.Id,
+                has_personal_bank = hasPersonalBank,
+                has_shop_bank = hasShopBank
+            });
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT flow.audit({adminId}, 'ADMIN_ACCOUNT_PROFILE_VIEWED', 'users', {user.Id}, {auditPayload}::jsonb)", ct);
+
+            await tx.CommitAsync(ct);
 
             var response = new AdminAccountProfileResponse(
                 user.Id,
@@ -233,13 +310,16 @@ public static class AdminAccountEndpoints
                 user.FullName,
                 user.Phone,
                 user.Profile?.Address,
-                user.Profile?.ContactEmail,
+                user.Profile?.ContactEmailVerifiedAt is not null && !string.IsNullOrWhiteSpace(user.Profile.ContactEmail)
+                    ? user.Profile.ContactEmail : user.Email,
                 user.Profile?.ContactEmailVerifiedAt.HasValue == true,
                 user.SellerId,
                 personalBank,
                 shopBank,
                 user.CreatedAt,
-                user.UpdatedAt);
+                user.UpdatedAt,
+                user.Profile?.Gender,
+                user.Profile?.DateOfBirth);
 
             return Results.Ok(response);
         })
@@ -250,162 +330,5 @@ public static class AdminAccountEndpoints
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .ProducesProblem(StatusCodes.Status403Forbidden)
         .ProducesProblem(StatusCodes.Status404NotFound);
-
-        // 3. POST /api/admin/accounts/{userId}/bank/reveal
-        app.MapPost("/api/admin/accounts/{userId:guid}/bank/reveal", async (
-            Guid userId,
-            RevealBankRequest request,
-            FloraDbContext db,
-            IDataProtectionProvider protection,
-            HttpContext http,
-            CancellationToken ct) =>
-        {
-            http.Response.Headers.CacheControl = "no-store";
-
-            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var adminId))
-                return Results.Unauthorized();
-
-            var reason = request?.Reason?.Trim();
-            if (string.IsNullOrWhiteSpace(reason) || reason.Length is < 5 or > 1000)
-                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Lý do xem thông tin ngân hàng phải từ 5 đến 1000 ký tự.");
-
-            await using var tx = await db.Database.BeginTransactionAsync(ct);
-
-            // Recheck active admin status within transaction
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT flow.require_active_admin({adminId})", ct);
-
-            // Lock target user row
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT id FROM identity.users WHERE id = {userId} FOR UPDATE", ct);
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT user_id FROM identity.user_profiles WHERE user_id = {userId} FOR UPDATE", ct);
-
-            var user = await db.Users.Include(u => u.Profile).SingleOrDefaultAsync(u => u.Id == userId, ct);
-            if (user is null)
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Tài khoản không tồn tại.");
-            }
-
-            if (user.Profile is null || string.IsNullOrWhiteSpace(user.Profile.AccountEncrypted) || string.IsNullOrWhiteSpace(user.Profile.BankName))
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Tài khoản chưa cấu hình thông tin ngân hàng cá nhân.");
-            }
-
-            string rawAccount;
-            try
-            {
-                rawAccount = protection.CreateProtector("personal-bank-account-v1").Unprotect(user.Profile.AccountEncrypted);
-            }
-            catch (CryptographicException)
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Không thể giải mã số tài khoản ngân hàng cá nhân.");
-            }
-
-            if (string.IsNullOrWhiteSpace(rawAccount))
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Số tài khoản ngân hàng cá nhân không hợp lệ.");
-            }
-
-            // Audit before disclosure - no banking secrets in payload!
-            var payload = JsonSerializer.Serialize(new { reason });
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT flow.audit({adminId}, 'ADMIN_PERSONAL_BANK_REVEALED', 'user_profiles', {user.Id}, {payload}::jsonb)", ct);
-
-            await tx.CommitAsync(ct);
-
-            return Results.Ok(new RevealBankDetailResponse(
-                user.Profile.BankName,
-                user.Profile.AccountHolder ?? "",
-                rawAccount));
-        })
-        .RequireAuthorization("Admin")
-        .WithTags("Identity")
-        .WithSummary("Giải mã và hiển thị số tài khoản ngân hàng cá nhân cho Admin với kiểm toán bắt buộc")
-        .Produces<RevealBankDetailResponse>()
-        .ProducesProblem(StatusCodes.Status400BadRequest)
-        .ProducesProblem(StatusCodes.Status401Unauthorized)
-        .ProducesProblem(StatusCodes.Status403Forbidden)
-        .ProducesProblem(StatusCodes.Status404NotFound)
-        .ProducesProblem(StatusCodes.Status409Conflict);
-
-        // 4. POST /api/admin/sellers/{sellerId}/bank/reveal
-        app.MapPost("/api/admin/sellers/{sellerId:guid}/bank/reveal", async (
-            Guid sellerId,
-            RevealBankRequest request,
-            FloraDbContext db,
-            IDataProtectionProvider protection,
-            HttpContext http,
-            CancellationToken ct) =>
-        {
-            http.Response.Headers.CacheControl = "no-store";
-
-            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var adminId))
-                return Results.Unauthorized();
-
-            var reason = request?.Reason?.Trim();
-            if (string.IsNullOrWhiteSpace(reason) || reason.Length is < 5 or > 1000)
-                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Lý do xem thông tin ngân hàng phải từ 5 đến 1000 ký tự.");
-
-            await using var tx = await db.Database.BeginTransactionAsync(ct);
-
-            // Recheck active admin status within transaction
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT flow.require_active_admin({adminId})", ct);
-
-            // Lock target seller row
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT id FROM identity.sellers WHERE id = {sellerId} FOR UPDATE", ct);
-
-            var seller = await db.Sellers.SingleOrDefaultAsync(s => s.Id == sellerId, ct);
-            if (seller is null)
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Shop không tồn tại.");
-            }
-
-            if (string.IsNullOrWhiteSpace(seller.BankAccountNoEnc) || string.IsNullOrWhiteSpace(seller.BankName))
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Shop chưa cấu hình thông tin ngân hàng.");
-            }
-
-            string rawAccount;
-            try
-            {
-                rawAccount = protection.CreateProtector("bank-account-v1").Unprotect(seller.BankAccountNoEnc);
-            }
-            catch (CryptographicException)
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Không thể giải mã số tài khoản ngân hàng của shop.");
-            }
-
-            if (!SellerBankInput.ValidAccount(rawAccount))
-            {
-                await tx.RollbackAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Số tài khoản ngân hàng của shop không hợp lệ.");
-            }
-
-            // Audit before disclosure - no banking secrets in payload!
-            var payload = JsonSerializer.Serialize(new { reason });
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT flow.audit({adminId}, 'ADMIN_SELLER_BANK_REVEALED', 'sellers', {seller.Id}, {payload}::jsonb)", ct);
-
-            await tx.CommitAsync(ct);
-
-            return Results.Ok(new RevealBankDetailResponse(
-                seller.BankName,
-                seller.BankHolder ?? "",
-                rawAccount));
-        })
-        .RequireAuthorization("Admin")
-        .WithTags("Identity")
-        .WithSummary("Giải mã và hiển thị số tài khoản ngân hàng của shop cho Admin với kiểm toán bắt buộc")
-        .Produces<RevealBankDetailResponse>()
-        .ProducesProblem(StatusCodes.Status400BadRequest)
-        .ProducesProblem(StatusCodes.Status401Unauthorized)
-        .ProducesProblem(StatusCodes.Status403Forbidden)
-        .ProducesProblem(StatusCodes.Status404NotFound)
-        .ProducesProblem(StatusCodes.Status409Conflict);
     }
 }

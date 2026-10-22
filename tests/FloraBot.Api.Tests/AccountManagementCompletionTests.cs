@@ -547,7 +547,7 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
     // 6. BANK REVEALS (PERSONAL BANK & SHOP BANK)
     // ==========================================
     [Fact]
-    public async Task Admin_CanRevealPersonalBankAndShopBank_WithMandatoryReasonAuditAndNoStore()
+    public async Task Admin_ProfileGet_RevealsPersonalBankAndShopBank_WithAuditAndNoStore_AndRevealRoutesAre404()
     {
         var (admin, _) = await CreateIsolatedUserAsync("ADMIN");
         var (customer, _) = await CreateIsolatedUserAsync("CUSTOMER");
@@ -595,87 +595,83 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
 
         using var adminClient = CreateAuthenticatedClient(admin);
 
-        // 1. Admin Profile for SELLER: verifies personal bank vs shop bank separation
+        // 1. Admin Profile for SELLER: verifies personal bank vs shop bank separation and full shop bank disclosure
         var sellerProfResp = await adminClient.GetAsync($"/api/admin/accounts/{sellerUser.Id}/profile");
         Assert.Equal(HttpStatusCode.OK, sellerProfResp.StatusCode);
+        Assert.True(sellerProfResp.Headers.CacheControl?.NoStore);
         var sellerProf = await sellerProfResp.Content.ReadFromJsonAsync<AdminAccountProfileResponse>();
         Assert.NotNull(sellerProf);
         Assert.NotNull(sellerProf.ShopBank);
         Assert.Equal("Techcombank", sellerProf.ShopBank.BankName);
         Assert.Equal("CONG TY TNHH HOA BOT", sellerProf.ShopBank.BankHolder);
-        Assert.Equal(shopPlainAccount[^4..], sellerProf.ShopBank.AccountSuffix); // Masked!
+        Assert.Equal(shopPlainAccount[^4..], sellerProf.ShopBank.AccountSuffix);
+        Assert.Equal(shopPlainAccount, sellerProf.ShopBank.AccountNumber); // Full shop bank revealed in profile!
+        Assert.Equal("READY", sellerProf.ShopBank.Status);
         Assert.Null(sellerProf.PersonalBank); // Personal bank is separate!
 
-        // 2. Personal Bank Reveal - Reason validation
-        var emptyReasonResp = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new RevealBankRequest(""));
-        Assert.Equal(HttpStatusCode.BadRequest, emptyReasonResp.StatusCode);
-
-        var shortReasonResp = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new RevealBankRequest("ab"));
-        Assert.Equal(HttpStatusCode.BadRequest, shortReasonResp.StatusCode);
-
-        // 3. Personal Bank Reveal - Success
-        var reasonText = "Xác minh tài khoản khách hàng để xử lý hoàn tiền thủ công";
-        var revealPersonalResp = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new RevealBankRequest(reasonText));
-        Assert.Equal(HttpStatusCode.OK, revealPersonalResp.StatusCode);
-        Assert.True(revealPersonalResp.Headers.CacheControl?.NoStore);
-
-        var personalResult = await revealPersonalResp.Content.ReadFromJsonAsync<RevealBankDetailResponse>();
-        Assert.NotNull(personalResult);
-        Assert.Equal("Vietcombank", personalResult.BankName);
-        Assert.Equal("NGUYEN VAN CUSTOMER", personalResult.AccountHolder);
-        Assert.Equal(personalPlainAccount, personalResult.AccountNumber);
-
-        // Verify audit before disclosure without secret in payload
+        // Verify audit for seller profile view without secrets
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FloraDbContext>();
             var audit = await db.AuditLogs.OrderByDescending(a => a.CreatedAt)
-                .FirstOrDefaultAsync(a => a.EntityId == customer.Id && a.Action == "ADMIN_PERSONAL_BANK_REVEALED");
+                .FirstOrDefaultAsync(a => a.EntityId == sellerUser.Id && a.Action == "ADMIN_ACCOUNT_PROFILE_VIEWED");
             Assert.NotNull(audit);
             Assert.Equal(admin.Id, audit.ActorId);
-            Assert.Contains(reasonText, audit.Payload ?? "");
-            Assert.DoesNotContain(personalPlainAccount, audit.Payload ?? ""); // NO BANK SECRETS IN AUDIT!
-        }
-
-        // 4. Shop Bank Reveal - Success
-        var shopReason = "Đối soát tài khoản shop trước khi chuyển khoản doanh thu";
-        var revealShopResp = await adminClient.PostAsJsonAsync($"/api/admin/sellers/{seller.Id}/bank/reveal", new RevealBankRequest(shopReason));
-        Assert.Equal(HttpStatusCode.OK, revealShopResp.StatusCode);
-        Assert.True(revealShopResp.Headers.CacheControl?.NoStore);
-
-        var shopResult = await revealShopResp.Content.ReadFromJsonAsync<RevealBankDetailResponse>();
-        Assert.NotNull(shopResult);
-        Assert.Equal("Techcombank", shopResult.BankName);
-        Assert.Equal("CONG TY TNHH HOA BOT", shopResult.AccountHolder);
-        Assert.Equal(shopPlainAccount, shopResult.AccountNumber);
-
-        // Verify audit for shop bank disclosure without secrets
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<FloraDbContext>();
-            var audit = await db.AuditLogs.OrderByDescending(a => a.CreatedAt)
-                .FirstOrDefaultAsync(a => a.EntityId == seller.Id && a.Action == "ADMIN_SELLER_BANK_REVEALED");
-            Assert.NotNull(audit);
-            Assert.Equal(admin.Id, audit.ActorId);
-            Assert.Contains(shopReason, audit.Payload ?? "");
+            Assert.Contains("has_shop_bank", audit.Payload ?? "");
             Assert.DoesNotContain(shopPlainAccount, audit.Payload ?? ""); // NO BANK SECRETS IN AUDIT!
         }
 
-        // 5. Missing bank -> 404
-        var missingBankResp = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{admin.Id}/bank/reveal", new RevealBankRequest("Xem thu tai khoan chua co bank"));
-        Assert.Equal(HttpStatusCode.NotFound, missingBankResp.StatusCode);
+        // 2. Admin Profile for CUSTOMER: verifies full personal bank disclosure and audit
+        var customerProfResp = await adminClient.GetAsync($"/api/admin/accounts/{customer.Id}/profile");
+        Assert.Equal(HttpStatusCode.OK, customerProfResp.StatusCode);
+        Assert.True(customerProfResp.Headers.CacheControl?.NoStore);
+        var customerProf = await customerProfResp.Content.ReadFromJsonAsync<AdminAccountProfileResponse>();
+        Assert.NotNull(customerProf);
+        Assert.NotNull(customerProf.PersonalBank);
+        Assert.Equal("Vietcombank", customerProf.PersonalBank.BankName);
+        Assert.Equal("NGUYEN VAN CUSTOMER", customerProf.PersonalBank.AccountHolder);
+        Assert.Equal(personalPlainAccount[^4..], customerProf.PersonalBank.AccountLast4);
+        Assert.Equal(personalPlainAccount, customerProf.PersonalBank.AccountNumber); // Full personal bank revealed!
+        Assert.Equal("READY", customerProf.PersonalBank.Status);
+        Assert.Null(customerProf.ShopBank);
 
-        // 6. Non-Admin denied (OperationsManager, Customer, etc.) -> 403 Forbidden!
+        // Verify audit for customer profile view without secrets
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FloraDbContext>();
+            var audit = await db.AuditLogs.OrderByDescending(a => a.CreatedAt)
+                .FirstOrDefaultAsync(a => a.EntityId == customer.Id && a.Action == "ADMIN_ACCOUNT_PROFILE_VIEWED");
+            Assert.NotNull(audit);
+            Assert.Equal(admin.Id, audit.ActorId);
+            Assert.Contains("has_personal_bank", audit.Payload ?? "");
+            Assert.DoesNotContain(personalPlainAccount, audit.Payload ?? ""); // NO BANK SECRETS IN AUDIT!
+        }
+
+        // 3. Removed reveal endpoints return 404
+        var personalRevealResp = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new { reason = "Check removed route" });
+        Assert.Equal(HttpStatusCode.NotFound, personalRevealResp.StatusCode);
+
+        var shopRevealResp = await adminClient.PostAsJsonAsync($"/api/admin/sellers/{seller.Id}/bank/reveal", new { reason = "Check removed route" });
+        Assert.Equal(HttpStatusCode.NotFound, shopRevealResp.StatusCode);
+
+        // 4. Missing bank returns 200 with null personal bank
+        var missingBankResp = await adminClient.GetAsync($"/api/admin/accounts/{admin.Id}/profile");
+        Assert.Equal(HttpStatusCode.OK, missingBankResp.StatusCode);
+        var missingProf = await missingBankResp.Content.ReadFromJsonAsync<AdminAccountProfileResponse>();
+        Assert.NotNull(missingProf);
+        Assert.Null(missingProf.PersonalBank);
+
+        // 5. Non-Admin denied (OperationsManager, Customer, etc.) -> 403 Forbidden!
         using var managerClient = CreateAuthenticatedClient(opsManager);
-        var deniedPersonal = await managerClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new RevealBankRequest(reasonText));
+        var deniedPersonal = await managerClient.GetAsync($"/api/admin/accounts/{customer.Id}/profile");
         Assert.Equal(HttpStatusCode.Forbidden, deniedPersonal.StatusCode);
 
-        var deniedShop = await managerClient.PostAsJsonAsync($"/api/admin/sellers/{seller.Id}/bank/reveal", new RevealBankRequest(shopReason));
+        var deniedShop = await managerClient.GetAsync($"/api/admin/accounts/{sellerUser.Id}/profile");
         Assert.Equal(HttpStatusCode.Forbidden, deniedShop.StatusCode);
     }
 
     [Fact]
-    public async Task BankReveal_Returns409Conflict_WhenCiphertextIsUnreadable_No500()
+    public async Task AdminProfile_HandlesUnreadableCiphertextGracefully_WithNeedsUpdate_No500()
     {
         var (admin, _) = await CreateIsolatedUserAsync("ADMIN");
         var (customer, _) = await CreateIsolatedUserAsync("CUSTOMER");
@@ -709,13 +705,21 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
 
         using var adminClient = CreateAuthenticatedClient(admin);
 
-        // 1. Personal Bank Unreadable -> 409 Conflict (NEVER 500)
-        var unreadablePersonal = await adminClient.PostAsJsonAsync($"/api/admin/accounts/{customer.Id}/bank/reveal", new RevealBankRequest("Xử lý tra soát tài khoản có lỗi mã hoá"));
-        Assert.Equal(HttpStatusCode.Conflict, unreadablePersonal.StatusCode);
+        // 1. Personal Bank Unreadable -> returns 200 with NEEDS_UPDATE and null number (NEVER 500)
+        var unreadablePersonal = await adminClient.GetAsync($"/api/admin/accounts/{customer.Id}/profile");
+        Assert.Equal(HttpStatusCode.OK, unreadablePersonal.StatusCode);
+        var profPersonal = await unreadablePersonal.Content.ReadFromJsonAsync<AdminAccountProfileResponse>();
+        Assert.NotNull(profPersonal?.PersonalBank);
+        Assert.Equal("NEEDS_UPDATE", profPersonal.PersonalBank.Status);
+        Assert.Null(profPersonal.PersonalBank.AccountNumber);
 
-        // 2. Shop Bank Unreadable -> 409 Conflict (NEVER 500)
-        var unreadableShop = await adminClient.PostAsJsonAsync($"/api/admin/sellers/{seller.Id}/bank/reveal", new RevealBankRequest("Xử lý tra soát tài khoản shop có lỗi mã hoá"));
-        Assert.Equal(HttpStatusCode.Conflict, unreadableShop.StatusCode);
+        // 2. Shop Bank Unreadable -> returns 200 with NEEDS_UPDATE and null number (NEVER 500)
+        var unreadableShop = await adminClient.GetAsync($"/api/admin/accounts/{sellerUser.Id}/profile");
+        Assert.Equal(HttpStatusCode.OK, unreadableShop.StatusCode);
+        var profShop = await unreadableShop.Content.ReadFromJsonAsync<AdminAccountProfileResponse>();
+        Assert.NotNull(profShop?.ShopBank);
+        Assert.Equal("NEEDS_UPDATE", profShop.ShopBank.Status);
+        Assert.Null(profShop.ShopBank.AccountNumber);
     }
 
     [Fact]
@@ -747,10 +751,10 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
     }
 
     // ==========================================
-    // 7. AUTHORIZATION MATRIX FOR ALL 16 NEW ROUTES
+    // 7. AUTHORIZATION MATRIX FOR ALL 14 REMAINING ROUTES
     // ==========================================
     [Fact]
-    public async Task AllSixteenRoutes_EnforceAuthenticationAndRoleAuthorizationMatrix()
+    public async Task AllFourteenRoutes_EnforceAuthenticationAndRoleAuthorizationMatrix()
     {
         var (admin, _) = await CreateIsolatedUserAsync("ADMIN");
         var (opsManager, _) = await CreateIsolatedUserAsync("OPERATIONS_MANAGER");
@@ -812,12 +816,10 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
             ("GET", $"/api/operations/sellers/{seller.Id}/accounts", "OPERATIONS_MANAGER", () => null),
             ("PUT", $"/api/operations/sellers/{seller.Id}/accounts/{sellerUser.Id}", "OPERATIONS_MANAGER", () => JsonContent.Create(new UpdateAccountProfileRequest("Auth Owner", UniquePhone()))),
             ("GET", "/api/admin/accounts", "ADMIN", () => null),
-            ("GET", $"/api/admin/accounts/{customer.Id}/profile", "ADMIN", () => null),
-            ("POST", $"/api/admin/accounts/{customer.Id}/bank/reveal", "ADMIN", () => JsonContent.Create(new RevealBankRequest("Ly do xac thuc quyen hop le"))),
-            ("POST", $"/api/admin/sellers/{seller.Id}/bank/reveal", "ADMIN", () => JsonContent.Create(new RevealBankRequest("Ly do xac thuc quyen hop le shop")))
+            ("GET", $"/api/admin/accounts/{customer.Id}/profile", "ADMIN", () => null)
         };
 
-        Assert.Equal(16, routes.Length);
+        Assert.Equal(14, routes.Length);
 
         using var anonClient = factory.CreateClient();
 
@@ -858,10 +860,10 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
     }
 
     // ==========================================
-    // 8. METADATA COVERAGE FOR ALL 16 NEW ROUTES
+    // 8. METADATA COVERAGE FOR ALL 14 REMAINING ROUTES
     // ==========================================
     [Fact]
-    public void AllSixteenRoutes_HaveCompleteOpenApiMetadataAndTypedResponses()
+    public void AllFourteenRoutes_HaveCompleteOpenApiMetadataAndTypedResponses()
     {
         var endpointDataSource = factory.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
         var endpoints = endpointDataSource.Endpoints.OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>().ToList();
@@ -881,12 +883,10 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
             ("GET", "/api/operations/sellers/{sellerId:guid}/accounts", "OperationsManager"),
             ("PUT", "/api/operations/sellers/{sellerId:guid}/accounts/{userId:guid}", "OperationsManager"),
             ("GET", "/api/admin/accounts", "Admin"),
-            ("GET", "/api/admin/accounts/{userId:guid}/profile", "Admin"),
-            ("POST", "/api/admin/accounts/{userId:guid}/bank/reveal", "Admin"),
-            ("POST", "/api/admin/sellers/{sellerId:guid}/bank/reveal", "Admin")
+            ("GET", "/api/admin/accounts/{userId:guid}/profile", "Admin")
         };
 
-        Assert.Equal(16, expectedRoutes.Length);
+        Assert.Equal(14, expectedRoutes.Length);
 
         foreach (var expected in expectedRoutes)
         {
@@ -904,6 +904,12 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
             var summary = matched.Metadata.GetMetadata<Microsoft.AspNetCore.Http.Metadata.IEndpointSummaryMetadata>()?.Summary;
             Assert.False(string.IsNullOrWhiteSpace(summary), $"Missing summary on {expected.Method} {expected.Pattern}");
         }
+
+        // Removed bank reveal routes must be completely absent from metadata
+        Assert.DoesNotContain(endpoints, e =>
+            string.Equals(e.RoutePattern.RawText, "/api/admin/accounts/{userId:guid}/bank/reveal", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(endpoints, e =>
+            string.Equals(e.RoutePattern.RawText, "/api/admin/sellers/{sellerId:guid}/bank/reveal", StringComparison.OrdinalIgnoreCase));
     }
 
     // ==========================================
@@ -1172,8 +1178,8 @@ public sealed class AccountManagementCompletionTests(ApiFactory factory) : IClas
         Assert.Equal(HttpStatusCode.NotFound, (await adminClient.GetAsync($"/api/admin/managers/{random}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await adminClient.PutAsJsonAsync($"/api/admin/managers/{random}", new UpdateAccountProfileRequest("Name", UniquePhone()))).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await adminClient.GetAsync($"/api/admin/accounts/{random}/profile")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await adminClient.PostAsJsonAsync($"/api/admin/accounts/{random}/bank/reveal", new RevealBankRequest("Ly do tra cuu hop le"))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await adminClient.PostAsJsonAsync($"/api/admin/sellers/{random}/bank/reveal", new RevealBankRequest("Ly do tra cuu hop le"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await adminClient.PostAsJsonAsync($"/api/admin/accounts/{random}/bank/reveal", new { reason = "Ly do tra cuu hop le" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await adminClient.PostAsJsonAsync($"/api/admin/sellers/{random}/bank/reveal", new { reason = "Ly do tra cuu hop le" })).StatusCode);
 
         // Operations Manager endpoints with missing target
         Assert.Equal(HttpStatusCode.NotFound, (await opsClient.GetAsync($"/api/operations/technicians/{random}")).StatusCode);
