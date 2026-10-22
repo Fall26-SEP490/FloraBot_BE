@@ -150,16 +150,17 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private async Task SeedKioskAsync(Guid kioskId, string code, string name, string address, string region, string status, double? lat, double? lon)
+    private async Task SeedKioskAsync(Guid kioskId, string code, string name, string address, string region, string status, double? lat, double? lon, Guid? sellerId = null)
     {
         await using var cmd = DataSource.CreateCommand(@"
-            INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, latitude, longitude, created_at, updated_at)
-            VALUES(@id, @code, @name, @address, @region, @hw, @mqtt, @status, @lat, @lon, public.app_now(), public.app_now())
+            INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, latitude, longitude, seller_id, created_at, updated_at)
+            VALUES(@id, @code, @name, @address, @region, @hw, @mqtt, @status, @lat, @lon, @sellerId, public.app_now(), public.app_now())
             ON CONFLICT (id) DO UPDATE SET
                 address = EXCLUDED.address,
                 status = EXCLUDED.status,
                 latitude = EXCLUDED.latitude,
                 longitude = EXCLUDED.longitude,
+                seller_id = COALESCE(EXCLUDED.seller_id, kiosk_ops.kiosks.seller_id),
                 updated_at = public.app_now();
         ");
         cmd.Parameters.AddWithValue("id", kioskId);
@@ -172,6 +173,16 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         cmd.Parameters.AddWithValue("status", status);
         cmd.Parameters.AddWithValue("lat", (object?)lat ?? DBNull.Value);
         cmd.Parameters.AddWithValue("lon", (object?)lon ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("sellerId", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)sellerId ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private async Task AssignKioskAsync(Guid kioskId, Guid sellerId)
+    {
+        await using var cmd = DataSource.CreateCommand(
+            "SELECT flow.assign_kiosk(@kiosk, @seller, '10000000-0000-0000-0000-000000000001')");
+        cmd.Parameters.AddWithValue("kiosk", kioskId);
+        cmd.Parameters.AddWithValue("seller", sellerId);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -254,7 +265,8 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         await SeedSellerAsync(sellerA, Guid.NewGuid());
         await SeedSellerAsync(sellerB, userB);
         await SeedKioskAsync(kioskA, $"K-{kioskA:N}", "Kiosk A", "Addr A", "HCM", "ONLINE", 10.77, 106.69);
-        await SeedSlotAsync(Guid.NewGuid(), kioskA, "A01", sellerA, 0);
+        await SeedSlotAsync(Guid.NewGuid(), kioskA, "A01", null, 0);
+        await AssignKioskAsync(kioskA, sellerA);
 
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", userId: userB, sellerId: sellerB));
@@ -330,7 +342,7 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         var disabledKiosk = Guid.NewGuid();
 
         await SeedSellerAsync(seller, user);
-        await SeedKioskAsync(disabledKiosk, $"K-DIS-{disabledKiosk:N}", "Disabled Kiosk", "Addr", "HCM", "DISABLED", 10.77, 106.69);
+        await SeedKioskAsync(disabledKiosk, $"K-DIS-{disabledKiosk:N}", "Disabled Kiosk", "Addr", "HCM", "DISABLED", 10.77, 106.69, sellerId: seller);
         await SeedSlotAsync(Guid.NewGuid(), disabledKiosk, "A01", seller, 0);
 
         using var client = factory.CreateClient();
@@ -355,8 +367,9 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         await SeedSellerAsync(seller, user);
         // Offline kiosk is permitted to be edited if wholly assigned
         await SeedKioskAsync(kiosk, $"K-OWN-{kiosk:N}", "Wholly Owned Kiosk", "Old Address", "HCM", "OFFLINE", null, null);
-        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S01", seller, 0);
-        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S02", seller, 1);
+        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S01", null, 0);
+        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S02", null, 1);
+        await AssignKioskAsync(kiosk, seller);
 
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", userId: user, sellerId: seller));
@@ -421,7 +434,8 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
 
         await SeedSellerAsync(seller, user);
         await SeedKioskAsync(kiosk, $"K-JSON-{kiosk:N}", "JSON Kiosk", "Initial Addr", "HCM", "ONLINE", 10.77, 106.69);
-        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S01", seller, 0);
+        await SeedSlotAsync(Guid.NewGuid(), kiosk, "S01", null, 0);
+        await AssignKioskAsync(kiosk, seller);
 
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", userId: user, sellerId: seller));
@@ -475,8 +489,14 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         var kDisabled = Guid.NewGuid();
         var kNoCoords = Guid.NewGuid();
 
+        var pubSeller = Guid.NewGuid();
+        var pubUser = Guid.NewGuid();
+        await SeedSellerAsync(pubSeller, pubUser);
+
         // 1. Complete Online (near Ben Thanh)
         await SeedKioskAsync(kCompleteOnline, $"K-PUB-1-{kCompleteOnline:N}", "Ben Thanh Kiosk", "123 Le Loi", "HCM", "ONLINE", originLat, originLon);
+        await SeedSlotAsync(Guid.NewGuid(), kCompleteOnline, "P01", null, 0);
+        await AssignKioskAsync(kCompleteOnline, pubSeller);
 
         // 2. Complete Offline (near Landmark 81, ~3.64 km away) - must be included truthfully as OFFLINE
         await SeedKioskAsync(kCompleteOffline, $"K-PUB-2-{kCompleteOffline:N}", "Landmark Kiosk", "720A Dien Bien Phu", "HCM", "OFFLINE", farLat, farLon);
@@ -526,6 +546,18 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/kiosk-locations?radiusKm=5")).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/kiosk-locations?limit=0")).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/kiosk-locations?limit=101")).StatusCode);
+
+        // Verify GET /api/sellers/{sellerId}/kiosks reloads this kiosk correctly
+        using var pubSellerClient = factory.CreateClient();
+        pubSellerClient.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", userId: pubUser, sellerId: pubSeller));
+        var sellerKiosksRes = await pubSellerClient.GetAsync($"/api/sellers/{pubSeller}/kiosks");
+        Assert.Equal(HttpStatusCode.OK, sellerKiosksRes.StatusCode);
+        var sellerKiosks = (await sellerKiosksRes.Content.ReadFromJsonAsync<List<SellerKioskDto>>())!;
+        var sellerItem = Assert.Single(sellerKiosks, x => x.Id == kCompleteOnline);
+        Assert.True(sellerItem.CanEditLocation);
+        Assert.True(sellerItem.LocationComplete);
+        Assert.Equal(originLat, sellerItem.Latitude);
+        Assert.Equal(originLon, sellerItem.Longitude);
     }
 
     [Fact]
@@ -556,23 +588,13 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         var incSlot = Guid.NewGuid();
         await SeedKioskAsync(incompleteKiosk, $"K-INC-{incompleteKiosk:N}", "Incomplete Kiosk", "Addr", "HCM", "ONLINE", null, null);
         await SeedSlotAsync(incSlot, incompleteKiosk, "A01", null, 0);
-        await using (var assignCmd = DataSource.CreateCommand("SELECT flow.assign_slot(@slot, @seller, '10000000-0000-0000-0000-000000000001')"))
-        {
-            assignCmd.Parameters.AddWithValue("slot", incSlot);
-            assignCmd.Parameters.AddWithValue("seller", seller);
-            await assignCmd.ExecuteNonQueryAsync();
-        }
+        await AssignKioskAsync(incompleteKiosk, seller);
 
         // Complete kiosk
         var comSlot = Guid.NewGuid();
         await SeedKioskAsync(completeKiosk, $"K-COM-{completeKiosk:N}", "Complete Kiosk", "123 Complete St", "HCM", "ONLINE", 10.771918, 106.698347);
         await SeedSlotAsync(comSlot, completeKiosk, "B01", null, 0);
-        await using (var assignCmd = DataSource.CreateCommand("SELECT flow.assign_slot(@slot, @seller, '10000000-0000-0000-0000-000000000001')"))
-        {
-            assignCmd.Parameters.AddWithValue("slot", comSlot);
-            assignCmd.Parameters.AddWithValue("seller", seller);
-            await assignCmd.ExecuteNonQueryAsync();
-        }
+        await AssignKioskAsync(completeKiosk, seller);
 
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("CUSTOMER", userId: customer));
@@ -635,16 +657,25 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         await SeedSellerAsync(seller, user);
         await SeedSellerAsync(foreignSeller, Guid.NewGuid());
         await SeedKioskAsync(kiosk, $"K-RACE-{kiosk:N}", "Ownership race", "Original address", "HCM", "OFFLINE", 10.77, 106.69);
-        await SeedSlotAsync(slot, kiosk, "L01", seller, 0);
+        await SeedSlotAsync(slot, kiosk, "L01", null, 0);
+        await AssignKioskAsync(kiosk, seller);
+
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", sellerId: seller, userId: user));
+
+        var getKioskRes = await client.GetAsync($"/api/sellers/{seller}/kiosks");
+        Assert.Equal(HttpStatusCode.OK, getKioskRes.StatusCode);
+        var sellerKiosks = (await getKioskRes.Content.ReadFromJsonAsync<List<SellerKioskDto>>())!;
+        var ownKiosk = Assert.Single(sellerKiosks, k => k.Id == kiosk);
+        Assert.True(ownKiosk.CanEditLocation);
 
         // A real assignment transaction has changed ownership, but not committed it yet.
         await using var connection = await DataSource.OpenConnectionAsync();
         await using var tx = await connection.BeginTransactionAsync();
-        await using var transfer = new NpgsqlCommand("UPDATE kiosk_ops.slots SET current_seller_id=@seller WHERE id=@slot", connection, tx);
+        await using var transfer = new NpgsqlCommand(
+            "SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001')", connection, tx);
         transfer.Parameters.AddWithValue("seller", foreignSeller);
-        transfer.Parameters.AddWithValue("slot", slot);
+        transfer.Parameters.AddWithValue("kiosk", kiosk);
         await transfer.ExecuteNonQueryAsync();
         var pendingPut = client.PutAsJsonAsync($"/api/sellers/{seller}/kiosks/{kiosk}/location", new { address = "Stale owner update", latitude = 11.0, longitude = 107.0 });
         try

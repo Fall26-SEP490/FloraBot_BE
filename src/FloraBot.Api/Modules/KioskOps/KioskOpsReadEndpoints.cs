@@ -10,8 +10,7 @@ public static class KioskOpsReadEndpoints
     public static void MapKioskOpsReads(this WebApplication app)
     {
         app.MapGet("/api/kiosks", async (FloraDbContext db) => await db.Kiosks.AsNoTracking()
-            .Where(x => x.Status != "DISABLED").Select(x => new
-            {
+            .Where(x => x.Status != "DISABLED").Select(x => new PublicKioskDto(
                 x.Id,
                 x.Code,
                 x.Name,
@@ -20,8 +19,12 @@ public static class KioskOpsReadEndpoints
                 x.Status,
                 x.Latitude,
                 x.Longitude,
-                LocationComplete = x.Latitude != null && x.Longitude != null && x.Address != null && x.Address.Trim() != ""
-            }).ToListAsync()).AllowAnonymous();
+                x.Latitude != null && x.Longitude != null && x.Address != null && x.Address.Trim() != ""
+            )).ToListAsync())
+        .AllowAnonymous()
+        .WithTags("KioskOps")
+        .WithSummary("Danh sách kiosk công khai")
+        .Produces<List<PublicKioskDto>>();
         app.MapGet("/api/me/kiosks/{kioskId:guid}/slots", async (Guid kioskId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
         {
             if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
@@ -70,3 +73,4 @@ public static class KioskOpsReadEndpoints
 }
 
 public sealed record AdminKioskResponse(Guid Id, string Code, string Name, string Status, Guid? SellerId, string? SellerName, int SlotCount);
+public sealed record PublicKioskDto(Guid Id, string Code, string Name, string Address, string Region, string Status, double? Latitude, double? Longitude, bool LocationComplete);
