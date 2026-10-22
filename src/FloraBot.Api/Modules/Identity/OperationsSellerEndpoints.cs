@@ -46,6 +46,12 @@ public sealed record UpdateSellerStatusRequest(
     string Status,
     string Reason);
 
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Skip)]
+public sealed record UpdateSellerShopRequest(
+    string ShopName,
+    string Phone,
+    string? Address = null);
+
 public static class OperationsSellerEndpoints
 {
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
@@ -130,7 +136,137 @@ public static class OperationsSellerEndpoints
         .ProducesProblem(StatusCodes.Status403Forbidden)
         .ProducesProblem(StatusCodes.Status404NotFound);
 
-        // 3. PATCH /api/operations/sellers/{sellerId}/status
+        // 3. PUT /api/operations/sellers/{sellerId}
+        app.MapPut("/api/operations/sellers/{sellerId:guid}", async (
+            Guid sellerId,
+            UpdateSellerShopRequest request,
+            NpgsqlDataSource data,
+            HttpContext http,
+            CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var managerId))
+                return Results.Unauthorized();
+
+            if (string.IsNullOrWhiteSpace(request.ShopName) || request.ShopName.Trim().Length is < 2 or > 120 || request.ShopName.Any(char.IsControl))
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Tên shop phải từ 2 đến 120 ký tự và không chứa ký tự điều khiển.");
+
+            if (string.IsNullOrWhiteSpace(request.Phone) || !AccountHierarchyEndpoints.PhonePattern().IsMatch(request.Phone.Trim()))
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Số điện thoại Việt Nam không hợp lệ.");
+
+            string? address = null;
+            if (request.Address is not null)
+            {
+                var trimmedAddress = request.Address.Trim();
+                if (trimmedAddress.Length > 300 || trimmedAddress.Any(char.IsControl))
+                    return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Địa chỉ tối đa 300 ký tự và không chứa ký tự điều khiển.");
+                if (!string.IsNullOrWhiteSpace(trimmedAddress)) address = trimmedAddress;
+            }
+
+            var shopName = request.ShopName.Trim();
+            var phone = AccountHierarchyEndpoints.NormalizePhone(request.Phone)!;
+
+            await using var conn = await data.OpenConnectionAsync(ct);
+            await using var tx = await conn.BeginTransactionAsync(ct);
+
+            // Recheck actor active role with FOR SHARE on identity.users
+            await using (var actorCheckCmd = new NpgsqlCommand("SELECT id FROM identity.users WHERE id = @actorId AND role = 'OPERATIONS_MANAGER' AND status = 'ACTIVE' FOR SHARE", conn, tx))
+            {
+                actorCheckCmd.Parameters.AddWithValue("actorId", managerId);
+                var actorValid = await actorCheckCmd.ExecuteScalarAsync(ct);
+                if (actorValid is null)
+                {
+                    await tx.RollbackAsync(ct);
+                    return Results.Unauthorized();
+                }
+            }
+
+            await using var lockCmd = new NpgsqlCommand("SELECT id FROM identity.sellers WHERE id = @id FOR UPDATE", conn, tx);
+            lockCmd.Parameters.AddWithValue("id", sellerId);
+            var exists = await lockCmd.ExecuteScalarAsync(ct);
+            if (exists is null)
+            {
+                await tx.RollbackAsync(ct);
+                return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Shop không tồn tại.");
+            }
+
+            // Preservation: do NOT edit contact_email, bank_name, bank_account_no_enc, bank_holder, status, package_id.
+            await using var updateCmd = new NpgsqlCommand("""
+                UPDATE identity.sellers
+                SET shop_name = @shopName,
+                    phone = @phone,
+                    address = @address::text,
+                    updated_at = app_now()
+                WHERE id = @id
+                """, conn, tx);
+            updateCmd.Parameters.AddWithValue("id", sellerId);
+            updateCmd.Parameters.AddWithValue("shopName", shopName);
+            updateCmd.Parameters.AddWithValue("phone", phone);
+            updateCmd.Parameters.Add(new NpgsqlParameter("address", NpgsqlTypes.NpgsqlDbType.Text) { Value = (object?)address ?? DBNull.Value });
+            await updateCmd.ExecuteNonQueryAsync(ct);
+
+            await using var auditCmd = new NpgsqlCommand("""
+                SELECT flow.audit(@actor, 'SELLER_SHOP_UPDATED', 'sellers', @target,
+                    jsonb_build_object('shop_name', @shopName, 'phone', @phone, 'address', @address::text))
+                """, conn, tx);
+            auditCmd.Parameters.AddWithValue("actor", managerId);
+            auditCmd.Parameters.AddWithValue("target", sellerId);
+            auditCmd.Parameters.AddWithValue("shopName", shopName);
+            auditCmd.Parameters.AddWithValue("phone", phone);
+            auditCmd.Parameters.Add(new NpgsqlParameter("address", NpgsqlTypes.NpgsqlDbType.Text) { Value = (object?)address ?? DBNull.Value });
+            await auditCmd.ExecuteNonQueryAsync(ct);
+
+            // Read updated snapshot inside the same transaction BEFORE commit; avoids post-commit race condition
+            OperationsSellerDetail detail;
+            await using (var selectCmd = new NpgsqlCommand("""
+                SELECT s.id, s.shop_name, s.phone, s.address, s.status, s.package_id, p.name,
+                       s.package_expires_at, s.package_expires_at_ts, s.contact_email, s.brand_tone,
+                       s.created_at, s.updated_at
+                FROM identity.sellers s
+                LEFT JOIN identity.subscription_packages p ON s.package_id = p.id
+                WHERE s.id = @id
+                """, conn, tx))
+            {
+                selectCmd.Parameters.AddWithValue("id", sellerId);
+                await using var reader = await selectCmd.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    await tx.RollbackAsync(ct);
+                    return Results.NotFound();
+                }
+
+                detail = new OperationsSellerDetail(
+                    reader.GetGuid(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetGuid(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetFieldValue<DateOnly>(7),
+                    reader.IsDBNull(8) ? null : reader.GetDateTime(8),
+                    reader.IsDBNull(9) ? null : reader.GetString(9),
+                    reader.IsDBNull(10) ? null : reader.GetString(10),
+                    reader.GetDateTime(11),
+                    reader.GetDateTime(12));
+            }
+
+            // Reader closed, commit transaction
+            await tx.CommitAsync(ct);
+
+            return Results.Ok(detail);
+        })
+        .RequireAuthorization("OperationsManager")
+        .WithTags("Identity")
+        .WithSummary("Cập nhật thông tin cơ bản của shop (tên shop, số điện thoại, địa chỉ) cho Operations Manager")
+        .Produces<OperationsSellerDetail>()
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status403Forbidden)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+
+        // 4. PATCH /api/operations/sellers/{sellerId}/status
         app.MapPatch("/api/operations/sellers/{sellerId:guid}/status", async (
             Guid sellerId,
             UpdateSellerStatusRequest request,
