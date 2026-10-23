@@ -48,7 +48,7 @@ public static class IdentityEndpoints
         app.MapPost("/api/admin/flows/set_seller_status", async (SetSellerStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_seller_status", "admin", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_seller_status").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Admin");
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/forget_customer", async (ForgetCustomerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/forget_customer", async (Guid kioskId, ForgetCustomerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("forget_customer", "customer", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("forget_customer").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Customer");
     }

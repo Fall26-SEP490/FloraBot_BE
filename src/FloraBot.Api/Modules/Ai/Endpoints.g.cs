@@ -17,7 +17,7 @@ public static class AiEndpoints
 {
     public static void MapAi(this WebApplication app)
     {
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/ai_suggest", async (AiSuggestRequest input, HttpContext http, FlowExecutor executor, AiAdvisor advisor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/ai_suggest", async (Guid kioskId, AiSuggestRequest input, HttpContext http, FlowExecutor executor, AiAdvisor advisor, CancellationToken ct) =>
             await advisor.SuggestAsync(input, http, executor, ct))
             .WithName("ai_suggest").WithTags("Ai").Produces<FlowResult>().RequireAuthorization("Shopping").RequireRateLimiting("advisor");
     }

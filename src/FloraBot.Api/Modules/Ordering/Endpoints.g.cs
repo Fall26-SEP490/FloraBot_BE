@@ -37,10 +37,10 @@ public static class OrderingEndpoints
 {
     public static void MapOrdering(this WebApplication app)
     {
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/kiosk_checkout", async (KioskCheckoutRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/kiosk_checkout", async (Guid kioskId, KioskCheckoutRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("kiosk_checkout", "shopping", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("kiosk_checkout").WithTags("Ordering").Produces<FlowResult>().RequireAuthorization("Shopping");
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/request_pickup", async (RequestPickupRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/request_pickup", async (Guid kioskId, RequestPickupRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("request_pickup", "shopping", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("request_pickup").WithTags("Ordering").Produces<FlowResult>().RequireAuthorization("Shopping");
         app.MapPost("/api/receipts/flows/open_dispute", async (OpenDisputeRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>

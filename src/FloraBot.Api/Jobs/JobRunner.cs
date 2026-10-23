@@ -72,8 +72,13 @@ public sealed class JobRunner(NpgsqlDataSource data, IConnectionMultiplexer redi
 
     private static async Task<JobResult> ExecuteFlowAsync(string name, NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
     {
-        // name comes only from the allowlist; all clock and tenant arguments use SQL defaults.
-        await using var command = new NpgsqlCommand($"SELECT flow.{name}()", connection, transaction) { CommandTimeout = 25 };
+        // name comes only from the allowlist. roll_subscriptions has legacy two-argument
+        // and current three-argument overloads with defaults, so select the current version
+        // explicitly instead of relying on PostgreSQL to resolve a zero-argument call.
+        var sql = name == "roll_subscriptions"
+            ? "SELECT flow.roll_subscriptions(NULL::date, NULL::uuid, NULL::timestamptz)"
+            : $"SELECT flow.{name}()";
+        await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = 25 };
         return new(true, Convert.ToInt32(await command.ExecuteScalarAsync(ct)));
     }
 
