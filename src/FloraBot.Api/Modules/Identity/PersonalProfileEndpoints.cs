@@ -16,7 +16,9 @@ public sealed record PersonalBankInfo(
     string BankName,
     string AccountHolder,
     string AccountLast4,
-    bool HasAccount);
+    bool HasAccount,
+    string? AccountNumber = null,
+    string? Status = null);
 
 public sealed record UserProfileResponse(
     Guid Id,
@@ -27,7 +29,9 @@ public sealed record UserProfileResponse(
     string? ContactEmail,
     bool ContactEmailIsDefault,
     bool ContactEmailVerified,
-    PersonalBankInfo? Bank);
+    PersonalBankInfo? Bank,
+    string? Gender = null,
+    DateOnly? DateOfBirth = null);
 
 public sealed record PersonalBankInput(
     string BankName,
@@ -39,7 +43,11 @@ public sealed record UpdateUserProfileRequest(
     string? Phone,
     string? Address,
     PersonalBankInput? Bank = null,
-    bool? ClearBank = null);
+    bool? ClearBank = null,
+    string? Gender = null,
+    DateOnly? DateOfBirth = null,
+    bool? ClearGender = null,
+    bool? ClearDateOfBirth = null);
 
 public sealed record RevealBankResponse(string AccountNumber);
 
@@ -57,12 +65,20 @@ public static partial class PersonalProfileEndpoints
 {
     private const string DataProtectionPurpose = "personal-bank-account-v1";
 
+    private static readonly HashSet<string> AllowedGenders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "MALE", "FEMALE", "OTHER", "UNDISCLOSED"
+    };
+
+    private static DateOnly GetVietnamToday() =>
+        DateOnly.FromDateTime(DateTime.UtcNow.AddHours(7));
+
     [GeneratedRegex("^(0[35789][0-9]{8}|\\+84[35789][0-9]{8})$")]
     private static partial Regex PhonePattern();
 
     public static void MapPersonalProfile(this WebApplication app)
     {
-        app.MapGet("/api/account/profile", async (FloraDbContext db, HttpContext http, CancellationToken ct) =>
+        app.MapGet("/api/account/profile", async (FloraDbContext db, IDataProtectionProvider protection, HttpContext http, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
             var actorId = GetActorId(http.User);
@@ -73,7 +89,42 @@ public static partial class PersonalProfileEndpoints
                 .SingleOrDefaultAsync(u => u.Id == actorId.Value && u.Status == "ACTIVE", ct);
             if (user is null) return Results.Unauthorized();
 
-            return Results.Ok(ToProfileResponse(user, user.Profile));
+            string? decryptedAccount = null;
+            string? bankStatus = null;
+            var profile = user.Profile;
+
+            if (profile is not null &&
+                !string.IsNullOrWhiteSpace(profile.BankName) &&
+                !string.IsNullOrWhiteSpace(profile.AccountHolder) &&
+                !string.IsNullOrWhiteSpace(profile.AccountEncrypted) &&
+                !string.IsNullOrWhiteSpace(profile.AccountLast4))
+            {
+                try
+                {
+                    var raw = protection.CreateProtector(DataProtectionPurpose).Unprotect(profile.AccountEncrypted);
+                    if (!SellerBankInput.ValidAccount(raw))
+                    {
+                        bankStatus = "NEEDS_UPDATE";
+                    }
+                    else
+                    {
+                        decryptedAccount = raw;
+                        bankStatus = "READY";
+                    }
+                }
+                catch (CryptographicException)
+                {
+                    bankStatus = "NEEDS_UPDATE";
+                }
+
+                if (decryptedAccount is not null)
+                {
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"SELECT flow.audit({actorId.Value}, 'PERSONAL_BANK_REVEALED', 'user_profiles', {actorId.Value})", ct);
+                }
+            }
+
+            return Results.Ok(ToProfileResponse(user, profile, decryptedAccount, bankStatus));
         })
         .RequireAuthorization("Account")
         .WithTags("Account")
@@ -134,6 +185,32 @@ public static partial class PersonalProfileEndpoints
                     errors["bank.accountNumber"] = ["Số tài khoản gồm 4–34 chữ cái hoặc chữ số, không có khoảng trắng."];
             }
 
+            if (input.ClearGender == true && input.Gender is not null)
+            {
+                errors["gender"] = ["Không thể đồng thời cập nhật và xóa thông tin giới tính."];
+            }
+            else if (input.ClearGender != true && input.Gender is not null)
+            {
+                var trimmedGender = input.Gender.Trim();
+                if (!AllowedGenders.Contains(trimmedGender))
+                {
+                    errors["gender"] = ["Giới tính không hợp lệ. Cho phép: MALE, FEMALE, OTHER, UNDISCLOSED."];
+                }
+            }
+
+            if (input.ClearDateOfBirth == true && input.DateOfBirth.HasValue)
+            {
+                errors["dateOfBirth"] = ["Không thể đồng thời cập nhật và xóa thông tin ngày sinh."];
+            }
+            else if (input.ClearDateOfBirth != true && input.DateOfBirth.HasValue)
+            {
+                var todayVn = GetVietnamToday();
+                if (input.DateOfBirth.Value > todayVn)
+                {
+                    errors["dateOfBirth"] = ["Ngày sinh không được vượt quá ngày hiện tại theo giờ Việt Nam."];
+                }
+            }
+
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
@@ -186,6 +263,29 @@ public static partial class PersonalProfileEndpoints
             if (profile.Address != address) changedFields.Add("address");
             profile.Address = address;
 
+            if (input.ClearGender == true)
+            {
+                if (profile.Gender is not null) changedFields.Add("gender_cleared");
+                profile.Gender = null;
+            }
+            else if (input.Gender is not null)
+            {
+                var normalizedGender = input.Gender.Trim().ToUpperInvariant();
+                if (profile.Gender != normalizedGender) changedFields.Add("gender");
+                profile.Gender = normalizedGender;
+            }
+
+            if (input.ClearDateOfBirth == true)
+            {
+                if (profile.DateOfBirth.HasValue) changedFields.Add("date_of_birth_cleared");
+                profile.DateOfBirth = null;
+            }
+            else if (input.DateOfBirth.HasValue)
+            {
+                if (profile.DateOfBirth != input.DateOfBirth.Value) changedFields.Add("date_of_birth");
+                profile.DateOfBirth = input.DateOfBirth.Value;
+            }
+
             if (input.ClearBank == true)
             {
                 if (profile.BankName is not null || profile.AccountEncrypted is not null) changedFields.Add("bank_cleared");
@@ -226,7 +326,15 @@ public static partial class PersonalProfileEndpoints
 
             await transaction.CommitAsync(ct);
 
-            return Results.Ok(ToProfileResponse(user, profile));
+            string? returnedBankNumber = null;
+            string? returnedBankStatus = null;
+            if (input.Bank is not null)
+            {
+                returnedBankNumber = input.Bank.AccountNumber?.Trim();
+                returnedBankStatus = "READY";
+            }
+
+            return Results.Ok(ToProfileResponse(user, profile, returnedBankNumber, returnedBankStatus));
         })
         .RequireAuthorization("Account")
         .WithTags("Account")
@@ -414,7 +522,11 @@ public static partial class PersonalProfileEndpoints
         return Results.Ok(ToProfileResponse(user, profile));
     }
 
-    private static UserProfileResponse ToProfileResponse(User user, UserProfile? profile)
+    private static UserProfileResponse ToProfileResponse(
+        User user,
+        UserProfile? profile,
+        string? decryptedBankNumber = null,
+        string? bankStatus = null)
     {
         var hasVerifiedCustomContact = profile?.ContactEmailVerifiedAt is not null && !string.IsNullOrWhiteSpace(profile?.ContactEmail);
         var contactEmail = hasVerifiedCustomContact ? profile!.ContactEmail : user.Email;
@@ -428,7 +540,13 @@ public static partial class PersonalProfileEndpoints
             !string.IsNullOrWhiteSpace(profile.AccountEncrypted) &&
             !string.IsNullOrWhiteSpace(profile.AccountLast4))
         {
-            bank = new PersonalBankInfo(profile.BankName, profile.AccountHolder, profile.AccountLast4, true);
+            bank = new PersonalBankInfo(
+                profile.BankName,
+                profile.AccountHolder,
+                profile.AccountLast4,
+                true,
+                decryptedBankNumber,
+                bankStatus ?? (decryptedBankNumber is not null ? "READY" : null));
         }
 
         return new UserProfileResponse(
@@ -440,7 +558,9 @@ public static partial class PersonalProfileEndpoints
             contactEmail,
             contactEmailIsDefault,
             contactEmailVerified,
-            bank);
+            bank,
+            profile?.Gender,
+            profile?.DateOfBirth);
     }
 
     private static Guid? GetActorId(ClaimsPrincipal principal)

@@ -43,11 +43,17 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
+            var kiosk = Guid.NewGuid();
             var invalidBody = new CreateProductRequest(
-                name, "Desc", price, [tag], length, width, height);
+                kiosk, name, "Desc", price, [tag], length, width, height);
 
-            var response = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", invalidBody);
+            var response = await client.PostAsJsonAsync("/api/me/products", invalidBody);
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var emptyKioskBody = new CreateProductRequest(
+                Guid.Empty, "Valid Flower", "Desc", 100000, ["tag1"], 10, 10, 10);
+            var emptyKioskResponse = await client.PostAsJsonAsync("/api/me/products", emptyKioskBody);
+            Assert.Equal(HttpStatusCode.BadRequest, emptyKioskResponse.StatusCode);
         }
         finally
         {
@@ -83,10 +89,12 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         {
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
+            var kiosk = Guid.NewGuid();
 
             // 1. Raw JSON: tags is null
             var jsonNullTags = $$"""
                 {
+                  "kioskId": "{{kiosk}}",
                   "name": "Hoa Vải",
                   "description": "Mô tả",
                   "price": 100000,
@@ -97,12 +105,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
                 }
                 """;
             var content1 = new StringContent(jsonNullTags, Encoding.UTF8, "application/json");
-            var res1 = await client.PostAsync($"/api/sellers/{seller}/products", content1);
+            var res1 = await client.PostAsync("/api/me/products", content1);
             Assert.Equal(HttpStatusCode.BadRequest, res1.StatusCode);
 
             // 2. Raw JSON: tags contains null element
             var jsonTagWithNull = $$"""
                 {
+                  "kioskId": "{{kiosk}}",
                   "name": "Hoa Vải",
                   "description": "Mô tả",
                   "price": 100000,
@@ -113,7 +122,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
                 }
                 """;
             var content2 = new StringContent(jsonTagWithNull, Encoding.UTF8, "application/json");
-            var res2 = await client.PostAsync($"/api/sellers/{seller}/products", content2);
+            var res2 = await client.PostAsync("/api/me/products", content2);
             Assert.Equal(HttpStatusCode.BadRequest, res2.StatusCode);
         }
         finally
@@ -136,6 +145,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         var seller = Guid.NewGuid();
         var user = Guid.NewGuid();
+        var kiosk = Guid.NewGuid();
+        var slot = Guid.NewGuid();
         var productId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
@@ -143,9 +154,16 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             VALUES(@seller,'Null Desc Shop','0901234570','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Null Desc Seller','SELLER',@seller,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
+            VALUES(@kiosk,@kiosk::text,'Null Desc Kiosk','123 St','HCM',@kiosk::text,@kiosk::text,'ONLINE');
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
+            VALUES(@slot,@kiosk,'A01',0);
+            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
             """);
         setup.Parameters.AddWithValue("seller", seller);
         setup.Parameters.AddWithValue("user", user);
+        setup.Parameters.AddWithValue("kiosk", kiosk);
+        setup.Parameters.AddWithValue("slot", slot);
         await setup.ExecuteNonQueryAsync();
 
         try
@@ -155,8 +173,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             // POST with null description
             var postBody = new CreateProductRequest(
-                "Hoa Không Mô Tả", null, 200000, ["TAG1"], 15, 15, 20);
-            var postRes = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", postBody);
+                kiosk, "Hoa Không Mô Tả", null, 200000, ["TAG1"], 15, 15, 20);
+            var postRes = await client.PostAsJsonAsync("/api/me/products", postBody);
             Assert.Equal(HttpStatusCode.Created, postRes.StatusCode);
             var createdResult = await postRes.Content.ReadFromJsonAsync<ProductIdResponse>();
             Assert.NotNull(createdResult);
@@ -187,10 +205,15 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         {
             await using var cleanup = data.CreateCommand("""
                 DELETE FROM catalog.flower_products WHERE id=@product;
+                DELETE FROM kiosk_ops.slot_assignments WHERE slot_id=@slot;
+                DELETE FROM kiosk_ops.slots WHERE kiosk_id=@kiosk;
+                DELETE FROM kiosk_ops.kiosks WHERE id=@kiosk;
                 DELETE FROM identity.users WHERE id=@user;
                 DELETE FROM identity.sellers WHERE id=@seller;
                 """);
             cleanup.Parameters.AddWithValue("product", productId);
+            cleanup.Parameters.AddWithValue("slot", slot);
+            cleanup.Parameters.AddWithValue("kiosk", kiosk);
             cleanup.Parameters.AddWithValue("user", user);
             cleanup.Parameters.AddWithValue("seller", seller);
             await cleanup.ExecuteNonQueryAsync();
@@ -273,48 +296,79 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         var foreignSeller = Guid.NewGuid();
         var ownUser = Guid.NewGuid();
         var adminUser = Guid.NewGuid();
+        var ownKiosk = Guid.NewGuid();
+        var foreignKiosk = Guid.NewGuid();
+        var ownSlot = Guid.NewGuid();
+        var foreignSlot = Guid.NewGuid();
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Tenant Shop','0901234582','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Tenant Shop','0901234582','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30),
+                  (@foreignSeller,'Foreign Tenant Shop','0901234583','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Tenant Seller','SELLER',@seller,'ACTIVE'),
                   (@admin,@admin::text||'@example.invalid','!unprovisioned','Tenant Admin','ADMIN',NULL,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
+            VALUES(@ownKiosk,@ownKiosk::text,'Own Kiosk','123 St','HCM',@ownKiosk::text,@ownKiosk::text,'ONLINE'),
+                  (@foreignKiosk,@foreignKiosk::text,'Foreign Kiosk','456 St','HCM',@foreignKiosk::text,@foreignKiosk::text,'ONLINE');
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
+            VALUES(@ownSlot,@ownKiosk,'A01',0),
+                  (@foreignSlot,@foreignKiosk,'A01',0);
+            SELECT flow.assign_kiosk(@ownKiosk,@seller,'10000000-0000-0000-0000-000000000001');
+            SELECT flow.assign_kiosk(@foreignKiosk,@foreignSeller,'10000000-0000-0000-0000-000000000001');
             """);
         setup.Parameters.AddWithValue("seller", ownSeller);
+        setup.Parameters.AddWithValue("foreignSeller", foreignSeller);
         setup.Parameters.AddWithValue("user", ownUser);
         setup.Parameters.AddWithValue("admin", adminUser);
+        setup.Parameters.AddWithValue("ownKiosk", ownKiosk);
+        setup.Parameters.AddWithValue("foreignKiosk", foreignKiosk);
+        setup.Parameters.AddWithValue("ownSlot", ownSlot);
+        setup.Parameters.AddWithValue("foreignSlot", foreignSlot);
         await setup.ExecuteNonQueryAsync();
 
         try
         {
             using var client = factory.CreateClient();
 
-            // Foreign seller write returns 404 (SameSeller tenant protection)
+            // Foreign kiosk write returns 404 (tenant isolation: seller does not own kiosk)
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: ownUser, sellerId: ownSeller));
-            var body = new CreateProductRequest("Flower", "Desc", 50000, ["rose"], 10, 10, 10);
-            var foreignResponse = await client.PostAsJsonAsync($"/api/sellers/{foreignSeller}/products", body);
+            var foreignKioskBody = new CreateProductRequest(foreignKiosk, "Flower", "Desc", 50000, ["rose"], 10, 10, 10);
+            var foreignResponse = await client.PostAsJsonAsync("/api/me/products", foreignKioskBody);
             Assert.Equal(HttpStatusCode.NotFound, foreignResponse.StatusCode);
 
-            // Admin cannot use owner product write API (policy is Seller + SameSeller)
+            // Legacy seller path is no longer available (returns 404)
+            var legacyResponse = await client.PostAsJsonAsync($"/api/sellers/{foreignSeller}/products", foreignKioskBody);
+            Assert.Equal(HttpStatusCode.NotFound, legacyResponse.StatusCode);
+
+            // Admin cannot use seller product write API (policy requires Seller role)
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: adminUser, role: "ADMIN"));
-            var adminResponse = await client.PostAsJsonAsync($"/api/sellers/{ownSeller}/products", body);
+            var ownBody = new CreateProductRequest(ownKiosk, "Flower", "Desc", 50000, ["rose"], 10, 10, 10);
+            var adminResponse = await client.PostAsJsonAsync("/api/me/products", ownBody);
             Assert.Equal(HttpStatusCode.Forbidden, adminResponse.StatusCode);
 
             // Anonymous returns 401
             client.DefaultRequestHeaders.Authorization = null;
-            var anonResponse = await client.PostAsJsonAsync($"/api/sellers/{ownSeller}/products", body);
+            var anonResponse = await client.PostAsJsonAsync("/api/me/products", ownBody);
             Assert.Equal(HttpStatusCode.Unauthorized, anonResponse.StatusCode);
         }
         finally
         {
             await using var cleanup = data.CreateCommand("""
+                DELETE FROM kiosk_ops.slot_assignments WHERE slot_id IN (@ownSlot, @foreignSlot);
+                DELETE FROM kiosk_ops.slots WHERE kiosk_id IN (@ownKiosk, @foreignKiosk);
+                DELETE FROM kiosk_ops.kiosks WHERE id IN (@ownKiosk, @foreignKiosk);
                 DELETE FROM identity.users WHERE id IN (@user, @admin);
-                DELETE FROM identity.sellers WHERE id=@seller;
+                DELETE FROM identity.sellers WHERE id IN (@seller, @foreignSeller);
                 """);
+            cleanup.Parameters.AddWithValue("ownSlot", ownSlot);
+            cleanup.Parameters.AddWithValue("foreignSlot", foreignSlot);
+            cleanup.Parameters.AddWithValue("ownKiosk", ownKiosk);
+            cleanup.Parameters.AddWithValue("foreignKiosk", foreignKiosk);
             cleanup.Parameters.AddWithValue("user", ownUser);
             cleanup.Parameters.AddWithValue("admin", adminUser);
             cleanup.Parameters.AddWithValue("seller", ownSeller);
+            cleanup.Parameters.AddWithValue("foreignSeller", foreignSeller);
             await cleanup.ExecuteNonQueryAsync();
         }
     }
@@ -327,6 +381,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         var seller = Guid.NewGuid();
         var user = Guid.NewGuid();
+        var kiosk = Guid.NewGuid();
+        var slot = Guid.NewGuid();
         var productId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
@@ -334,9 +390,16 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             VALUES(@seller,'Catalog Shop','0901234567','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Catalog Seller','SELLER',@seller,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
+            VALUES(@kiosk,@kiosk::text,'Catalog Kiosk','123 St','HCM',@kiosk::text,@kiosk::text,'ONLINE');
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
+            VALUES(@slot,@kiosk,'A01',0);
+            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
             """);
         setup.Parameters.AddWithValue("seller", seller);
         setup.Parameters.AddWithValue("user", user);
+        setup.Parameters.AddWithValue("kiosk", kiosk);
+        setup.Parameters.AddWithValue("slot", slot);
         await setup.ExecuteNonQueryAsync();
 
         try
@@ -345,9 +408,9 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
             var createBody = new CreateProductRequest(
-                "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
+                kiosk, "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
 
-            var createResponse = await client.PostAsJsonAsync($"/api/sellers/{seller}/products", createBody);
+            var createResponse = await client.PostAsJsonAsync("/api/me/products", createBody);
             Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
             var createdResult = await createResponse.Content.ReadFromJsonAsync<ProductIdResponse>();
@@ -385,10 +448,15 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         {
             await using var cleanup = data.CreateCommand("""
                 DELETE FROM catalog.flower_products WHERE id=@product;
+                DELETE FROM kiosk_ops.slot_assignments WHERE slot_id=@slot;
+                DELETE FROM kiosk_ops.slots WHERE kiosk_id=@kiosk;
+                DELETE FROM kiosk_ops.kiosks WHERE id=@kiosk;
                 DELETE FROM identity.users WHERE id=@user;
                 DELETE FROM identity.sellers WHERE id=@seller;
                 """);
             cleanup.Parameters.AddWithValue("product", productId);
+            cleanup.Parameters.AddWithValue("slot", slot);
+            cleanup.Parameters.AddWithValue("kiosk", kiosk);
             cleanup.Parameters.AddWithValue("user", user);
             cleanup.Parameters.AddWithValue("seller", seller);
             await cleanup.ExecuteNonQueryAsync();
@@ -492,9 +560,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         var inactiveSeller = Guid.NewGuid();
         var inactiveUser = Guid.NewGuid();
+        var inactiveKiosk = Guid.NewGuid();
 
         var expiredSeller = Guid.NewGuid();
         var expiredUser = Guid.NewGuid();
+        var expiredKiosk = Guid.NewGuid();
+
+        var customerUser = Guid.NewGuid();
 
         await using var setup = data.CreateCommand("""
             -- Active Seller A
@@ -518,17 +590,26 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             VALUES(@inactiveSeller,'Inactive Shop','0901234573','SUSPENDED','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@inactiveUser,@inactiveUser::text||'@example.invalid','!unprovisioned','Inactive User','SELLER',@inactiveSeller,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
+            VALUES(@inactiveKiosk,@inactiveKiosk::text,'Inactive Kiosk','123 St','HCM',@inactiveKiosk::text,@inactiveKiosk::text,'ONLINE',@inactiveSeller);
 
             -- Expired subscription package seller
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@expiredSeller,'Expired Shop','0901234574','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE-1);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@expiredUser,@expiredUser::text||'@example.invalid','!unprovisioned','Expired User','SELLER',@expiredSeller,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
+            VALUES(@expiredKiosk,@expiredKiosk::text,'Expired Kiosk','123 St','HCM',@expiredKiosk::text,@expiredKiosk::text,'ONLINE',@expiredSeller);
+
+            -- Genuine Active Customer User
+            INSERT INTO identity.users(id,email,password_hash,full_name,role,status)
+            VALUES(@customerUser,@customerUser::text||'@example.invalid','!unprovisioned','Genuine Customer','CUSTOMER','ACTIVE');
             """);
         setup.Parameters.AddWithValue("sellerA", sellerA); setup.Parameters.AddWithValue("userA", userA); setup.Parameters.AddWithValue("productA", productA);
         setup.Parameters.AddWithValue("sellerB", sellerB); setup.Parameters.AddWithValue("userB", userB); setup.Parameters.AddWithValue("productB", productB);
-        setup.Parameters.AddWithValue("inactiveSeller", inactiveSeller); setup.Parameters.AddWithValue("inactiveUser", inactiveUser);
-        setup.Parameters.AddWithValue("expiredSeller", expiredSeller); setup.Parameters.AddWithValue("expiredUser", expiredUser);
+        setup.Parameters.AddWithValue("inactiveSeller", inactiveSeller); setup.Parameters.AddWithValue("inactiveUser", inactiveUser); setup.Parameters.AddWithValue("inactiveKiosk", inactiveKiosk);
+        setup.Parameters.AddWithValue("expiredSeller", expiredSeller); setup.Parameters.AddWithValue("expiredUser", expiredUser); setup.Parameters.AddWithValue("expiredKiosk", expiredKiosk);
+        setup.Parameters.AddWithValue("customerUser", customerUser);
         await setup.ExecuteNonQueryAsync();
 
         try
@@ -551,26 +632,38 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             // 4. Inactive seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: inactiveUser, sellerId: inactiveSeller));
-            var postInactive = await client.PostAsJsonAsync($"/api/sellers/{inactiveSeller}/products",
-                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
+            var postInactive = await client.PostAsJsonAsync("/api/me/products",
+                new CreateProductRequest(inactiveKiosk, "Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postInactive.StatusCode);
 
             // 5. Expired subscription seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: expiredUser, sellerId: expiredSeller));
-            var postExpired = await client.PostAsJsonAsync($"/api/sellers/{expiredSeller}/products",
-                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
+            var postExpired = await client.PostAsJsonAsync("/api/me/products",
+                new CreateProductRequest(expiredKiosk, "Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postExpired.StatusCode);
+
+            // 6. Anonymous attempting GET /api/me/products -> 401
+            using var anonClient = factory.CreateClient();
+            Assert.Equal(HttpStatusCode.Unauthorized, (await anonClient.GetAsync("/api/me/products")).StatusCode);
+
+            // 7. Non-seller role (e.g. genuine active CUSTOMER) attempting GET /api/me/products -> 403
+            using var custClient = factory.CreateClient();
+            custClient.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(role: "CUSTOMER", userId: customerUser));
+            Assert.Equal(HttpStatusCode.Forbidden, (await custClient.GetAsync("/api/me/products")).StatusCode);
         }
         finally
         {
             await using var cleanup = data.CreateCommand("""
                 DELETE FROM catalog.flower_products WHERE id IN (@productA, @productB);
-                DELETE FROM identity.users WHERE id IN (@userA, @userB, @inactiveUser, @expiredUser);
+                DELETE FROM kiosk_ops.kiosks WHERE id IN (@inactiveKiosk, @expiredKiosk);
+                DELETE FROM identity.users WHERE id IN (@userA, @userB, @inactiveUser, @expiredUser, @customerUser);
                 DELETE FROM identity.sellers WHERE id IN (@sellerA, @sellerB, @inactiveSeller, @expiredSeller);
                 """);
             cleanup.Parameters.AddWithValue("productA", productA); cleanup.Parameters.AddWithValue("productB", productB);
+            cleanup.Parameters.AddWithValue("inactiveKiosk", inactiveKiosk); cleanup.Parameters.AddWithValue("expiredKiosk", expiredKiosk);
             cleanup.Parameters.AddWithValue("userA", userA); cleanup.Parameters.AddWithValue("userB", userB);
             cleanup.Parameters.AddWithValue("inactiveUser", inactiveUser); cleanup.Parameters.AddWithValue("expiredUser", expiredUser);
+            cleanup.Parameters.AddWithValue("customerUser", customerUser);
             cleanup.Parameters.AddWithValue("sellerA", sellerA); cleanup.Parameters.AddWithValue("sellerB", sellerB);
             cleanup.Parameters.AddWithValue("inactiveSeller", inactiveSeller); cleanup.Parameters.AddWithValue("expiredSeller", expiredSeller);
             await cleanup.ExecuteNonQueryAsync();
@@ -591,19 +684,16 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         var batch = Guid.NewGuid();
 
         await using var setup = data.CreateCommand("""
-            -- Kiosk and active slot
-            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
-            VALUES(@kiosk,@kiosk::text,'Kiosk Test','123 Test St','Q1',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,status,current_seller_id,relay_channel)
-            VALUES(@slot,@kiosk,'S01','RENTED_EMPTY',@seller,1);
-
-            -- Active seller with valid subscription and slot lease
+            -- Active seller with valid subscription and whole-kiosk assignment
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@seller,'Stock Test Shop','0901234575','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Stock Test Seller','SELLER',@seller,'ACTIVE');
-            INSERT INTO kiosk_ops.slot_assignments(id,slot_id,seller_id,assigned_by,status)
-            VALUES(uuid_v7(),@slot,@seller,@user,'ACTIVE');
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
+            VALUES(@kiosk,@kiosk::text,'Kiosk Test','123 Test St','Q1',@kiosk::text,@kiosk::text,'ONLINE');
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
+            VALUES(@slot,@kiosk,'S01',1);
+            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
 
             -- Create and activate ARTIFICIAL flower product
             INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)

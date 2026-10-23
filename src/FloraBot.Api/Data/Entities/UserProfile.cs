@@ -20,6 +20,10 @@ public partial class UserProfile
 
     public string? AccountLast4 { get; set; }
 
+    public string? Gender { get; set; }
+
+    public DateOnly? DateOfBirth { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

@@ -268,6 +268,8 @@ else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
 app.MapAccountHierarchy();
+app.MapAdminAccounts();
+app.MapOperationsSellers();
 app.MapPersonalProfile();
 
 app.MapMembers();

@@ -92,6 +92,13 @@ public static class ProductPhotos
         await using var command = new NpgsqlCommand("SELECT seller_id FROM catalog.flower_products WHERE id=@product FOR UPDATE", connection, transaction);
         command.Parameters.AddWithValue("product", product);
         if (await command.ExecuteScalarAsync(ct) is not Guid owner) return false;
+
+        // Verify the actor belongs to the product's owner (or is active admin) to preserve foreign/missing indistinguishability (404)
+        await using var userCheck = new NpgsqlCommand("SELECT 1 FROM identity.users WHERE id=@actor AND status='ACTIVE' AND (role='ADMIN' OR (role='SELLER' AND seller_id=@owner))", connection, transaction);
+        userCheck.Parameters.AddWithValue("actor", actor);
+        userCheck.Parameters.AddWithValue("owner", owner);
+        if (await userCheck.ExecuteScalarAsync(ct) is null) return false;
+
         await using var access = new NpgsqlCommand(editing ? "SELECT flow.check_catalog_editor(@product,@actor)" : "SELECT flow.check_seller_user(@actor,@seller)", connection, transaction);
         access.Parameters.AddWithValue("actor", actor);
         access.Parameters.AddWithValue(editing ? "product" : "seller", editing ? product : owner);
