@@ -15,4 +15,5 @@ The client signs the documented five fields, verifies response signatures and am
 On a duplicate/rejected create response it queries the same gateway order to recover a pending link; timeout retries reuse the committed code.
 Gateway response loss, tenant isolation, invalid signatures, incorrect amount/status/URL and transaction-array canonicalization have automated tests.
 Webhook DTO accepts the documented outer code/desc/success envelope while trusting only the signed data.
+The exact documented payOS webhook-confirmation sample is acknowledged with 2xx before payment lookup and never changes payment state; all other callbacks still require HMAC verification and the durable order mapping.
 No live payOS transaction is proven. Kiosk link creation and portal payment screens remain separate implementation work.

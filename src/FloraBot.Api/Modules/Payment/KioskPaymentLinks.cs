@@ -36,7 +36,7 @@ public static class KioskPaymentLinks
             }).RequireAuthorization("Shopping").WithTags("Payment").Produces<CheckoutResponse>();
 
         app.MapPost("/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link",
-            async (Guid kioskId, Guid checkoutId, HttpContext http, NpgsqlDataSource source, PayOsClient gateway, CancellationToken ct) =>
+            async (Guid kioskId, Guid checkoutId, HttpContext http, NpgsqlDataSource source, PayOsClient gateway, ILogger<PayOsClient> logger, CancellationToken ct) =>
             {
                 if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
                 await using var connection = await source.OpenConnectionAsync(ct);
@@ -70,6 +70,13 @@ public static class KioskPaymentLinks
                 }
                 catch (Exception ex) when (ex is PaymentGatewayException or HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException || ex is OperationCanceledException && !ct.IsCancellationRequested)
                 {
+                    var failureCode = ex is PaymentGatewayException gatewayError
+                        ? gatewayError.FailureCode
+                        : ex.GetType().Name;
+                    logger.LogWarning(
+                        "payOS payment-link creation failed for checkout {CheckoutId}: {FailureCode}",
+                        checkoutId,
+                        failureCode);
                     return Results.Problem(statusCode: 502, title: "Chưa lấy được liên kết thanh toán. Vui lòng thử lại.");
                 }
             }).RequireAuthorization("Shopping").WithTags("Payment").Produces<PaymentLinkResponse>();

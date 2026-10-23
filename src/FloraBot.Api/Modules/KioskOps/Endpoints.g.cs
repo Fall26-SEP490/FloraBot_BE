@@ -90,10 +90,10 @@ public static class KioskOpsEndpoints
         app.MapPost("/api/admin/flows/set_cfg", async (SetCfgRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_cfg", "admin", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_cfg").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Admin");
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/kiosk_heartbeat", async (KioskHeartbeatRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/kiosk_heartbeat", async (Guid kioskId, KioskHeartbeatRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("kiosk_heartbeat", "kiosk", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("kiosk_heartbeat").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Kiosk");
-        app.MapPost("/api/kiosks/{kioskId:guid}/flows/device_event", async (DeviceEventRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
+        app.MapPost("/api/kiosks/{kioskId:guid}/flows/device_event", async (Guid kioskId, DeviceEventRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("device_event", "kiosk", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("device_event").WithTags("KioskOps").Produces<FlowResult>().RequireAuthorization("Kiosk");
     }
