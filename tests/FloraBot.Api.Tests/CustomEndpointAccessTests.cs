@@ -168,7 +168,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/status");
         Add(["ADMIN"], "POST", "/api/admin/staff-tasks", "/api/admin/staff-tasks/{taskId:guid}/transition", "/api/admin/staff-tasks/{taskId:guid}/reassign");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/staff-tasks", "/api/operations/staff-tasks/{taskId:guid}/transition", "/api/operations/staff-tasks/{taskId:guid}/reassign");
-        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff-tasks", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/transition", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign");
+        Add(["SELLER"], "POST", "/api/me/staff-tasks");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/transition", "/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign");
         Add(["TECHNICIAN", "SELLER_STAFF"], "GET", "/api/staff/tasks", "/api/staff/tasks/{taskId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/staff-tasks/{taskId:guid}");
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/staff-tasks/{taskId:guid}");

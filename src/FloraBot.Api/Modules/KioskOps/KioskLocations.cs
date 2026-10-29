@@ -179,7 +179,24 @@ public static class KioskLocations
         .Produces<List<KioskLocationItem>>()
         .ProducesProblem(400);
 
-        // Seller self-only: List assigned kiosks with location completeness and edit eligibility
+        // Seller self-only: derive the shop from the authenticated token.
+        app.MapGet("/api/me/kiosks", async (
+            FloraDbContext db,
+            HttpContext http,
+            CancellationToken ct) =>
+        {
+            var sellerClaim = http.User.FindFirstValue("seller_id");
+            if (!Guid.TryParse(sellerClaim, out var sellerId) || !IsAuthorizedSeller(http, sellerId))
+                return Results.Forbid();
+
+            return await ReadSellerKiosksAsync(sellerId, db, http, ct);
+        })
+        .RequireAuthorization("Seller")
+        .WithTags("KioskOps")
+        .WithSummary("Danh sách kiosk của seller đang đăng nhập (seller_id lấy từ token)")
+        .Produces<List<SellerKioskDto>>();
+
+        // Keep the path-parameter route for existing clients; new clients should use /api/me/kiosks.
         app.MapGet("/api/sellers/{sellerId:guid}/kiosks", async (
             Guid sellerId,
             FloraDbContext db,
@@ -187,46 +204,11 @@ public static class KioskLocations
             CancellationToken ct) =>
         {
             if (!IsAuthorizedSeller(http, sellerId)) return Results.NotFound();
-            http.Response.Headers.CacheControl = "no-store";
-
-            var kiosks = await db.Kiosks.AsNoTracking()
-                .Where(k => k.SellerId == sellerId)
-                .OrderBy(k => k.Code)
-                .ThenBy(k => k.Id)
-                .ToListAsync(ct);
-
-            if (kiosks.Count == 0)
-            {
-                return Results.Ok(new List<SellerKioskDto>());
-            }
-
-            var result = kiosks.Select(k =>
-            {
-                var canEditLocation = k.SellerId == sellerId && k.Status != "DISABLED";
-                var isComplete = !string.IsNullOrWhiteSpace(k.Address) && k.Latitude.HasValue && k.Longitude.HasValue;
-                var coords = k.Latitude.HasValue && k.Longitude.HasValue
-                    ? new KioskCoordinates(k.Latitude.Value, k.Longitude.Value)
-                    : null;
-
-                return new SellerKioskDto(
-                    k.Id,
-                    k.Code,
-                    k.Name,
-                    k.Address,
-                    k.Region,
-                    k.Status,
-                    k.Latitude,
-                    k.Longitude,
-                    coords,
-                    isComplete,
-                    canEditLocation);
-            }).ToList();
-
-            return Results.Ok(result);
+            return await ReadSellerKiosksAsync(sellerId, db, http, ct);
         })
         .RequireAuthorization("Seller", "SameSeller")
         .WithTags("KioskOps")
-        .WithSummary("Danh sách kiosk thuộc quyền của Seller và trạng thái vị trí")
+        .WithSummary("Tương thích cũ: danh sách kiosk thuộc seller; dùng GET /api/me/kiosks cho route tự nhận seller từ token")
         .Produces<List<SellerKioskDto>>();
 
         // Seller self-only: Update location for wholly owned kiosk with row locking and audit
@@ -393,6 +375,44 @@ public static class KioskLocations
     }
 
     private static double DegreesToRadians(double degrees) => degrees * (Math.PI / 180.0);
+
+    private static async Task<IResult> ReadSellerKiosksAsync(
+        Guid sellerId,
+        FloraDbContext db,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        var kiosks = await db.Kiosks.AsNoTracking()
+            .Where(k => k.SellerId == sellerId)
+            .OrderBy(k => k.Code)
+            .ThenBy(k => k.Id)
+            .ToListAsync(ct);
+
+        var result = kiosks.Select(k =>
+        {
+            var canEditLocation = k.SellerId == sellerId && k.Status != "DISABLED";
+            var isComplete = !string.IsNullOrWhiteSpace(k.Address) && k.Latitude.HasValue && k.Longitude.HasValue;
+            var coords = k.Latitude.HasValue && k.Longitude.HasValue
+                ? new KioskCoordinates(k.Latitude.Value, k.Longitude.Value)
+                : null;
+
+            return new SellerKioskDto(
+                k.Id,
+                k.Code,
+                k.Name,
+                k.Address,
+                k.Region,
+                k.Status,
+                k.Latitude,
+                k.Longitude,
+                coords,
+                isComplete,
+                canEditLocation);
+        }).ToList();
+
+        return Results.Ok(result);
+    }
 
     private static bool IsAuthorizedSeller(HttpContext http, Guid sellerId)
     {

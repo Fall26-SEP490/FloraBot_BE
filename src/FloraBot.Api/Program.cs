@@ -274,6 +274,7 @@ app.MapPersonalProfile();
 
 app.MapMembers();
 app.MapWebOrders();
+app.MapStaffPreorders();
 app.MapCustomerSellerChat();
 app.MapSellerStaffChat();
 app.MapWebPaymentLinks();

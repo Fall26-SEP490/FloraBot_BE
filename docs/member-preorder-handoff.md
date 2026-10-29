@@ -1,6 +1,6 @@
 # Thành viên và đặt hoa trên website
 
-User đã chốt hỗ trợ cả mua bó có sẵn và đặt mẫu riêng; ưu tiên đặt mẫu trên web để shop chuẩn bị, đưa đến tủ và khách nhận theo lịch. Tài liệu này thay thế các kết luận "chưa chốt preorder" trong báo cáo điều tra trước đó.
+Website chỉ nhận đơn đặt hoa theo mẫu. Hoa bán sẵn được nạp vào kiosk và khách mua trực tiếp tại kiosk; API vẫn giữ các đơn `STOCK` cũ để đọc và xử lý tính lặp.
 
 ## Đường dẫn
 
@@ -14,13 +14,13 @@ Dùng full stack `http://localhost:8088`, không dùng cổng preview Astro đ�
 
 Tài khoản đăng ký công khai luôn là CUSTOMER. Không tự chọn quyền shop/ADMIN. Phiên kiosk có `kiosk_id` không được dùng các endpoint `/api/member/*`. Đăng ký email không tự liên kết với hồ sơ khách OTP theo số điện thoại để tránh nhận nhầm tài khoản.
 
-## Hai luồng nhận hoa
+## Luồng đặt hoa trên website
 
-**Mẫu riêng:** chọn mẫu và tủ → ghi mong muốn → shop báo giá/lịch nhận hoặc từ chối → khách đối chiếu giá, ghi chú, giờ nhận và xác nhận → thanh toán → shop nạp bó đúng ô tại đúng tủ → khách dùng mã biên nhận tại tủ để nhận.
+Chọn mẫu và tủ → ghi mong muốn → shop báo giá/lịch nhận hoặc từ chối → khách đối chiếu giá, ghi chú, giờ nhận và xác nhận → thanh toán → seller hoặc seller_staff được giao công việc đưa bó hoa vào ô `PREORDER` tại đúng kiosk → khách dùng mã biên nhận tại tủ để nhận.
 
-Giá danh mục chỉ là giá tham khảo cho mẫu riêng. Nếu shop sửa báo giá lúc khách đang xem, backend từ chối xác nhận nội dung cũ. Không tạo order_items giả trước khi hoa được nạp thật. Sau thanh toán, đơn giữ PAID, không tự hoàn thành và không phát token mở cửa.
+Ảnh xem trước gửi qua chat là tùy chọn, không tạo bước duyệt ảnh và không chặn việc đưa hoa vào kiosk. Khách vẫn phải xác nhận báo giá/lịch của shop trước khi thanh toán. Giá danh mục chỉ là giá tham khảo. Nếu shop sửa báo giá lúc khách đang xem, backend từ chối xác nhận nội dung cũ. Không tạo `order_items` trước khi hoa được nạp thật. Sau thanh toán, đơn giữ PAID, không tự hoàn thành và không phát token mở cửa.
 
-**Bó có sẵn:** chọn mẫu/tủ và mua bó đang khả dụng → tạo checkout giữ tồn kho → thanh toán trong thời hạn → hoa giữ riêng đến hạn nhận → khách xác thực tại tủ. Dùng cùng quy tắc tồn kho và khóa của kiosk; không cấp khóa thiết bị cho trình duyệt khách.
+Luồng nạp bán sẵn chỉ nhận ô `WALK_IN`; seller_staff chỉ nạp qua công việc giao hoa được phân công. Ô có `zone = NULL` là ô cũ dùng chung, giữ khả năng tương thích cho tới khi được phân loại; giao diện gọi rõ đây là ô cũ chưa phân loại thay vì đoán theo mã ô.
 
 Các giá trị mặc định hiện tại (cần shop thông báo rõ cho khách):
 
@@ -28,7 +28,7 @@ Các giá trị mặc định hiện tại (cần shop thông báo rõ cho khác
 - Shop báo lịch nhận từ 1 giờ đến 30 ngày tới.
 - Báo giá có hiệu lực tối đa 24 giờ, kết thúc muộn nhất 30 phút trước giờ nhận.
 - Thanh toán theo `hold_minutes` hiện hữu (seed: 7 phút).
-- Cửa sổ nhận mặc định 2 giờ (`web_pickup_hours`); bó có sẵn còn bị giới hạn bởi hạn tươi.
+- Cửa sổ nhận mặc định 2 giờ (`web_pickup_hours`).
 - Shop nạp mẫu riêng từ 2 giờ trước giờ hẹn, phải đủ hạn tươi đến hết cửa sổ nhận.
 - Khách không nhận trước giờ hẹn. Thanh toán muộn tạo khoản hoàn, không mở cửa.
 - Khách tự hủy khi chưa thanh toán. Sau thanh toán cần shop/ADMIN đối chiếu và hủy; tạo yêu cầu hoàn tiền qua quy trình hiện hữu, không giả lập chuyển tiền ngân hàng.
@@ -38,7 +38,7 @@ Request ID và payload được giữ lại khi mạng không rõ kết quả; g
 
 ## Database và triển khai
 
-Migration bổ sung: `db/migrations/010_web_preorders.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration tạo `ordering.web_requests`, view catalog và các hàm web; bổ sung nhánh trì hoãn mở cửa cho checkout web. Checkout tại kiosk vẫn đi nhánh hiện hữu.
+Các migration đặt trước ở `db/migrations/010_web_preorders.sql` và `db/migrations/20261029_preorder_fulfillment_zones.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration ngày 2026-10-29 trả zone nullable qua API, chặn tạo đơn mua hoa có sẵn mới trên web, giới hạn nạp bán sẵn vào `WALK_IN`, giữ fulfillment đơn preorder đã thanh toán trong `PREORDER`, và thêm API cho seller_staff được giao công việc. Ô `NULL` cũ được xem là dùng chung trong hai luồng để không suy diễn dữ liệu lịch sử.
 
 Áp dụng migration trước khi chạy API mới. Bootstrap `db-init` tự chạy migration; không dùng script reset database test với database runtime. Backup trước khi áp dụng trên môi trường có đơn thật. Rollback API về bản cũ chỉ sau khi xử lý hết đơn web đang chờ; không xóa bảng đơn để rollback.
 
