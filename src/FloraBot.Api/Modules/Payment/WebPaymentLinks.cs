@@ -52,6 +52,6 @@ public static class WebPaymentLinks
                     requestId, payment, code, failureCode);
                 return Results.Problem(statusCode: 502, detail: "Chưa lấy được liên kết thanh toán. Hãy tải lại trạng thái đơn trước khi thử lại.");
             }
-        }).RequireAuthorization("Member").Produces<PaymentLinkResponse>();
+        }).RequireAuthorization("PreorderCustomer").Produces<PaymentLinkResponse>();
     }
 }

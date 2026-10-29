@@ -29,7 +29,7 @@ public static class WebOrders
 {
     public static void MapWebOrders(this WebApplication app)
     {
-        app.MapGet("/api/member/preorders", (int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, User(http), null, true, page, ct)).RequireAuthorization("Member").Produces<WebRequestPage>();
+        app.MapGet("/api/member/preorders", (int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, User(http), null, true, page, ct)).RequireAuthorization("PreorderCustomer").Produces<WebRequestPage>();
         app.MapGet("/api/sellers/{sellerId:guid}/preorders", (Guid sellerId, int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, sellerId, false, page, ct)).RequireAuthorization("Merchant", "SameSeller").Produces<WebRequestPage>();
         app.MapGet("/api/admin/preorders", (int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, null, false, page, ct)).RequireAuthorization("Admin").Produces<WebRequestPage>();
         app.MapPost("/api/member/preorders", async (WebRequestInput input, HttpContext http, NpgsqlDataSource source, FloraDbContext db, ICapPublisher publisher, CancellationToken ct) =>
@@ -64,14 +64,14 @@ public static class WebOrders
                 command.Parameters.AddWithValue("bouquet", NpgsqlDbType.Uuid, (object?)input.BouquetId ?? DBNull.Value);
                 command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
             }, ct);
-        }).RequireAuthorization("Member").RequireRateLimiting("auth").Produces<FlowResult>();
+        }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth").Produces<FlowResult>();
         app.MapPost("/api/member/preorders/{requestId:guid}/accept", async (Guid requestId, WebAcceptInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (!await Owns(source, requestId, User(http), null, ct)) return Results.NotFound();
             if (input.Note is null || input.Note.Length > 1000) return Results.BadRequest();
             return await Run(source, publisher, "SELECT flow.web_accept(@id,@customer,@price,@pickup,@note)", command => { command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("customer", User(http)); command.Parameters.AddWithValue("price", input.Price); command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("note", input.Note); }, ct);
-        }).RequireAuthorization("Member").Produces<FlowResult>();
-        app.MapPost("/api/member/preorders/{requestId:guid}/cancel", (Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), User(http), null, source, publisher, ct)).RequireAuthorization("Member");
+        }).RequireAuthorization("PreorderCustomer").Produces<FlowResult>();
+        app.MapPost("/api/member/preorders/{requestId:guid}/cancel", (Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), User(http), null, source, publisher, ct)).RequireAuthorization("PreorderCustomer");
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel", (Guid sellerId, Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), null, sellerId, source, publisher, ct)).RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/admin/preorders/{requestId:guid}/cancel", (Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), null, null, source, publisher, ct)).RequireAuthorization("Admin");
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", async (Guid sellerId, Guid requestId, WebQuoteInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>

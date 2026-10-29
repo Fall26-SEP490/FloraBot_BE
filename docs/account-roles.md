@@ -28,14 +28,14 @@ flowchart LR
   C --> D[Khóa dòng người dùng trong transaction]
   D --> E[Tạo shop PENDING và gắn seller_id]
   E --> F[Cùng user ID, vai trò SELLER]
-  F --> B
   F --> G[Quản lý shop]
   G --> H[Admin duyệt và kích hoạt gói]
   H --> I[Đủ điều kiện bán và nạp hoa]
 ```
 
-`SELLER` hiện biểu diễn tài khoản có khả năng quản lý shop, đồng thời vẫn có quyền
-mua hoa trên web. Mở shop không tạo người dùng thứ hai, không đổi mật khẩu/email,
+`SELLER` hiện biểu diễn tài khoản có khả năng quản lý shop. Role này không được
+dùng API đặt trước `/api/member/preorders`; người bán muốn mua hoa phải đăng nhập
+bằng một tài khoản `CUSTOMER` riêng. Mở shop không tạo người dùng thứ hai, không đổi mật khẩu/email,
 không chuyển lịch sử sang ID khác và không xóa điểm. Gửi trùng được tuần tự hóa
 bằng khóa dòng người dùng; API trả lại shop đã gắn với tài khoản.
 
@@ -76,7 +76,7 @@ Admin dùng `/admin` làm trang tổng quan. Các nghiệp vụ có route riêng
 
 Chủ shop dùng `/seller` làm tổng quan; các trang nghiệp vụ gồm `/seller/orders`,
 `/seller/products`, `/seller/stock`, `/seller/accessories`, `/seller/subscriptions`,
-`/seller/wallet`. Tài khoản mua hàng vẫn truy cập từ `/tai-khoan`.
+`/seller/wallet`. Tài khoản `CUSTOMER` mua hàng và quản lý đơn đặt trước từ `/tai-khoan`.
 
 Sidebar hiển thị trên desktop, menu có thể mở/đóng trên mobile. Chỉ nghiệp vụ đang
 mở mới tải dữ liệu; trang tổng quan không gọi đồng loạt các API tài chính và hàng đợi.

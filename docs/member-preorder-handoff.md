@@ -16,6 +16,8 @@ Tài khoản đăng ký công khai luôn là CUSTOMER. Không tự chọn quyề
 
 ## Luồng đặt hoa trên website
 
+Chỉ tài khoản có role `CUSTOMER` được dùng các API `/api/member/preorders` để tạo, xem, xác nhận, hủy và lấy liên kết thanh toán đơn đặt trước. Tài khoản `SELLER` chỉ xử lý đơn của shop qua các API seller; người bán muốn mua hoa phải đăng nhập bằng một tài khoản `CUSTOMER` riêng.
+
 Chọn mẫu và tủ → ghi mong muốn → shop báo giá/lịch nhận hoặc từ chối → khách đối chiếu giá, ghi chú, giờ nhận và xác nhận → thanh toán → seller hoặc seller_staff được giao công việc đưa bó hoa vào ô `PREORDER` tại đúng kiosk → khách dùng mã biên nhận tại tủ để nhận.
 
 Ảnh xem trước gửi qua chat là tùy chọn, không tạo bước duyệt ảnh và không chặn việc đưa hoa vào kiosk. Khách vẫn phải xác nhận báo giá/lịch của shop trước khi thanh toán. Giá danh mục chỉ là giá tham khảo. Nếu shop sửa báo giá lúc khách đang xem, backend từ chối xác nhận nội dung cũ. Không tạo `order_items` trước khi hoa được nạp thật. Sau thanh toán, đơn giữ PAID, không tự hoàn thành và không phát token mở cửa.
@@ -38,7 +40,7 @@ Request ID và payload được giữ lại khi mạng không rõ kết quả; g
 
 ## Database và triển khai
 
-Các migration đặt trước ở `db/migrations/010_web_preorders.sql` và `db/migrations/20261029_preorder_fulfillment_zones.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration ngày 2026-10-29 trả zone nullable qua API, chặn tạo đơn mua hoa có sẵn mới trên web, giới hạn nạp bán sẵn vào `WALK_IN`, giữ fulfillment đơn preorder đã thanh toán trong `PREORDER`, và thêm API cho seller_staff được giao công việc. Ô `NULL` cũ được xem là dùng chung trong hai luồng để không suy diễn dữ liệu lịch sử.
+Các migration đặt trước ở `db/migrations/010_web_preorders.sql`, `db/migrations/20261029_preorder_fulfillment_zones.sql` và `db/migrations/20261029_z_customer_only_web_preorders.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration ngày 2026-10-29 trả zone nullable qua API, chặn tạo đơn mua hoa có sẵn mới trên web, giới hạn nạp bán sẵn vào `WALK_IN`, giữ fulfillment đơn preorder đã thanh toán trong `PREORDER`, và thêm API cho seller_staff được giao công việc. Migration CUSTOMER-only siết role ở database function; các route member đặt trước cũng chỉ cho CUSTOMER. Ô `NULL` cũ được xem là dùng chung trong hai luồng để không suy diễn dữ liệu lịch sử.
 
 Áp dụng migration trước khi chạy API mới. Bootstrap `db-init` tự chạy migration; không dùng script reset database test với database runtime. Backup trước khi áp dụng trên môi trường có đơn thật. Rollback API về bản cũ chỉ sau khi xử lý hết đơn web đang chờ; không xóa bảng đơn để rollback.
 
