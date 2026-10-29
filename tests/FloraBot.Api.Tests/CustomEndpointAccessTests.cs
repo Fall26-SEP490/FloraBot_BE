@@ -197,8 +197,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/chats/{chatId:guid}/read");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
-        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history", "/api/member/preorders");
-        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history");
+        Add(["CUSTOMER"], "GET", "/api/member/preorders");
+        Add(["CUSTOMER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
         Add(["ADMIN"], "GET", "/api/admin/preorders");
