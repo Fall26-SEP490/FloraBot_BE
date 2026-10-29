@@ -1,12 +1,14 @@
 using System.Security.Claims;
 using FloraBot.Api.Data;
 using FloraBot.Api.Modules.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using NpgsqlTypes;
 
 namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record AssignStaffTask(Guid Id, Guid AssigneeId, string Kind, Guid KioskId, Guid? SellerId, Guid? IncidentId, string Instructions);
+public sealed record CreateSellerDeliveryTask(Guid AssigneeId, Guid KioskId, string Instructions);
 public sealed record TransitionStaffTask(int Version, string Status, string Report);
 public sealed record ReassignStaffTask(int Version, Guid AssigneeId, string Reason);
 public sealed record StaffTaskResult(Guid Id, int? Version = null);
@@ -102,8 +104,13 @@ public static class StaffTasks
         app.MapPost("/api/operations/staff-tasks", (AssignStaffTask input, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
             Assign(input, "INCIDENT", null, data, http, ct)).RequireAuthorization("OperationsManager").Produces<StaffTaskResult>();
 
-        app.MapPost("/api/sellers/{sellerId:guid}/staff-tasks", (Guid sellerId, AssignStaffTask input, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
-            Assign(input, "DELIVERY", sellerId, data, http, ct)).RequireAuthorization("Merchant", "SameSeller").Produces<StaffTaskResult>();
+        app.MapPost("/api/me/staff-tasks", async (CreateSellerDeliveryTask input, [FromHeader(Name = "Idempotency-Key")] Guid? idempotencyKey, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
+        {
+            if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
+            if (idempotencyKey == Guid.Empty) return Results.BadRequest();
+            var task = new AssignStaffTask(idempotencyKey ?? Guid.CreateVersion7(), input.AssigneeId, "DELIVERY", input.KioskId, sellerId, null, input.Instructions);
+            return await Assign(task, "DELIVERY", sellerId, data, http, ct);
+        }).RequireAuthorization("Seller").Produces<StaffTaskResult>();
 
         // Transitions
         app.MapPost("/api/staff/tasks/{taskId:guid}/transition", Transition).RequireAuthorization("Staff").Produces<StaffTaskResult>();

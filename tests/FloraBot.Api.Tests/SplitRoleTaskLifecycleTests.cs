@@ -157,7 +157,7 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
         var kiosk = Guid.NewGuid();
         var slot = Guid.NewGuid();
         var product = Guid.NewGuid();
-        var taskId = Guid.NewGuid();
+        var taskId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at) VALUES
@@ -216,9 +216,11 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
         Assert.Equal(HttpStatusCode.NotFound, crossStaff.StatusCode);
 
         // 4. Seller assigns delivery task to own staff
-        var assignInput = new AssignStaffTask(taskId, staffId, "DELIVERY", kiosk, sellerId, null, "Restock slots with Delivery Roses");
-        var assignRes = await seller.PostAsJsonAsync($"/api/sellers/{sellerId}/staff-tasks", assignInput);
+        var assignInput = new CreateSellerDeliveryTask(staffId, kiosk, "Restock slots with Delivery Roses");
+        var assignRes = await seller.PostAsJsonAsync("/api/me/staff-tasks", assignInput);
         assignRes.EnsureSuccessStatusCode();
+        taskId = (await assignRes.Content.ReadFromJsonAsync<StaffTaskResult>())!.Id;
+        Assert.NotEqual(Guid.Empty, taskId);
 
         // 5. Seller cannot assign a technician
         var techId = Guid.NewGuid();
@@ -226,14 +228,14 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
         addTech.Parameters.AddWithValue("id", techId);
         await addTech.ExecuteNonQueryAsync();
 
-        var assignTechRes = await seller.PostAsJsonAsync($"/api/sellers/{sellerId}/staff-tasks",
-            assignInput with { Id = Guid.NewGuid(), AssigneeId = techId });
+        var assignTechRes = await seller.PostAsJsonAsync("/api/me/staff-tasks",
+            assignInput with { AssigneeId = techId });
         Assert.Equal(HttpStatusCode.BadRequest, assignTechRes.StatusCode);
 
-        // 6. Seller cannot assign INCIDENT task
-        var assignIncidentRes = await seller.PostAsJsonAsync($"/api/sellers/{sellerId}/staff-tasks",
-            assignInput with { Id = Guid.NewGuid(), Kind = "INCIDENT", IncidentId = Guid.NewGuid() });
-        Assert.Equal(HttpStatusCode.BadRequest, assignIncidentRes.StatusCode);
+        // 6. The seller-scoped POST route was removed; the same path remains GET-only.
+        var removedRouteRes = await seller.PostAsJsonAsync($"/api/sellers/{sellerId}/staff-tasks",
+            new AssignStaffTask(Guid.NewGuid(), staffId, "DELIVERY", kiosk, sellerId, null, "Legacy delivery assignment"));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, removedRouteRes.StatusCode);
 
         // 7. Seller staff views assigned task
         var taskList = await staff.GetFromJsonAsync<StaffTaskPage>("/api/staff/tasks");

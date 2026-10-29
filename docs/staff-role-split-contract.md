@@ -314,20 +314,18 @@ Used by `SELLER` (and `ADMIN`) for their shop's delivery tasks.
 ### 5.3 Delivery Tasks Management
 - **List Tasks**: `GET /api/sellers/{sellerId}/staff-tasks?page=1&status={status}`
   - Returns only `DELIVERY` tasks for this shop.
-- **Assign Task**: `POST /api/sellers/{sellerId}/staff-tasks`
+- **Assign Task**: `POST /api/me/staff-tasks`
+  - Seller is resolved from the authenticated token; the server sets task kind to `DELIVERY`, sets `incidentId` to `null`, and generates the task ID.
+  - Optional `Idempotency-Key` header (UUID) lets a client safely retry the same request; without it the server generates a new ID for each request.
   - **Request Body**:
     ```json
     {
-      "id": "uuid",
       "assigneeId": "uuid",
-      "kind": "DELIVERY",
       "kioskId": "uuid",
-      "sellerId": "uuid",
-      "incidentId": null,
       "instructions": "Restock slots 1 and 2 with Fresh Roses"
     }
     ```
-  - **Enforcement**: `sellerId` must match the authenticated seller; `assigneeId` must be an active `SELLER_STAFF` of this shop; `kioskId` must be a valid delivery scope.
+  - **Enforcement**: `assigneeId` must be an active `SELLER_STAFF` of this shop; `kioskId` must be a valid delivery scope.
 - **Task Detail & History**: `GET /api/sellers/{sellerId}/staff-tasks/{taskId}?page=1`
 - **Review / Transition**: `POST /api/sellers/{sellerId}/staff-tasks/{taskId}/transition`
   - **Request Body**:

@@ -10,7 +10,14 @@ using NpgsqlTypes;
 
 namespace FloraBot.Api.Modules.Ordering;
 
-public sealed record WebRequestInput(Guid Id, string Kind, Guid ProductId, Guid KioskId, Guid? BouquetId, DateTimeOffset PickupAt, string Instructions);
+public sealed record WebRequestInput(
+    string Kind,
+    Guid ProductId,
+    Guid KioskId,
+    DateTimeOffset PickupAt,
+    string Instructions,
+    Guid? BouquetId = null,
+    Guid? Id = null);
 public sealed record WebQuoteInput(long Price, DateTimeOffset PickupAt, string Note, bool Reject = false);
 public sealed record WebFulfillInput(Guid SlotId, string QrCode);
 public sealed record WebCancelInput(string Reason);
@@ -27,10 +34,21 @@ public static class WebOrders
         app.MapGet("/api/admin/preorders", (int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, null, false, page, ct)).RequireAuthorization("Admin").Produces<WebRequestPage>();
         app.MapPost("/api/member/preorders", async (WebRequestInput input, HttpContext http, NpgsqlDataSource source, FloraDbContext db, ICapPublisher publisher, CancellationToken ct) =>
         {
-            if (input.Id == Guid.Empty || input.Kind is not ("STOCK" or "CUSTOM") || input.Instructions is null || input.Instructions.Length > 2000 || input.Kind == "STOCK" && input.BouquetId is null) return Results.BadRequest();
+            if (input.Kind is not ("STOCK" or "CUSTOM") || input.Instructions is null || input.Instructions.Length > 2000 || input.Kind == "STOCK" && input.BouquetId is null) return Results.BadRequest();
+
+            // Generate an idempotency key when the client omits the optional request ID.
+            // Clients that already send a stable ID can keep using it for safe retries.
+            var requestId = input.Id is { } suppliedId && suppliedId != Guid.Empty
+                ? suppliedId
+                : Guid.CreateVersion7();
+
+            // Keep retries for old STOCK requests idempotent, but do not accept new web stock purchases.
+            var existingRequest = await Owns(source, requestId, User(http), null, ct);
+            if (input.Kind != "CUSTOM" && !existingRequest)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["kind"] = ["Web chỉ nhận đơn đặt hoa theo mẫu."] });
 
             // Retrying an existing preorder must preserve historical preorders and idempotency
-            if (!await Owns(source, input.Id, User(http), null, ct))
+            if (!existingRequest)
             {
                 // New preorder must reject kiosks with missing address or map coordinates
                 if (!await KioskLocations.IsPreorderReadyAsync(db, input.KioskId, ct))
@@ -41,7 +59,7 @@ public static class WebOrders
 
             return await Run(source, publisher, "SELECT flow.web_request(@id,@customer,@kind,@product,@kiosk,@bouquet,@pickup,@instructions)", command =>
             {
-                command.Parameters.AddWithValue("id", input.Id); command.Parameters.AddWithValue("customer", User(http));
+                command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("customer", User(http));
                 command.Parameters.AddWithValue("kind", input.Kind); command.Parameters.AddWithValue("product", input.ProductId); command.Parameters.AddWithValue("kiosk", input.KioskId);
                 command.Parameters.AddWithValue("bouquet", NpgsqlDbType.Uuid, (object?)input.BouquetId ?? DBNull.Value);
                 command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("instructions", input.Instructions.Trim());

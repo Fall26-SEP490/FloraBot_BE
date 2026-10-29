@@ -36,7 +36,7 @@ public static class KioskOpsReadEndpoints
             // Ownership was checked above against Kiosk.SellerId, so scope this unfiltered slot read by kiosk.
             var slots = await db.Slots.IgnoreQueryFilters().AsNoTracking().Where(x => x.KioskId == kioskId)
                 .OrderBy(x => x.SlotCode).ThenBy(x => x.Id)
-                .Select(x => new { x.Id, x.KioskId, x.SlotCode, x.Status, x.BouquetId }).ToListAsync(ct);
+                .Select(x => new { x.Id, x.KioskId, x.SlotCode, x.Status, x.Zone, x.BouquetId }).ToListAsync(ct);
             var bouquetIds = slots.Where(x => x.BouquetId.HasValue).Select(x => x.BouquetId!.Value).ToArray();
             var bouquets = await db.Bouquets.AsNoTracking().Where(x => bouquetIds.Contains(x.Id))
                 .Select(x => new { x.Id, x.ProductId, x.QrCode, x.PriceSnapshot, x.SellableUntil })
@@ -44,7 +44,7 @@ public static class KioskOpsReadEndpoints
             return Results.Ok(slots.Select(slot =>
             {
                 var bouquet = slot.BouquetId.HasValue ? bouquets.GetValueOrDefault(slot.BouquetId.Value) : null;
-                return new SellerSlotResponse(slot.Id, slot.KioskId, slot.SlotCode, slot.Status, slot.BouquetId,
+                return new SellerSlotResponse(slot.Id, slot.KioskId, slot.SlotCode, slot.Status, slot.Zone, slot.BouquetId,
                     kiosk.Code, kiosk.Name, kiosk.Address, bouquet?.ProductId, bouquet?.QrCode,
                     bouquet?.PriceSnapshot, bouquet?.SellableUntil);
             }).ToList());
@@ -65,7 +65,7 @@ public static class KioskOpsReadEndpoints
         {
             http.Response.Headers.CacheControl = "no-store";
             return await db.Slots.AsNoTracking().OrderBy(x => x.Kiosk.Code).ThenBy(x => x.SlotCode)
-                .Select(x => new AdminSlotResponse(x.Id, x.KioskId, x.SlotCode, x.Status, x.CurrentSellerId, x.BouquetId,
+                .Select(x => new AdminSlotResponse(x.Id, x.KioskId, x.SlotCode, x.Status, x.Zone, x.CurrentSellerId, x.BouquetId,
                     x.Kiosk.Code, x.Kiosk.Name, x.Kiosk.Address, x.Kiosk.Status)).ToListAsync();
         }).RequireAuthorization("Admin").Produces<List<AdminSlotResponse>>();
     }

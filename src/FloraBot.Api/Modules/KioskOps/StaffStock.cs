@@ -9,7 +9,7 @@ namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record StaffStockInput(Guid Id, Guid ProductId, Guid SlotId, string QrCode);
 public sealed record StaffStockResult(Guid Id, Guid BouquetId);
-public sealed record StaffStockSlot(Guid Id, string Code);
+public sealed record StaffStockSlot(Guid Id, string Code, string? Zone);
 public sealed record StaffStockAction(Guid Id, Guid ProductId, Guid SlotId, string QrCode, Guid BouquetId, DateTime CreatedAt);
 public sealed record StaffStockOptions(List<StaffStockProduct> Products, List<StaffStockSlot> Slots, List<StaffStockAction> Actions);
 
@@ -65,10 +65,10 @@ public static class StaffStock
         var slots = new List<StaffStockSlot>();
         if (status == "IN_PROGRESS")
         {
-            await using var command = data.CreateCommand("SELECT s.id,s.slot_code FROM kiosk_ops.slots s JOIN kiosk_ops.kiosks k ON k.id=s.kiosk_id WHERE s.kiosk_id=@kiosk AND s.current_seller_id=@seller AND s.status='RENTED_EMPTY' AND k.status NOT IN ('DISABLED','MAINTENANCE') AND flow.slot_sellable(s.id,@seller) ORDER BY s.slot_code,s.id");
+            await using var command = data.CreateCommand("SELECT s.id,s.slot_code,s.zone FROM kiosk_ops.slots s JOIN kiosk_ops.kiosks k ON k.id=s.kiosk_id WHERE s.kiosk_id=@kiosk AND s.current_seller_id=@seller AND s.status='RENTED_EMPTY' AND (s.zone='WALK_IN' OR s.zone IS NULL) AND k.status NOT IN ('DISABLED','MAINTENANCE') AND flow.slot_sellable(s.id,@seller) ORDER BY s.slot_code,s.id");
             command.Parameters.AddWithValue("kiosk", kiosk); command.Parameters.AddWithValue("seller", seller);
             await using var reader = await command.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct)) slots.Add(new(reader.GetGuid(0), reader.GetString(1)));
+            while (await reader.ReadAsync(ct)) slots.Add(new(reader.GetGuid(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
         var actions = new List<StaffStockAction>();
         await using (var command = data.CreateCommand("SELECT id,product_id,slot_id,qr_code,bouquet_id,created_at FROM kiosk_ops.staff_stock_actions WHERE task_id=@id ORDER BY created_at DESC,id DESC"))
