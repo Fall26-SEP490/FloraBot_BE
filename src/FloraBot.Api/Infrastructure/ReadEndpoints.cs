@@ -24,7 +24,9 @@ public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Pric
 public sealed record PackageResponse(Guid Id, string Name, long MonthlyFee, int MaxSlots);
 public sealed record AdminSellerResponse(Guid Id, string ShopName, string Status, Guid? PackageId, DateOnly? PackageExpiresAt, string Phone, string? Address);
 public sealed record AdminSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? CurrentSellerId, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, string KioskStatus);
-public sealed record SellerSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, Guid? ProductId, string? QrCode, long? PriceSnapshot, DateTime? SellableUntil);
+public sealed record SellerSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, Guid? ProductId, string? QrCode, long? PriceSnapshot, DateTime? SellableUntil,
+    string? BouquetStatus = null, Guid? OrderId = null, string? OrderCode = null,
+    string? OrderStatus = null, string? PaymentStatus = null);
 
 public static class ReadEndpoints
 {

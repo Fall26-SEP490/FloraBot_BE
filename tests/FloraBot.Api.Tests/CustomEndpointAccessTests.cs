@@ -239,6 +239,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
         Add(["SELLER"], "GET", "/api/me/products");
         Add(["SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/slots");
+        Add(["SELLER"], "DELETE", "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/bouquet");
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");
