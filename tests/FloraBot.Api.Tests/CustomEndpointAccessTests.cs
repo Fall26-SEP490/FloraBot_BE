@@ -146,6 +146,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     private static Access[] BuildMatrix()
     {
         var entries = new List<Access>();
+        Add(["SELLER"], "POST", "/api/me/preorders/{requestId:guid}/pickup-otp");
+        Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/open");
+        Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/attempts/{attemptId:guid}");
         Add([], "GET", "/api/shop/catalog");
         Add([], "GET", "/api/kiosk-locations");
         Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks");
