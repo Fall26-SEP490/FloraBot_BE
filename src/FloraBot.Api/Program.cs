@@ -306,6 +306,7 @@ app.MapRegistration();
 app.MapOnboardingPackages();
 app.MapKioskApplications();
 app.MapSellerSlotZones();
+app.MapSellerSlotBouquets();
 app.MapPayOs();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();
