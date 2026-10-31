@@ -16,5 +16,6 @@
     <Compile Include="../FloraBot.Api.Tests/SellerSlotRemovalTests.cs" Link="SellerSlotRemovalTests.cs" />
     <Compile Include="../FloraBot.Api.Tests/SellerInventoryReadTests.cs" Link="SellerInventoryReadTests.cs" />
     <Compile Include="../FloraBot.Api.Tests/TestConcurrency.cs" Link="TestConcurrency.cs" />
+    <Compile Include="../FloraBot.Api.Tests/PreorderPickupOtpTests.cs" Link="PreorderPickupOtpTests.cs" />
   </ItemGroup>
 </Project>

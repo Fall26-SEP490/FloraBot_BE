@@ -99,6 +99,7 @@ builder.Services.AddSingleton(EmailSettings.Load(builder.Configuration, builder.
 builder.Services.AddHttpClient<TransactionalEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddTransient<ITransactionalEmailSender>(sp => sp.GetRequiredService<TransactionalEmailSender>());
+builder.Services.AddScoped<PreorderPickupOtp>();
 builder.Services.AddSingleton<IGoogleIdentityValidator, GoogleIdentityValidator>();
 builder.Services.AddHttpClient<CloudinaryMedia>(client => client.Timeout = TimeSpan.FromSeconds(30))
     .RemoveAllLoggers()
@@ -193,6 +194,8 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    options.AddPolicy("pickup-otp", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("advisor", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     foreach (var name in new[] { "auth", "receipt" })
@@ -276,6 +279,7 @@ app.MapPersonalProfile();
 app.MapMembers();
 app.MapWebOrders();
 app.MapStaffPreorders();
+app.MapPreorderPickupOtp();
 app.MapCustomerSellerChat();
 app.MapSellerStaffChat();
 app.MapWebPaymentLinks();
