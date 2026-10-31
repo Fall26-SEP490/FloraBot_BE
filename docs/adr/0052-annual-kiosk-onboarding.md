@@ -1,5 +1,7 @@
 # 0052: Annual kiosk onboarding lifecycle, whole-kiosk slot zones, and handover promotion
 
+Status: The one-kiosk-per-Seller assumption below was superseded by [ADR 0054](0054-multi-kiosk-seller-leases.md). The original customer onboarding flow remains in effect.
+
 ## Context
 
 FloraBot's business model assigns one Seller to lease one whole physical kiosk. Monopolizing or sharing individual slots across arbitrary sellers is not permitted; each kiosk consists of designated `WALK_IN` and `PREORDER` slot zones. Under the approved 2026-10-15 annual onboarding model:

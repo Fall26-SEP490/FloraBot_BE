@@ -30,6 +30,13 @@ public sealed record CreateKioskApplicationRequest(
     string BankAccountNumber
 );
 
+public sealed record CreateAdditionalKioskApplicationRequest(
+    Guid PackageId,
+    string InstallationAddress,
+    double? Latitude,
+    double? Longitude
+);
+
 public sealed record CancelKioskApplicationRequest(string? Reason);
 public sealed record ConfirmKioskApplicationRequest(string Note);
 public sealed record ScheduleKioskApplicationRequest(Guid TechnicianId, DateOnly ScheduledDate, string TimeWindow, Guid KioskId);
@@ -142,6 +149,31 @@ public static partial class KioskApplications
     private static Guid Actor(HttpContext http) => Guid.Parse(http.User.FindFirstValue("sub")!);
     private static string TechEvidenceBinding(Guid actor, Guid appId) => $"tech-kiosk:{actor}:{appId}";
 
+    private static async Task<bool> OwnsApplicationAsync(
+        FloraDbContext db,
+        HttpContext http,
+        KioskApplication application,
+        CancellationToken ct)
+    {
+        var actor = Actor(http);
+        if (application.CustomerId != actor) return false;
+        var identity = await db.Users.AsNoTracking()
+            .Where(x => x.Id == actor)
+            .Select(x => new { x.Role, x.Status, x.SellerId })
+            .SingleOrDefaultAsync(ct);
+        if (identity is null || identity.Status != "ACTIVE") return false;
+
+        var tokenRole = http.User.FindFirstValue("role");
+        if (tokenRole == "CUSTOMER")
+            return identity.Role == "CUSTOMER" && application.SellerId is null;
+
+        return tokenRole == "SELLER"
+            && identity.Role == "SELLER"
+            && Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)
+            && identity.SellerId == sellerId
+            && application.SellerId == sellerId;
+    }
+
     private static string MaskAccount(string enc, IDataProtectionProvider protection)
     {
         try
@@ -237,11 +269,72 @@ public static partial class KioskApplications
             {
                 return Results.Problem(statusCode: 403, detail: ex.MessageText);
             }
+            catch (PostgresException ex) when (ex.SqlState == "22023")
+            {
+                return Results.Problem(statusCode: 400, detail: ex.MessageText);
+            }
 
             var application = await db.KioskApplications.AsNoTracking().SingleAsync(x => x.Id == createdId, ct);
             var response = MapApplication(application, null, null, null, protection);
             return Results.Created($"/api/member/kiosk-applications/{createdId}", response);
         }).RequireAuthorization("PreorderCustomer").WithTags("KioskOnboarding").Produces<KioskApplicationResponse>(201);
+
+        // Existing Seller: request another whole kiosk under the same shop profile.
+        app.MapPost("/api/me/kiosk-applications", async (
+            CreateAdditionalKioskApplicationRequest input,
+            HttpContext http,
+            NpgsqlDataSource data,
+            FloraDbContext db,
+            IDataProtectionProvider protection,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(input.InstallationAddress)
+                || input.InstallationAddress.Trim().Length > 200
+                || input.InstallationAddress.Any(char.IsControl))
+                return Results.Problem(statusCode: 400, detail: "Địa chỉ lắp đặt tối đa 200 ký tự và không chứa ký tự điều khiển.");
+
+            if (!input.Latitude.HasValue || !input.Longitude.HasValue
+                || input.Latitude.Value is < -90 or > 90 || double.IsNaN(input.Latitude.Value) || double.IsInfinity(input.Latitude.Value)
+                || input.Longitude.Value is < -180 or > 180 || double.IsNaN(input.Longitude.Value) || double.IsInfinity(input.Longitude.Value))
+                return Results.Problem(statusCode: 400, detail: "Vui lòng cung cấp tọa độ latitude/longitude hợp lệ.");
+
+            var package = await OnboardingPackages.FindActiveAnnualPackageAsync(db, input.PackageId, ct);
+            if (package is null)
+                return Results.Problem(statusCode: 400, detail: "Gói thuê bao hàng năm không hợp lệ hoặc đã ngừng cung cấp.");
+
+            if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
+                return Results.Problem(statusCode: 403, detail: "Tài khoản chưa được gắn với Seller đang hoạt động.");
+
+            await using var command = data.CreateCommand("SELECT flow.create_seller_kiosk_application(@user, @seller, @package, @address, @lat, @lon)");
+            command.Parameters.AddWithValue("user", Actor(http));
+            command.Parameters.AddWithValue("seller", sellerId);
+            command.Parameters.AddWithValue("package", package.Id);
+            command.Parameters.AddWithValue("address", input.InstallationAddress.Trim());
+            command.Parameters.AddWithValue("lat", input.Latitude.Value);
+            command.Parameters.AddWithValue("lon", input.Longitude.Value);
+
+            Guid createdId;
+            try
+            {
+                createdId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+            }
+            catch (PostgresException ex) when (ex.SqlState == "P0001")
+            {
+                return Results.Problem(statusCode: 409, detail: ex.MessageText);
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42501")
+            {
+                return Results.Problem(statusCode: 403, detail: ex.MessageText);
+            }
+            catch (PostgresException ex) when (ex.SqlState == "22023")
+            {
+                return Results.Problem(statusCode: 400, detail: ex.MessageText);
+            }
+
+            var application = await db.KioskApplications.AsNoTracking().SingleAsync(x => x.Id == createdId, ct);
+            var response = MapApplication(application, null, null, null, protection);
+            return Results.Created($"/api/member/kiosk-applications/{createdId}", response);
+        }).RequireAuthorization("Seller").WithTags("KioskOnboarding").Produces<KioskApplicationResponse>(201);
 
         // 2. Customer: Get current application
         app.MapGet("/api/member/kiosk-applications/current", async (
@@ -275,7 +368,7 @@ public static partial class KioskApplications
         {
             var actor = Actor(http);
             var appRow = await db.KioskApplications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
-            if (appRow is null || appRow.CustomerId != actor) return Results.NotFound();
+            if (appRow is null || !await OwnsApplicationAsync(db, http, appRow, ct)) return Results.NotFound();
             if (appRow.Status != "AWAITING_PAYMENT")
                 return Results.Problem(statusCode: 409, detail: "Hồ sơ không ở trạng thái chờ thanh toán.");
 
@@ -305,7 +398,7 @@ public static partial class KioskApplications
             {
                 return Results.Problem(statusCode: 502, detail: "Không thể khởi tạo liên kết thanh toán với cổng payOS. Vui lòng thử lại.");
             }
-        }).RequireAuthorization("PreorderCustomer").WithTags("KioskOnboarding").Produces<PaymentLinkResponse>();
+        }).RequireAuthorization("KioskApplicationOwner").WithTags("KioskOnboarding").Produces<PaymentLinkResponse>();
 
         // 4. Customer: Cancel / Request refund
         app.MapPost("/api/member/kiosk-applications/{id:guid}/cancel", async (
@@ -319,7 +412,7 @@ public static partial class KioskApplications
         {
             var actor = Actor(http);
             var appRow = await db.KioskApplications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
-            if (appRow is null || appRow.CustomerId != actor) return Results.NotFound();
+            if (appRow is null || !await OwnsApplicationAsync(db, http, appRow, ct)) return Results.NotFound();
 
             await using var command = data.CreateCommand("SELECT flow.kiosk_application_cancel(@id, @actor, @reason)");
             command.Parameters.AddWithValue("id", id);
@@ -334,10 +427,14 @@ public static partial class KioskApplications
             {
                 return Results.Problem(statusCode: 409, detail: ex.MessageText);
             }
+            catch (PostgresException ex) when (ex.SqlState == "42501")
+            {
+                return Results.Problem(statusCode: 403, detail: ex.MessageText);
+            }
 
             var updated = await db.KioskApplications.AsNoTracking().SingleAsync(x => x.Id == id, ct);
             return Results.Ok(MapApplication(updated, null, null, null, protection));
-        }).RequireAuthorization("PreorderCustomer").WithTags("KioskOnboarding").Produces<KioskApplicationResponse>();
+        }).RequireAuthorization("KioskApplicationOwner").WithTags("KioskOnboarding").Produces<KioskApplicationResponse>();
 
         // 5. Customer / Admin: Owner-only server-to-server status reconciliation (allows late paid after cancel/reject)
         app.MapPost("/api/member/kiosk-applications/{id:guid}/reconcile", async (
@@ -354,7 +451,7 @@ public static partial class KioskApplications
             var role = http.User.FindFirstValue("role");
             var appRow = await db.KioskApplications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
             if (appRow is null) return Results.NotFound();
-            if (role != "ADMIN" && appRow.CustomerId != actor) return Results.NotFound();
+            if (role != "ADMIN" && !await OwnsApplicationAsync(db, http, appRow, ct)) return Results.NotFound();
 
             if (appRow.Status != "AWAITING_PAYMENT" && appRow.Status != "CANCELLED" && appRow.Status != "REJECTED")
                 return Results.Problem(statusCode: 409, detail: "Hồ sơ không ở trạng thái cần đối soát thanh toán.");

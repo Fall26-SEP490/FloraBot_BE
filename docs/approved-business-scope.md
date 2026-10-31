@@ -13,7 +13,8 @@ The present runtime still uses ADMIN/STAFF/SELLER/CUSTOMER. Do not claim the sev
 ## Inventory, tenancy and money
 
 - ALL products are artificial flowers (hoa giả), both walk-in and preorder. The PDF's dried-flower wording is superseded. No freshness expiry or automatic age-based disposal.
-- One seller leases one whole physical kiosk. The seller chooses which rented empty slots are WALK_IN or PREORDER after handover; Operations records the kiosk's total capacity only. A zone is not a second kiosk/tenant.
+- A physical kiosk is leased whole to exactly one Seller; a Seller may lease multiple physical kiosks. Each kiosk lease has its own annual package and expiry. Expiry disables selling/stocking only on that kiosk; the existing seven-day grace and slot-release behavior applies only to that kiosk. Shop identity and bank details are shared by the Seller, while each kiosk keeps its own installation address and coordinates.
+- The seller chooses which rented empty slots are WALK_IN or PREORDER after handover; Operations records the kiosk's total capacity only. A zone is not a second kiosk/tenant.
 - Walk-in catalog/checkout exclude preorder slots and reserved products, at the server boundary.
 - Accessories are PREORDER ONLY, prepared/priced with the bouquet before the seller stocks it. No independent walk-in accessory sale.
 - Subscription fees only, no sales commission.

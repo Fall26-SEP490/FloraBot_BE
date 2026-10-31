@@ -9,6 +9,8 @@ public partial class Subscription
 
     public Guid SellerId { get; set; }
 
+    public Guid? KioskId { get; set; }
+
     public Guid PackageId { get; set; }
 
     public DateOnly PeriodFrom { get; set; }
