@@ -726,6 +726,7 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.PeriodTo).HasColumnName("period_to");
             entity.Property(e => e.PeriodFromTs).HasColumnName("period_from_ts");
             entity.Property(e => e.PeriodToTs).HasColumnName("period_to_ts");
+            entity.Property(e => e.KioskId).HasColumnName("kiosk_id");
             entity.Property(e => e.Price).HasColumnName("price");
             entity.Property(e => e.SellerId).HasColumnName("seller_id");
             entity.Property(e => e.Status)

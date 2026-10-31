@@ -26,7 +26,7 @@ public static class IdentityReadEndpoints
                 .Select(x => new SellerPackageResponse(x.Name, x.MonthlyFee, x.MaxSlots, x.Status)).SingleOrDefaultAsync();
             var subscriptions = await db.Subscriptions.AsNoTracking().Where(x => x.SellerId == sellerId)
                 .OrderByDescending(x => x.CreatedAt).Take(100)
-                .Select(x => new SubscriptionResponse(x.Id, x.Package.Name, x.PeriodFrom, x.PeriodTo, x.Price, x.Status)).ToListAsync();
+                .Select(x => new SubscriptionResponse(x.Id, x.Package.Name, x.PeriodFrom, x.PeriodTo, x.Price, x.Status, x.KioskId)).ToListAsync();
             return Results.Ok(new SubscriptionOverviewResponse(package, subscriptions));
         }).RequireAuthorization("Merchant").Produces<SubscriptionOverviewResponse>();
         app.MapGet("/api/admin/sellers", async (string? status, FloraDbContext db, HttpContext http) =>
