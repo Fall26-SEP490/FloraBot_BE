@@ -96,7 +96,7 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
     [Theory]
     [InlineData("UPDATE kiosk_ops.kiosks SET status='OFFLINE' WHERE id=@kiosk",409)]
     [InlineData("UPDATE kiosk_ops.kiosks SET last_heartbeat_at=public.app_now()-interval '1 hour' WHERE id=@kiosk",409)]
-    [InlineData("UPDATE ordering.web_requests SET pickup_at=public.app_now()+interval '1 hour' WHERE id=@request",409)]
+    [InlineData("UPDATE ordering.web_requests SET pickup_before=public.app_now()-interval '1 second',pickup_at=public.app_now()-interval '1 hour' WHERE id=@request",409)]
     [InlineData("UPDATE identity.users SET email=@customer::text||'changed@example.invalid' WHERE id=@customer",401)]
     [InlineData("UPDATE ordering.preorder_pickup_otps SET expires_at=public.app_now()-interval '1 second',issued_at=public.app_now()-interval '1 hour' WHERE request_id=@request",401)]
     public async Task OpenRechecksTimeDeviceAndRecipient(string mutation,int status)
@@ -104,6 +104,16 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
         var f=await Setup(); await Service.Send(f.Request,f.Actor,default); var code=Code(f);
         await Sql(f,mutation); await AssertFailure(status,()=>Service.Open(f.Kiosk,code,Guid.NewGuid(),default));
         Assert.Equal(0L,await Sql(f,"SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@order"));
+    }
+    [Fact]
+    public async Task ReadyPaidOrderCanBeCollectedBeforeScheduledPickup()
+    {
+        var f = await Setup();
+        await Sql(f, "UPDATE ordering.web_requests SET pickup_at=public.app_now()+interval '1 hour' WHERE id=@request");
+        await Service.Send(f.Request, f.Actor, default);
+        var opened = await Service.Open(f.Kiosk, Code(f), Guid.NewGuid(), default);
+        Assert.Equal(f.Order, opened.OrderId);
+        Assert.Equal(1L, await Sql(f, "SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@order"));
     }
     [Fact]
     public async Task ResendRevokesOldCodeAndEmailFailureNeverActivatesCode()

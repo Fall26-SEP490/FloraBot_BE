@@ -85,8 +85,8 @@ public sealed class PreorderPickupOtp(NpgsqlDataSource source, ITransactionalEma
             reader.GetString(8), reader.GetString(9), reader.GetFieldValue<DateTimeOffset>(10),
             reader.GetFieldValue<DateTimeOffset>(11), reader.GetFieldValue<DateTimeOffset>(12), reader.GetString(13), reader.GetString(14));
         if (!EmailSettings.IsAddress(row.Email)) throw new PickupOtpFailure(409, "Tài khoản đặt đơn chưa có email đăng nhập hợp lệ.");
-        if (opening && (row.KioskStatus != "ONLINE" || row.Now < row.PickupAt))
-            throw new PickupOtpFailure(409, "Kiosk phải trực tuyến và đã đến khung giờ nhận hoa.");
+        if (opening && row.KioskStatus != "ONLINE")
+            throw new PickupOtpFailure(409, "Kiosk phải trực tuyến để nhận hoa.");
         return row;
     }
     private static async Task EnsureDoorsIdle(NpgsqlConnection c, NpgsqlTransaction t, Guid order, CancellationToken ct)
@@ -162,7 +162,7 @@ public sealed class PreorderPickupOtp(NpgsqlDataSource source, ITransactionalEma
             var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
             var from = TimeZoneInfo.ConvertTime(row.PickupAt, zone).ToString("dd/MM/yyyy HH:mm");
             var until = TimeZoneInfo.ConvertTime(row.PickupBefore, zone).ToString("dd/MM/yyyy HH:mm");
-            var text = $"Mã nhận hoa FloraBot: {code}\nĐơn: {row.OrderCode}\nHoa: {row.ProductName}\nKiosk: {row.KioskName}\nĐịa chỉ: {row.Address}\nNhận từ {from} đến {until} (giờ Việt Nam).\nNhập 8 chữ số trên màn hình Nhận đơn đặt trước tại đúng kiosk. Mã chỉ dùng một lần và mã cũ hết hiệu lực khi shop gửi lại. Không chia sẻ mã.";
+            var text = $"Mã nhận hoa FloraBot: {code}\nĐơn: {row.OrderCode}\nHoa: {row.ProductName}\nKiosk: {row.KioskName}\nĐịa chỉ: {row.Address}\nGiờ hẹn: {from} (giờ Việt Nam). Có thể nhận sớm khi hoa đã sẵn sàng trong hộc. Mã hết hạn lúc {until} (giờ Việt Nam).\nNhập 8 chữ số trên màn hình Nhận đơn đặt trước tại đúng kiosk. Mã chỉ dùng một lần và mã cũ hết hiệu lực khi shop gửi lại. Không chia sẻ mã.";
             await sender.SendAsync(new TransactionalEmail(row.Email, "FloraBot - Mã OTP nhận hoa đặt trước", text), ct);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
