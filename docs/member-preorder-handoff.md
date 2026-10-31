@@ -22,7 +22,7 @@ Chọn mẫu và tủ → ghi mong muốn → shop báo giá/lịch nhận hoặ
 
 Ảnh xem trước gửi qua chat là tùy chọn, không tạo bước duyệt ảnh và không chặn việc đưa hoa vào kiosk. Khách vẫn phải xác nhận báo giá/lịch của shop trước khi thanh toán. Giá danh mục chỉ là giá tham khảo. Nếu shop sửa báo giá lúc khách đang xem, backend từ chối xác nhận nội dung cũ. Không tạo `order_items` trước khi hoa được nạp thật. Sau thanh toán, đơn giữ PAID, không tự hoàn thành và không phát token mở cửa.
 
-Luồng nạp bán sẵn chỉ nhận ô `WALK_IN`; seller_staff chỉ nạp qua công việc giao hoa được phân công. Ô có `zone = NULL` là ô cũ dùng chung, giữ khả năng tương thích cho tới khi được phân loại; giao diện gọi rõ đây là ô cũ chưa phân loại thay vì đoán theo mã ô.
+Luồng nạp bán sẵn chỉ nhận ô `WALK_IN`; seller_staff chỉ nạp qua công việc giao hoa được phân công. Ô có `zone = NULL` chưa được phân loại và không nhận hàng cho tới khi seller gán `WALK_IN` hoặc `PREORDER`.
 
 Các giá trị mặc định hiện tại (cần shop thông báo rõ cho khách):
 
@@ -40,7 +40,7 @@ Request ID và payload được giữ lại khi mạng không rõ kết quả; g
 
 ## Database và triển khai
 
-Các migration đặt trước ở `db/migrations/010_web_preorders.sql`, `db/migrations/20261029_preorder_fulfillment_zones.sql` và `db/migrations/20261029_z_customer_only_web_preorders.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration ngày 2026-10-29 trả zone nullable qua API, chặn tạo đơn mua hoa có sẵn mới trên web, giới hạn nạp bán sẵn vào `WALK_IN`, giữ fulfillment đơn preorder đã thanh toán trong `PREORDER`, và thêm API cho seller_staff được giao công việc. Migration CUSTOMER-only siết role ở database function; các route member đặt trước cũng chỉ cho CUSTOMER. Ô `NULL` cũ được xem là dùng chung trong hai luồng để không suy diễn dữ liệu lịch sử.
+Các migration đặt trước ở `db/migrations/010_web_preorders.sql`, `db/migrations/20261029_preorder_fulfillment_zones.sql`, `db/migrations/20261029_z_customer_only_web_preorders.sql` và `db/migrations/20261030_seller_configurable_slot_zones.sql`. Không sửa SQL nguồn `db/FloraBot_DB_v3`. Migration ngày 2026-10-30 chuyển enrollment sang tổng số ô, thêm API cho seller phân loại ô trống, giới hạn nạp bán sẵn vào `WALK_IN`, và yêu cầu `PREORDER` rõ ràng cho đơn đặt trước và fulfillment. Ô `NULL` là chưa phân loại, không được dùng làm ô chung.
 
 Áp dụng migration trước khi chạy API mới. Bootstrap `db-init` tự chạy migration; không dùng script reset database test với database runtime. Backup trước khi áp dụng trên môi trường có đơn thật. Rollback API về bản cũ chỉ sau khi xử lý hết đơn web đang chờ; không xóa bảng đơn để rollback.
 

@@ -36,12 +36,12 @@ public sealed record ScheduleKioskApplicationRequest(Guid TechnicianId, DateOnly
 public sealed record ReworkKioskApplicationRequest(string Reason);
 public sealed record RejectKioskApplicationRequest(string Reason);
 public sealed record PlatformFailureRequest(string Reason);
-public sealed record EnrollKioskRequest(string Code, string Name, string HardwareId, string? MqttClientId, string? Region, int WalkInSlots, int PreorderSlots);
+public sealed record EnrollKioskRequest(string Code, string Name, string HardwareId, string? MqttClientId, string? Region, int SlotCount);
 public sealed record SubmitInstallationReportRequest(string Report);
 public sealed record AttachKioskEvidenceRequest(Guid Id, string Reference);
 public sealed record ConfirmKioskRefundRequest(string Reference, string EvidenceReference);
 public sealed record ProvisionKioskKeyResponse(Guid KioskId, string ApiKey);
-public sealed record EnrollKioskResponse(Guid Id, string Code, string Name, int WalkInSlots, int PreorderSlots, string Status, string ApiKey);
+public sealed record EnrollKioskResponse(Guid Id, string Code, string Name, int SlotCount, string Status, string ApiKey);
 public sealed record KioskRefundBankResponse(string BankName, string Holder, string AccountNumber);
 
 public sealed record KioskApplicationResponse(
@@ -50,8 +50,6 @@ public sealed record KioskApplicationResponse(
     Guid PackageId,
     string PackageName,
     long AnnualFee,
-    int WalkInSlots,
-    int PreorderSlots,
     int TotalSlots,
     string ShopName,
     string Phone,
@@ -119,7 +117,7 @@ public sealed record TechnicianInstallationDetail(
     List<StaffEvidenceItem> Evidence
 );
 
-public sealed record EligibleKioskResponse(Guid Id, string Code, string Name, int WalkInSlots, int PreorderSlots, int TotalSlots, string Status);
+public sealed record EligibleKioskResponse(Guid Id, string Code, string Name, int SlotCount, string Status);
 public sealed record AdminKioskRefundSummary(
     Guid Id,
     string ShopName,
@@ -695,16 +693,12 @@ public static partial class KioskApplications
             FloraDbContext db,
             CancellationToken ct) =>
         {
-            int? requiredW = null, requiredP = null, requiredTotal = null;
+            int? requiredTotal = null;
             if (packageId.HasValue)
             {
                 var pkg = await OnboardingPackages.FindActiveAnnualPackageAsync(db, packageId.Value, ct);
                 if (pkg is not null)
-                {
-                    requiredW = pkg.WalkInSlots;
-                    requiredP = pkg.PreorderSlots;
                     requiredTotal = pkg.TotalSlots;
-                }
             }
 
             var reservedKioskIds = await db.KioskApplications.AsNoTracking()
@@ -720,20 +714,18 @@ public static partial class KioskApplications
                     x.Code,
                     x.Name,
                     x.Status,
-                    WalkInSlots = x.Slots.Count(s => s.Zone == "WALK_IN"),
-                    PreorderSlots = x.Slots.Count(s => s.Zone == "PREORDER"),
-                    TotalSlots = x.Slots.Count,
+                    SlotCount = x.Slots.Count,
                     HasUnavailableSlot = x.Slots.Any(s => s.CurrentSellerId.HasValue || s.Status != "FREE" || s.BouquetId.HasValue || s.HoldUntil.HasValue)
                 })
                 .Where(x => !x.HasUnavailableSlot)
                 .ToListAsync(ct);
 
-            if (requiredW.HasValue && requiredP.HasValue && requiredTotal.HasValue)
+            if (requiredTotal.HasValue)
             {
-                kiosks = kiosks.Where(x => x.WalkInSlots == requiredW.Value && x.PreorderSlots == requiredP.Value && x.TotalSlots == requiredTotal.Value).ToList();
+                kiosks = kiosks.Where(x => x.SlotCount == requiredTotal.Value).ToList();
             }
 
-            return Results.Ok(kiosks.Select(x => new EligibleKioskResponse(x.Id, x.Code, x.Name, x.WalkInSlots, x.PreorderSlots, x.TotalSlots, x.Status)).ToList());
+            return Results.Ok(kiosks.Select(x => new EligibleKioskResponse(x.Id, x.Code, x.Name, x.SlotCount, x.Status)).ToList());
         }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<List<EligibleKioskResponse>>();
 
         // 15. Operations Manager: Enroll new kiosk with once-only API key response
@@ -751,20 +743,19 @@ public static partial class KioskApplications
                 return Results.Problem(statusCode: 400, detail: "Tên kiosk từ 2 đến 120 ký tự.");
             if (string.IsNullOrWhiteSpace(input.HardwareId) || input.HardwareId.Trim().Length < 2)
                 return Results.Problem(statusCode: 400, detail: "HardwareId không được để trống.");
-            if (input.WalkInSlots < 1 || input.PreorderSlots < 1 || input.WalkInSlots + input.PreorderSlots > 50)
-                return Results.Problem(statusCode: 400, detail: "Số lượng ô không hợp lệ.");
+            if (input.SlotCount is < 1 or > 50)
+                return Results.Problem(statusCode: 400, detail: "Tổng số ô phải từ 1 đến 50.");
 
             var rawApiKey = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
             var keyHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(rawApiKey)));
 
-            await using var command = data.CreateCommand("SELECT flow.enroll_kiosk(@code, @name, @hw, @mqtt, @region, @w, @p, @keyHash, @actor)");
+            await using var command = data.CreateCommand("SELECT flow.enroll_kiosk(@code, @name, @hw, @mqtt, @region, @slotCount, @keyHash, @actor)");
             command.Parameters.AddWithValue("code", input.Code.Trim());
             command.Parameters.AddWithValue("name", input.Name.Trim());
             command.Parameters.AddWithValue("hw", input.HardwareId.Trim());
             command.Parameters.AddWithValue("mqtt", (object?)input.MqttClientId?.Trim() ?? DBNull.Value);
             command.Parameters.AddWithValue("region", (object?)input.Region?.Trim() ?? "HCM");
-            command.Parameters.AddWithValue("w", input.WalkInSlots);
-            command.Parameters.AddWithValue("p", input.PreorderSlots);
+            command.Parameters.AddWithValue("slotCount", input.SlotCount);
             command.Parameters.AddWithValue("keyHash", keyHash);
             command.Parameters.AddWithValue("actor", actor);
 
@@ -778,7 +769,7 @@ public static partial class KioskApplications
                 return Results.Problem(statusCode: 409, detail: "Mã kiosk hoặc hardware ID đã tồn tại.");
             }
 
-            return Results.Created($"/api/kiosks/{kioskId}", new EnrollKioskResponse(kioskId, input.Code.Trim(), input.Name.Trim(), input.WalkInSlots, input.PreorderSlots, "OFFLINE", rawApiKey));
+            return Results.Created($"/api/kiosks/{kioskId}", new EnrollKioskResponse(kioskId, input.Code.Trim(), input.Name.Trim(), input.SlotCount, "OFFLINE", rawApiKey));
         }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<EnrollKioskResponse>(201);
 
         // 15b. Operations Manager: Provision / Rotate kiosk key (once-only no-store response)
@@ -1323,8 +1314,6 @@ public static partial class KioskApplications
             row.PackageId,
             row.PackageName ?? "Trial",
             row.AnnualFee.GetValueOrDefault(10000),
-            row.WalkInSlots.GetValueOrDefault(1),
-            row.PreorderSlots.GetValueOrDefault(1),
             row.TotalSlots.GetValueOrDefault(2),
             row.ShopName,
             row.Phone,

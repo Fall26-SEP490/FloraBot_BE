@@ -7,8 +7,6 @@ public sealed record KioskPackageResponse(
     Guid Id,
     string Name,
     long AnnualFee,
-    int WalkInSlots,
-    int PreorderSlots,
     int TotalSlots,
     int TermMonths,
     string Status,
@@ -19,8 +17,6 @@ public sealed record OnboardingPackageInfo(
     Guid Id,
     string Name,
     long AnnualFee,
-    int WalkInSlots,
-    int PreorderSlots,
     int TotalSlots
 );
 
@@ -37,12 +33,10 @@ public static class OnboardingPackages
                     x.Id,
                     x.Name,
                     x.AnnualFee,
-                    x.WalkInSlots,
-                    x.PreorderSlots,
                     x.MaxSlots,
                     12,
                     x.Status,
-                    Description(x.Name, x.WalkInSlots, x.PreorderSlots)
+                    Description(x.Name, x.MaxSlots)
                 )).ToListAsync(ct);
             return Results.Ok(packages);
         }).AllowAnonymous().WithTags("Identity").Produces<List<KioskPackageResponse>>();
@@ -52,7 +46,7 @@ public static class OnboardingPackages
     {
         return await db.SubscriptionPackages.AsNoTracking()
             .Where(x => x.Id == packageId && x.BillingCycle == "ANNUAL" && x.Status == "ACTIVE")
-            .Select(x => new OnboardingPackageInfo(x.Id, x.Name, x.AnnualFee, x.WalkInSlots, x.PreorderSlots, x.MaxSlots))
+            .Select(x => new OnboardingPackageInfo(x.Id, x.Name, x.AnnualFee, x.MaxSlots))
             .SingleOrDefaultAsync(ct);
     }
 
@@ -70,6 +64,6 @@ public static class OnboardingPackages
             .ToDictionaryAsync(x => x.Id, x => x.AnnualFee, ct);
     }
 
-    private static string Description(string name, int w, int p) =>
-        $"Gói {name} 1 năm: {w} ô vãng lai (Walk-in) + {p} ô đặt trước (Pre-order)";
+    private static string Description(string name, int total) =>
+        $"Gói {name} 1 năm với tổng sức chứa {total} ô; chủ shop tự phân loại từng ô thành Walk-in hoặc Pre-order.";
 }
