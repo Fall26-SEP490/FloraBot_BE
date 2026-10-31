@@ -57,6 +57,47 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
     private string Code(Fixture f) => Regex.Match(factory.EmailSender.SentEmails.Last(e=>e.Recipient==f.Email).Text,@"\b\d{8}\b").Value;
     private async Task AssertFailure(int status,Func<Task> action) => Assert.Equal(status,(await Assert.ThrowsAsync<PickupOtpFailure>(action)).Status);
 
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    public async Task CustomerCanRequestAndSellerCanQuoteNearTermPickup(int minutes)
+    {
+        var f = await Setup();
+        await Sql(f, "DELETE FROM ordering.web_requests WHERE id=@request; UPDATE kiosk_ops.kiosks SET latitude=10.77,longitude=106.69 WHERE id=@kiosk");
+        Assert.Equal(f.Request, await Sql(f, $"SELECT flow.web_request(@request,@customer,'CUSTOM',@product,@kiosk,NULL,public.app_now()+interval '{minutes} minutes','Early pickup request')"));
+        await Sql(f, $"SELECT flow.web_quote(@request,@seller,@actor,350000,public.app_now()+interval '{minutes} minutes','Early pickup quote',false)");
+        Assert.Equal(true, await Sql(f, "SELECT state='QUOTED' AND quote_expires_at>public.app_now() FROM ordering.web_requests WHERE id=@request"));
+    }
+
+    [Theory]
+    [InlineData("-1 minute")]
+    [InlineData("31 days")]
+    public async Task CustomerPickupStillRejectsPastOrBeyondMaximum(string offset)
+    {
+        var f = await Setup();
+        await Sql(f, "DELETE FROM ordering.web_requests WHERE id=@request; UPDATE kiosk_ops.kiosks SET latitude=10.77,longitude=106.69 WHERE id=@kiosk");
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(f, $"SELECT flow.web_request(@request,@customer,'CUSTOM',@product,@kiosk,NULL,public.app_now()+interval '{offset}','Invalid pickup request')"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SellerCanStockWellBeforeAppointmentButNotAfterDeadline(bool expired)
+    {
+        var f = await Setup();
+        await Sql(f, "DELETE FROM ordering.order_items WHERE order_id=@order; UPDATE kiosk_ops.slots SET status='RENTED_EMPTY',bouquet_id=NULL,hold_order_id=NULL,hold_until=NULL WHERE id=@slot; UPDATE ordering.web_requests SET pickup_at=public.app_now()+interval '6 hours',pickup_before=public.app_now()+interval '8 hours' WHERE id=@request");
+        await Sql(f, "INSERT INTO kiosk_ops.slot_assignments(slot_id,seller_id,assigned_by) VALUES(@slot,@seller,@actor)");
+        if (expired)
+        {
+            await Sql(f, "UPDATE ordering.web_requests SET pickup_at=public.app_now()-interval '2 hours',pickup_before=public.app_now()-interval '1 hour' WHERE id=@request");
+            await Assert.ThrowsAsync<PostgresException>(() => Sql(f, "SELECT flow.web_fulfill(@request,@seller,@actor,@slot,@order::text)"));
+        }
+        else
+        {
+            Assert.IsType<Guid>(await Sql(f, "SELECT flow.web_fulfill(@request,@seller,@actor,@slot,@order::text)"));
+            Assert.Equal("HELD", await Sql(f, "SELECT status FROM kiosk_ops.slots WHERE id=@slot"));
+        }
+    }
     [Fact]
     public async Task EmailCodeOpensOneCommandAndParallelRetryReturnsSameCommand()
     {
