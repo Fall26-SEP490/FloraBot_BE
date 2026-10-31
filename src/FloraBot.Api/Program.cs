@@ -304,6 +304,7 @@ PrivateEvidence.MapPrivateEvidence(app);
 app.MapRegistration();
 app.MapOnboardingPackages();
 app.MapKioskApplications();
+app.MapSellerSlotZones();
 app.MapPayOs();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();

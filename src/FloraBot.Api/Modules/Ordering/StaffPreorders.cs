@@ -100,7 +100,7 @@ public static class StaffPreorders
                 FROM kiosk_ops.slots s
                 JOIN kiosk_ops.kiosks k ON k.id=s.kiosk_id
                 WHERE s.kiosk_id=@kiosk AND s.current_seller_id=@seller AND s.status='RENTED_EMPTY'
-                  AND (s.zone='PREORDER' OR s.zone IS NULL)
+                  AND s.zone='PREORDER'
                   AND k.status NOT IN ('DISABLED','MAINTENANCE')
                   AND flow.slot_sellable(s.id,@seller)
                 ORDER BY s.slot_code,s.id
