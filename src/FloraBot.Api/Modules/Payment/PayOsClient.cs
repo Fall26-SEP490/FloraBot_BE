@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace FloraBot.Api.Modules.Payment;
 
-public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl);
+public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null);
 public sealed class PaymentGatewayException(string failureCode) : Exception
 {
     // A short, non-sensitive diagnostic label for server logs. Never include credentials,
@@ -57,7 +57,9 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         }
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "pay.payos.vn" ||
             !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo)) throw new PaymentGatewayException("provider_checkout_url_invalid");
-        return new(orderCode, amount, uri.AbsoluteUri);
+        var qr = data.TryGetProperty("qrCode", out var qrValue) && qrValue.ValueKind == JsonValueKind.String ? qrValue.GetString() : null;
+        if (qr is { Length: > 4096 }) throw new PaymentGatewayException("provider_qr_invalid");
+        return new(orderCode, amount, uri.AbsoluteUri, string.IsNullOrWhiteSpace(qr) ? null : qr);
     }
 
     public async Task<JsonElement> GetPaymentRequestAsync(long orderCode, CancellationToken ct)

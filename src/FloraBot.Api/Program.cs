@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using StackExchange.Redis;
 using DotNetCore.CAP;
@@ -37,8 +38,23 @@ if (args.FirstOrDefault() == "provision-user")
     Environment.ExitCode = await PortalProvisioning.RunAsync(args, new ConfigurationBuilder().AddEnvironmentVariables().Build(), Console.In, Console.Out);
     return;
 }
-var builder = WebApplication.CreateBuilder(args);
-var publicSwaggerEnabled = builder.Configuration.GetValue("PUBLIC_SWAGGER_ENABLED", false);
+var exportIndex = Array.IndexOf(args, "--export-openapi");
+if (exportIndex >= 0 && (exportIndex + 1 >= args.Length || string.IsNullOrWhiteSpace(args[exportIndex + 1]) || args[exportIndex + 1].StartsWith("--", StringComparison.Ordinal)))
+{
+    Console.Error.WriteLine("Usage: --export-openapi <output.json>");
+    Environment.ExitCode = 2;
+    return;
+}
+var exportFile = exportIndex >= 0 && exportIndex + 1 < args.Length ? args[exportIndex + 1] : null;
+var builder = WebApplication.CreateBuilder(exportFile is null ? args : args.Take(exportIndex).Concat(args.Skip(exportIndex + 2)).ToArray());
+if (exportFile is not null)
+{
+    builder.Configuration["JWT_SIGNING_KEY"] = "openapi-export-only-not-a-production-signing-key";
+    builder.Configuration["DATABASE_URL"] = "Host=127.0.0.1;Port=1;Database=openapi_export;Username=unused;Password=unused";
+    builder.Configuration["MQTT_ENABLED"] = "false";
+    builder.Configuration["JOBS_ENABLED"] = "false";
+}
+var publicSwaggerEnabled = exportFile is not null || builder.Configuration.GetValue("PUBLIC_SWAGGER_ENABLED", false);
 if (string.IsNullOrEmpty(builder.Configuration["JWT_SIGNING_KEY"]) && builder.Environment.IsDevelopment())
     builder.Configuration["JWT_SIGNING_KEY"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 var signingKey = builder.Configuration["JWT_SIGNING_KEY"] ?? throw new InvalidOperationException("JWT_SIGNING_KEY is required.");
@@ -193,6 +209,8 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    options.AddPolicy("kiosk-support", http => RateLimitPartition.GetFixedWindowLimiter(http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(10), QueueLimit = 0 }));
     options.AddPolicy("advisor", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     foreach (var name in new[] { "auth", "receipt" })
@@ -209,6 +227,8 @@ var origins = (builder.Configuration["ALLOWED_ORIGINS"] ?? (builder.Environment.
     ? "http://localhost:3010,http://localhost:4321,http://localhost:5173,http://localhost:5174,http://127.0.0.1:3010,http://127.0.0.1:4321,http://127.0.0.1:5173,http://127.0.0.1:5174"
     : "")).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+// Schema export resolves endpoint descriptions only, with no DB initialization or background jobs.
+if (exportFile is not null) builder.Services.RemoveAll<IHostedService>();
 var app = builder.Build();
 app.Use(async (http, next) =>
 {
@@ -281,6 +301,7 @@ app.MapSellerStaffChat();
 app.MapWebPaymentLinks();
 FloraBot.Api.ReadModels.WebCatalog.MapWebCatalog(app);
 app.MapOtp();
+app.MapKioskCustomerFlows();
 app.MapReads();
 app.MapWalletRead();
 app.MapSellerBankRead();
@@ -311,6 +332,20 @@ app.MapPaymentLinks();
 app.MapKioskPaymentLinks();
 AiAdvisor.MapReads(app);
 app.MapIdentity(); app.MapCatalog(); app.MapKioskOps(); app.MapOrdering(); app.MapPayment(); app.MapNotify(); app.MapAi();
+if (exportFile is not null)
+{
+    app.Urls.Clear(); app.Urls.Add("http://127.0.0.1:0");
+    await app.StartAsync();
+    using var client = new HttpClient();
+    try
+    {
+        var output = Path.GetFullPath(exportFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, await client.GetStringAsync(app.Urls.Single() + "/openapi/v1.json"));
+    }
+    finally { await app.StopAsync(); }
+    return;
+}
 // CAP bootstraps in the background; accept requests only after its outbox tables exist.
 // Serialize first-time DDL across processes sharing a database.
 await using (var initialization = await app.Services.GetRequiredService<NpgsqlDataSource>().OpenConnectionAsync())

@@ -49,21 +49,15 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var trial = packages.Single(x => x.Name == "Trial");
         Assert.Equal(10000, trial.AnnualFee);
-        Assert.Equal(1, trial.WalkInSlots);
-        Assert.Equal(1, trial.PreorderSlots);
         Assert.Equal(2, trial.TotalSlots);
         Assert.Equal(12, trial.TermMonths);
 
         var pro = packages.Single(x => x.Name == "Pro");
         Assert.Equal(15000, pro.AnnualFee);
-        Assert.Equal(4, pro.WalkInSlots);
-        Assert.Equal(4, pro.PreorderSlots);
         Assert.Equal(8, pro.TotalSlots);
 
         var max = packages.Single(x => x.Name == "Max");
         Assert.Equal(20000, max.AnnualFee);
-        Assert.Equal(6, max.WalkInSlots);
-        Assert.Equal(6, max.PreorderSlots);
         Assert.Equal(12, max.TotalSlots);
     }
 
@@ -352,9 +346,9 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // 1. Enroll a test kiosk with exact Trial slots (1 Walk-in, 1 Preorder)
+        // 1. Enroll a test kiosk with the Trial total capacity; Seller sets zones later.
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-TEST-{Guid.NewGuid():N}"[..12], "Kiosk Test Handover", $"ESP32-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-TEST-{Guid.NewGuid():N}"[..12], "Kiosk Test Handover", $"ESP32-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         enrollRes.EnsureSuccessStatusCode();
         var enrolledKiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
@@ -721,14 +715,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // Enroll two kiosks with 1W + 1P
+        // Enroll two kiosks with two unclassified physical slots each.
         var k1Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-SCH1-{Guid.NewGuid():N}"[..12], "Kiosk Sched 1", $"ESP-S1-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-SCH1-{Guid.NewGuid():N}"[..12], "Kiosk Sched 1", $"ESP-S1-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         var kiosk1 = (await k1Res.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
 
         var k2Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-SCH2-{Guid.NewGuid():N}"[..12], "Kiosk Sched 2", $"ESP-S2-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-SCH2-{Guid.NewGuid():N}"[..12], "Kiosk Sched 2", $"ESP-S2-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         var kiosk2 = (await k2Res.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
 
@@ -799,7 +793,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Enroll kiosk
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-KEY-{Guid.NewGuid():N}"[..12], "Kiosk Key Test", $"ESP-K-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-KEY-{Guid.NewGuid():N}"[..12], "Kiosk Key Test", $"ESP-K-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         enrollRes.EnsureSuccessStatusCode();
         Assert.True(enrollRes.Headers.CacheControl?.NoStore);
@@ -904,7 +898,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Enroll kiosk
         var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-EV-{Guid.NewGuid():N}"[..12], "Kiosk Evidence Test", $"ESP-EV-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-EV-{Guid.NewGuid():N}"[..12], "Kiosk Evidence Test", $"ESP-EV-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         var kiosk = (await kRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
 
@@ -1050,7 +1044,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Enroll kiosk with 1 WALK_IN + 1 PREORDER slot
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-ZN-{Guid.NewGuid():N}"[..12], "Kiosk Zone Guard", $"ESP-ZN-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-ZN-{Guid.NewGuid():N}"[..12], "Kiosk Zone Guard", $"ESP-ZN-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         enrollRes.EnsureSuccessStatusCode();
         var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
@@ -1758,7 +1752,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         {
             using var c = CreateClientForRole("CUSTOMER", userId: cid);
             var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-                $"K-RNG-{Guid.NewGuid():N}"[..12], "Kiosk Range Test", $"ESP-RNG-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+                $"K-RNG-{Guid.NewGuid():N}"[..12], "Kiosk Range Test", $"ESP-RNG-{Guid.NewGuid():N}"[..16], null, "HCM", 2
             ));
             kRes.EnsureSuccessStatusCode();
             var k = (await kRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
@@ -1843,7 +1837,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // 6. Kiosk with FAULT slot cannot be scheduled -> 409 Conflict
         var faultyKioskRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-FLT-{Guid.NewGuid():N}"[..12], "Kiosk Faulty", $"ESP-FLT-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-FLT-{Guid.NewGuid():N}"[..12], "Kiosk Faulty", $"ESP-FLT-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         faultyKioskRes.EnsureSuccessStatusCode();
         var faultyKiosk = (await faultyKioskRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
@@ -1898,7 +1892,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-STL-{Guid.NewGuid():N}"[..12], "Kiosk Stale Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-STL-{Guid.NewGuid():N}"[..12], "Kiosk Stale Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         enrollRes.EnsureSuccessStatusCode();
         var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
@@ -2034,7 +2028,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         Assert.Equal("42501", staffEx.SqlState);
 
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-PRV-{Guid.NewGuid():N}"[..12], "Kiosk Priv Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 1, 1
+            $"K-PRV-{Guid.NewGuid():N}"[..12], "Kiosk Priv Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
         enrollRes.EnsureSuccessStatusCode();
         var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;

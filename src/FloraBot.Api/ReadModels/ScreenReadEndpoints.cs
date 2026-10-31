@@ -23,11 +23,11 @@ public static class ScreenReadEndpoints
         app.MapGet("/api/kiosks/{kioskId:guid}/catalog/items", async (Guid kioskId, HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
         {
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
-            await using var command = data.CreateCommand("SELECT bouquet_id,name,gia,slot_code,shop_name FROM screen.v_kiosk_catalog WHERE kiosk_id=@id ORDER BY slot_code");
+            await using var command = data.CreateCommand("SELECT c.bouquet_id,c.name,c.gia,c.slot_code,c.shop_name,(SELECT p.photo FROM screen.v_web_catalog p WHERE p.kiosk_id=c.kiosk_id AND c.bouquet_id=ANY(p.bouquets) LIMIT 1) FROM screen.v_kiosk_catalog c WHERE c.kiosk_id=@id ORDER BY c.slot_code");
             command.Parameters.AddWithValue("id", kioskId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             var items = new List<KioskCatalogResponse>();
-            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetInt64(2), reader.GetString(3), reader.GetString(4)));
+            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetInt64(2), reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
             http.Response.Headers.CacheControl = "no-store";
             return Results.Ok(items);
         }).RequireAuthorization("Shopping").Produces<List<KioskCatalogResponse>>();
