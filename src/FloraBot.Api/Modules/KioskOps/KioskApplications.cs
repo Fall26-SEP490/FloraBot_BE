@@ -932,7 +932,7 @@ public static partial class KioskApplications
             }
         }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<ProvisionKioskKeyResponse>();
 
-        // 16. Technician: List assigned installation jobs
+        // 16. Technician: List assigned installation jobs, including handed-over history
         app.MapGet("/api/staff/kiosk-installations", async (
             HttpContext http,
             FloraDbContext db,
@@ -941,7 +941,7 @@ public static partial class KioskApplications
         {
             var actor = Actor(http);
             var list = await db.KioskApplications.AsNoTracking()
-                .Where(x => x.AssignedTechnicianId == actor && (x.Status == "SCHEDULED" || x.Status == "INSTALLING" || x.Status == "AWAITING_HANDOVER"))
+                .Where(x => x.AssignedTechnicianId == actor && (x.Status == "SCHEDULED" || x.Status == "INSTALLING" || x.Status == "AWAITING_HANDOVER" || x.Status == "ACTIVE"))
                 .OrderBy(x => x.ScheduledDate).ThenBy(x => x.Id)
                 .ToListAsync(ct);
 
