@@ -52,6 +52,7 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         var link = await first.Content.ReadFromJsonAsync<PaymentLinkResponse>();
         Assert.Equal(400000, link!.Amount);
+        Assert.Equal(loseFirstResponse ? null : PayOsClientQrTests.QrPayload, link.QrCode);
         var again = await client.PostAsync(path, null);
         Assert.Equal(HttpStatusCode.OK, again.StatusCode);
         Assert.Equal(link, await again.Content.ReadFromJsonAsync<PaymentLinkResponse>());
@@ -128,7 +129,11 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
                 fields["id"] = "124c33293c934a85be5b7f8761a27a07";
                 fields["transactions"] = Array.Empty<object>();
             }
-            else fields["checkoutUrl"] = defect == "url" ? "https://example.invalid/phishing" : "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07";
+            else
+            {
+                fields["checkoutUrl"] = defect == "url" ? "https://example.invalid/phishing" : "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07";
+                fields["qrCode"] = PayOsClientQrTests.QrPayload;
+            }
             var data = JsonSerializer.SerializeToElement(fields);
             return new(HttpStatusCode.OK)
             {

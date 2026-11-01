@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace FloraBot.Api.Modules.Payment;
 
-public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl);
+public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null);
 public sealed class PaymentGatewayException(string failureCode) : Exception
 {
     // A short, non-sensitive diagnostic label for server logs. Never include credentials,
@@ -57,7 +57,18 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         }
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "pay.payos.vn" ||
             !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo)) throw new PaymentGatewayException("provider_checkout_url_invalid");
-        return new(orderCode, amount, uri.AbsoluteUri);
+        // This is the signed VietQR payload, not a URL or an image. A lookup of an
+        // existing order may omit it; the payment-link adapter restores our saved copy.
+        string? qrCode = null;
+        if (data.TryGetProperty("qrCode", out var qr) && qr.ValueKind != JsonValueKind.Null)
+        {
+            if (qr.ValueKind != JsonValueKind.String) throw new PaymentGatewayException("provider_qr_code_invalid");
+            qrCode = qr.GetString();
+            if (string.IsNullOrWhiteSpace(qrCode) || qrCode.Length > 4096 ||
+                !qrCode.StartsWith("000201", StringComparison.Ordinal) || qrCode.Any(char.IsControl))
+                throw new PaymentGatewayException("provider_qr_code_invalid");
+        }
+        return new(orderCode, amount, uri.AbsoluteUri, qrCode);
     }
 
     public async Task<JsonElement> GetPaymentRequestAsync(long orderCode, CancellationToken ct)

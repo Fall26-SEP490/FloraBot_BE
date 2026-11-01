@@ -62,7 +62,8 @@ public static class KioskPaymentLinks
                 var code = (long)(await reserve.ExecuteScalarAsync(ct))!;
                 try
                 {
-                    var link = await gateway.CreateAsync(code, amount, ct, new DateTimeOffset(deadline).ToUnixTimeSeconds());
+                    var link = await PayOsPaymentLinks.CreateAsync(source, gateway, paymentId, code, amount, ct,
+                        new DateTimeOffset(deadline).ToUnixTimeSeconds());
                     await using var save = new NpgsqlCommand("UPDATE payment.gateway_orders SET checkout_url=@url WHERE payment_id=@id", connection);
                     save.Parameters.AddWithValue("url", link.CheckoutUrl); save.Parameters.AddWithValue("id", paymentId);
                     await save.ExecuteNonQueryAsync(ct);
