@@ -146,6 +146,9 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     private static Access[] BuildMatrix()
     {
         var entries = new List<Access>();
+        Add(["SELLER"], "POST", "/api/me/preorders/{requestId:guid}/pickup-otp");
+        Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/open");
+        Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/attempts/{attemptId:guid}");
         Add([], "GET", "/api/shop/catalog");
         Add([], "GET", "/api/kiosk-locations");
         Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks");
@@ -239,6 +242,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
         Add(["SELLER"], "GET", "/api/me/products");
         Add(["SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/slots");
+        Add(["SELLER"], "DELETE", "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/bouquet");
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");

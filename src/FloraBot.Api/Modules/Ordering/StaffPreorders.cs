@@ -120,7 +120,6 @@ public static class StaffPreorders
                 JOIN catalog.flower_products p ON p.id=r.product_id
                 WHERE r.seller_id=@seller AND r.kiosk_id=@kiosk AND r.kind='CUSTOM' AND r.state='ORDERED'
                   AND o.status='PAID'
-                  AND public.app_now() >= r.pickup_at-interval '2 hours'
                   AND public.app_now() < r.pickup_before
                   AND NOT EXISTS (SELECT 1 FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='BOUQUET')
                 ORDER BY r.pickup_at,r.id

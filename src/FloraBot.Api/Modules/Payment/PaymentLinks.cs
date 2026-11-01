@@ -33,7 +33,7 @@ public static class PaymentLinks
                 var code = (long)(await reserve.ExecuteScalarAsync(ct))!;
                 try
                 {
-                    var result = await gateway.CreateAsync(code, amount, ct);
+                    var result = await PayOsPaymentLinks.CreateAsync(source, gateway, paymentId, code, amount, ct);
                     await using var save = new NpgsqlCommand("UPDATE payment.gateway_orders SET checkout_url=@url WHERE payment_id=@id; SELECT flow.audit(@actor,'PAYMENT_LINK_REQUESTED','payments',@id)", connection);
                     save.Parameters.AddWithValue("url", result.CheckoutUrl); save.Parameters.AddWithValue("id", paymentId);
                     save.Parameters.AddWithValue("actor", Guid.Parse(http.User.FindFirstValue("sub")!));

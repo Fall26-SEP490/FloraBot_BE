@@ -21,6 +21,7 @@ The present runtime still uses ADMIN/STAFF/SELLER/CUSTOMER. Do not claim the sev
 - Platform records revenue. Seller supplies bank details and requests withdrawal; admin reviews, manually transfers funds and records evidence. Customer refund also follows admin-reviewed manual bank transfer. Do not fake automated gateway payouts or customer-wallet refunds.
 - Availability/hold policy requires a separate clear decision; admin custody alone does not define when seller funds become withdrawable.
 - Hold/order/pickup/token expiry remains distinct from product age, and never means artificial flowers must be destroyed.
+- Preorder pickup uses a single-use eight-digit OTP emailed to the Customer's login address when the owning Seller requests it, after payment and stocking in the PREORDER slot. At the selected kiosk the Customer enters only OTP; receipt UUID/phone are not required. The code expires at pickupBefore and can open only during the pickup window. The preorder receipt-opening path is disabled; walk-in receipt recovery is unchanged. See `preorder-email-pickup-otp.md`.
 
 ## Migration safety and authorization
 

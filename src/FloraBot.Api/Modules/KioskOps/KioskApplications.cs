@@ -385,7 +385,7 @@ public static partial class KioskApplications
 
             try
             {
-                var result = await gateway.CreateAsync(orderCode, amount, ct);
+                var result = await PayOsPaymentLinks.CreateAsync(data, gateway, appRow.PaymentId.Value, orderCode, amount, ct);
                 await using var save = data.CreateCommand("SELECT flow.set_payment_checkout_url(@id, @url, @actor, @appId)");
                 save.Parameters.AddWithValue("url", result.CheckoutUrl);
                 save.Parameters.AddWithValue("id", appRow.PaymentId.Value);
@@ -868,6 +868,41 @@ public static partial class KioskApplications
 
             return Results.Created($"/api/kiosks/{kioskId}", new EnrollKioskResponse(kioskId, input.Code.Trim(), input.Name.Trim(), input.SlotCount, "OFFLINE", rawApiKey));
         }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<EnrollKioskResponse>(201);
+
+        // Operations Manager: remove a kiosk that was enrolled by mistake and has never been used.
+        app.MapDelete("/api/operations/kiosks/{id:guid}", async (
+            Guid id,
+            HttpContext http,
+            NpgsqlDataSource data,
+            CancellationToken ct) =>
+        {
+            await using var command = data.CreateCommand("SELECT flow.delete_unassigned_kiosk(@id, @actor)");
+            command.Parameters.AddWithValue("id", id);
+            command.Parameters.AddWithValue("actor", Actor(http));
+
+            try
+            {
+                var deleted = (bool)(await command.ExecuteScalarAsync(ct))!;
+                return deleted
+                    ? Results.NoContent()
+                    : Results.NotFound(new ProblemDetails { Title = "Không tìm thấy", Detail = "Kiosk không tồn tại." });
+            }
+            catch (PostgresException ex) when (ex.SqlState == "P0001")
+            {
+                return Results.Problem(
+                    statusCode: 409,
+                    title: "Không thể xóa kiosk",
+                    detail: ex.MessageText);
+            }
+        })
+        .RequireAuthorization("OperationsManager")
+        .WithTags("KioskOnboarding")
+        .WithSummary("Xóa kiosk chưa bàn giao và chưa phát sinh dữ liệu vận hành")
+        .Produces(204)
+        .ProducesProblem(401)
+        .ProducesProblem(403)
+        .ProducesProblem(404)
+        .ProducesProblem(409);
 
         // 15b. Operations Manager: Provision / Rotate kiosk key (once-only no-store response)
         app.MapPost("/api/operations/kiosks/{id:guid}/provision-key", async (
