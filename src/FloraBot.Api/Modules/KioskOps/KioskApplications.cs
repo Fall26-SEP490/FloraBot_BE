@@ -385,7 +385,7 @@ public static partial class KioskApplications
 
             try
             {
-                var result = await gateway.CreateAsync(orderCode, amount, ct);
+                var result = await PayOsPaymentLinks.CreateAsync(data, gateway, appRow.PaymentId.Value, orderCode, amount, ct);
                 await using var save = data.CreateCommand("SELECT flow.set_payment_checkout_url(@id, @url, @actor, @appId)");
                 save.Parameters.AddWithValue("url", result.CheckoutUrl);
                 save.Parameters.AddWithValue("id", appRow.PaymentId.Value);
