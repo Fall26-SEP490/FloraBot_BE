@@ -7,7 +7,7 @@ public sealed class FlowerPresenceProtocolTests
     private static readonly byte[] Key = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeMilliseconds(1800000001000);
     private static SignedFlowerPresence Message => new(1, "ESP32-A1B2C3",
-        Guid.Parse("11111111-1111-4111-8111-111111111111"), "FLOWER_PRESENCE", 1800000001000, [1,0,-1,1], "");
+        Guid.Parse("11111111-1111-4111-8111-111111111111"), "FLOWER_PRESENCE", 1800000001000, [1, 0, -1, 1], "");
 
     [Fact]
     public void CanonicalIsSharedWithFirmwareAndAllFourStatesAreAuthenticated()

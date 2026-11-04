@@ -44,7 +44,7 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
     private HttpClient Client(Fixture f)
     {
         var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId:f.Actor, sellerId:f.Seller));
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: f.Actor, sellerId: f.Seller));
         return client;
     }
     private static string Route(Fixture f) => $"/api/me/kiosks/{f.Kiosk}/slots";
@@ -137,13 +137,13 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
             UPDATE kiosk_ops.slots SET status='HELD',hold_order_id=@order,hold_until=public.app_now()+interval '10 minutes' WHERE id=@slot;
             """, active);
         using var client = Client(f);
-        Assert.Equal(active, (await Read(client,f)).OrderId);
+        Assert.Equal(active, (await Read(client, f)).OrderId);
         await Execute(f, """
             UPDATE kiosk_ops.slots SET status='STOCKED',hold_order_id=NULL,hold_until=NULL WHERE id=@slot;
             UPDATE kiosk_ops.bouquets SET status='STOCKED' WHERE id=@bouquet;
             """);
-        var available = await Read(client,f);
-        Assert.Equal("STOCKED",available.BouquetStatus);
+        var available = await Read(client, f);
+        Assert.Equal("STOCKED", available.BouquetStatus);
         Assert.Null(available.OrderId); Assert.Null(available.PaymentStatus);
     }
 
@@ -151,30 +151,30 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
     public async Task NewBouquetInSameSlotNeverInheritsEarlierSalesDataAndForeignKioskIsHidden()
     {
         var f = await Setup(); var foreign = await Setup(); var order = Guid.NewGuid();
-        await AddOrder(f,order,"DISPENSE_FAILED","SUCCEEDED");
-        await Execute(f,"""
+        await AddOrder(f, order, "DISPENSE_FAILED", "SUCCEEDED");
+        await Execute(f, """
             INSERT INTO kiosk_ops.bouquets(product_id,seller_id,qr_code,price_snapshot,status,stocked_at,sellable_until)
             VALUES(@product,@seller,public.uuid_v7()::text,350000,'STOCKED',public.app_now(),public.app_now()+interval '48 hours');
             UPDATE kiosk_ops.slots SET bouquet_id=(SELECT id FROM kiosk_ops.bouquets WHERE product_id=@product AND id<>@bouquet LIMIT 1) WHERE id=@slot;
             """);
         using var client = Client(f);
-        var row = await Read(client,f);
+        var row = await Read(client, f);
         Assert.Equal("STOCKED", row.BouquetStatus);
         Assert.Null(row.OrderId); Assert.Null(row.PaymentStatus);
-        Assert.Equal(HttpStatusCode.NotFound,(await client.GetAsync(Route(foreign))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound,(await client.GetAsync($"/api/me/kiosks/{Guid.NewGuid()}/slots")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Route(foreign))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/me/kiosks/{Guid.NewGuid()}/slots")).StatusCode);
     }
 
     [Fact]
     public async Task OpenApiContainsNullableSaleFieldsAndReadDoesNotLeakPickupOrBankSecrets()
     {
         using var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new("Bearer",factory.Token("ADMIN"));
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
         var document = await client.GetFromJsonAsync<JsonElement>("/openapi/v1.json");
         var fields = document.GetProperty("components").GetProperty("schemas").GetProperty("SellerSlotResponse").GetProperty("properties");
-        foreach (var key in new[] {"bouquetStatus","orderId","orderCode","orderStatus","paymentStatus"})
-            Assert.True(fields.TryGetProperty(key,out _),key);
-        foreach (var key in new[] {"trackingToken","customerId","refundBankAccountEnc","bankAccountNumber"})
-            Assert.False(fields.TryGetProperty(key,out _),key);
+        foreach (var key in new[] { "bouquetStatus", "orderId", "orderCode", "orderStatus", "paymentStatus" })
+            Assert.True(fields.TryGetProperty(key, out _), key);
+        foreach (var key in new[] { "trackingToken", "customerId", "refundBankAccountEnc", "bankAccountNumber" })
+            Assert.False(fields.TryGetProperty(key, out _), key);
     }
 }

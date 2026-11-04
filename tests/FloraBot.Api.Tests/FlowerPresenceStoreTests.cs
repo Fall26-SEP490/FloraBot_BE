@@ -24,7 +24,7 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
         command.Parameters.AddWithValue("id", kiosk); command.Parameters.AddWithValue("hardware", hardware);
         await command.ExecuteNonQueryAsync();
         var message = FlowerPresenceProtocol.Sign(new(1, hardware, Guid.NewGuid(), FlowerPresenceProtocol.Event,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()-1000, [1,0,-1,1], ""), Key);
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1000, [1, 0, -1, 1], ""), Key);
         return (kiosk, message, new FlowerPresenceReceiver(Data, new DeviceKeyRing(new Dictionary<string, byte[]> { [hardware] = Key })));
     }
 
@@ -34,9 +34,9 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
         var f = await Create();
         Assert.True(await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message, default));
         Assert.True(await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message, default));
-        var older = FlowerPresenceProtocol.Sign(f.Message with { EventId = Guid.NewGuid(), OccurredAt = f.Message.OccurredAt-100, States = [0,0,0,0] }, Key);
+        var older = FlowerPresenceProtocol.Sign(f.Message with { EventId = Guid.NewGuid(), OccurredAt = f.Message.OccurredAt - 100, States = [0, 0, 0, 0] }, Key);
         Assert.True(await f.Receiver.ReceiveAsync(older.HardwareId, older, default));
-        Assert.False(await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message with { States = [0,0,0,0] }, default));
+        Assert.False(await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message with { States = [0, 0, 0, 0] }, default));
         await using var read = Data.CreateCommand("""
             SELECT observed_at,states,(SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE kiosk_id=@id)
             FROM kiosk_ops.flower_presence WHERE kiosk_id=@id

@@ -48,8 +48,16 @@ public static class KioskOpsReadEndpoints
                 .Where(x => x.ItemType == "BOUQUET" && x.BouquetId.HasValue && x.SlotId.HasValue
                     && bouquetIds.Contains(x.BouquetId.Value)
                     && x.Order.SellerId == sellerId && x.Order.KioskId == kioskId)
-                .Select(x => new { SlotId = x.SlotId!.Value, BouquetId = x.BouquetId!.Value,
-                    x.OrderId, x.Order.CheckoutId, x.Order.OrderCode, x.Order.Status, x.Order.CreatedAt })
+                .Select(x => new
+                {
+                    SlotId = x.SlotId!.Value,
+                    BouquetId = x.BouquetId!.Value,
+                    x.OrderId,
+                    x.Order.CheckoutId,
+                    x.Order.OrderCode,
+                    x.Order.Status,
+                    x.Order.CreatedAt
+                })
                 .ToListAsync(ct);
             var orderLookup = orderRows.ToLookup(x => (x.SlotId, x.BouquetId));
             var current = slots.Select(slot =>
