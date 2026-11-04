@@ -35,15 +35,29 @@ public sealed class MqttEventWorker(IConfiguration configuration, IServiceScopeF
                     && args.ApplicationMessage.QualityOfServiceLevel != MqttQualityOfServiceLevel.AtMostOnce
                     && parts is ["kiosk", var hardware, "evt"] && DeviceProtocol.ValidHardwareId(hardware))
                 {
-                    SignedDeviceEvent? message = null;
-                    try { message = JsonSerializer.Deserialize<SignedDeviceEvent>(args.ApplicationMessage.ConvertPayloadToString()); }
-                    catch (JsonException) { }
-                    if (message is not null)
+                    try
                     {
+                        var payload = args.ApplicationMessage.ConvertPayloadToString();
+                        using var json = JsonDocument.Parse(payload);
                         using var scope = scopes.CreateScope();
-                        var receipt = await scope.ServiceProvider.GetRequiredService<DeviceEventInbox>().ReceiveAsync(hardware, message, stoppingToken);
-                        if (receipt == DeviceReceipt.Rejected) logger.LogWarning("Rejected MQTT event for device {Hardware}", hardware);
+                        if (json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("event", out var kind)
+                            && kind.ValueKind == JsonValueKind.String && kind.GetString() == FlowerPresenceProtocol.Event)
+                        {
+                            var presence = JsonSerializer.Deserialize<SignedFlowerPresence>(payload);
+                            if (presence is not null)
+                                await scope.ServiceProvider.GetRequiredService<FlowerPresenceReceiver>().ReceiveAsync(hardware, presence, stoppingToken);
+                        }
+                        else
+                        {
+                            var message = JsonSerializer.Deserialize<SignedDeviceEvent>(payload);
+                            if (message is not null)
+                            {
+                                var receipt = await scope.ServiceProvider.GetRequiredService<DeviceEventInbox>().ReceiveAsync(hardware, message, stoppingToken);
+                                if (receipt == DeviceReceipt.Rejected) logger.LogWarning("Rejected MQTT event for device {Hardware}", hardware);
+                            }
+                        }
                     }
+                    catch (JsonException) { }
                 }
                 // Malformed/untrusted messages are terminal; valid messages are durable before PUBACK.
                 await args.AcknowledgeAsync(stoppingToken);
