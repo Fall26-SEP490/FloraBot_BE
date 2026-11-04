@@ -36,8 +36,14 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             .SelectMany(endpoint => (endpoint.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods ?? ["*"])
                 .Select(method => (Key: method + " " + endpoint.RoutePattern.RawText, Endpoint: endpoint)))
             .ToDictionary(entry => entry.Key, entry => entry.Endpoint);
-        Assert.Equal(Matrix.Select(entry => entry.Key).Order(), endpoints.Keys.Order());
+        var expectedKeys = Matrix.Select(entry => entry.Key).ToHashSet();
+        var missing = expectedKeys.Except(endpoints.Keys).Order();
+        var unexpected = endpoints.Keys.Except(expectedKeys).Order();
+        Assert.True(expectedKeys.SetEquals(endpoints.Keys),
+            $"Unmapped expected routes: {string.Join(", ", missing)}; routes missing from explicit matrix: {string.Join(", ", unexpected)}");
+        Assert.Equal(expectedKeys.Order(), endpoints.Keys.Order());
 
+        var accessMismatches = new List<string>();
         foreach (var expected in Matrix)
         {
             var endpoint = endpoints[expected.Key];
@@ -55,9 +61,11 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
                     [new("sub", Guid.NewGuid().ToString()), new("role", role), new("seller_id", Seller),
                         new("seller_status", "ACTIVE"), new(expected.Template.StartsWith("/api/kiosks/") && expected.Template != "/api/kiosks/{id:guid}/flower-presence" ? "kiosk_id" : "test_kiosk", Kiosk)], "test", "sub", "role"));
                 var result = await authorization.AuthorizeAsync(http.User, http, policy);
-                Assert.True(result.Succeeded == expected.Roles.Contains(role), $"Unexpected {role} access: {expected.Key}");
+                if (result.Succeeded != expected.Roles.Contains(role))
+                    accessMismatches.Add($"Unexpected {role} access: {expected.Key}; allowed={result.Succeeded}");
             }
         }
+        Assert.True(accessMismatches.Count == 0, string.Join(Environment.NewLine, accessMismatches));
     }
 
     [Fact]
@@ -213,7 +221,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
         Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
-        Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
+        Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications");
+        Add(["CUSTOMER", "SELLER"], "POST", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
         Add(["SELLER"], "POST", "/api/me/kiosk-applications");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/kiosk-applications/current");
         Add(["CUSTOMER", "SELLER", "ADMIN"], "POST", "/api/member/kiosk-applications/{id:guid}/reconcile");
@@ -269,10 +278,10 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/loyalty-settings");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/loyalty-settings");
         Add(["SELLER"], "GET", "/api/me/products");
+        Add(["SELLER"], "POST", "/api/me/products");
         Add(["SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/slots");
         Add(["SELLER"], "GET", "/api/me/kiosks");
         Add(["SELLER"], "DELETE", "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/bouquet");
-        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/otp/request", "/api/kiosks/{kioskId:guid}/otp/verify");
         Add(["KIOSK", "CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/catalog", "/api/kiosks/{kioskId:guid}/catalog/items",
