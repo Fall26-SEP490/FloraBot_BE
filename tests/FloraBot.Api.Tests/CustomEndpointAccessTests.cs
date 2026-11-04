@@ -53,7 +53,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
                 http.Request.RouteValues["kioskId"] = Kiosk;
                 http.User = role == "ANONYMOUS" ? new(new ClaimsIdentity()) : new(new ClaimsIdentity(
                     [new("sub", Guid.NewGuid().ToString()), new("role", role), new("seller_id", Seller),
-                        new("seller_status", "ACTIVE"), new(expected.Template.StartsWith("/api/kiosks/") ? "kiosk_id" : "test_kiosk", Kiosk)], "test", "sub", "role"));
+                        new("seller_status", "ACTIVE"), new(expected.Template.StartsWith("/api/kiosks/") && expected.Template != "/api/kiosks/{id:guid}/flower-presence" ? "kiosk_id" : "test_kiosk", Kiosk)], "test", "sub", "role"));
                 var result = await authorization.AuthorizeAsync(http.User, http, policy);
                 Assert.True(result.Succeeded == expected.Roles.Contains(role), $"Unexpected {role} access: {expected.Key}");
             }
@@ -79,7 +79,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
         var missing = Guid.NewGuid().ToString();
-        foreach (var endpoint in Matrix.Where(entry => entry.Template.Contains("{sellerId:guid}")))
+        foreach (var endpoint in Matrix.Where(entry => entry.Roles.Contains("SELLER") && entry.Template.StartsWith("/api/sellers/{sellerId:guid}", StringComparison.Ordinal)))
         {
             string? foreignBody = null;
             foreach (var seller in new[] { ForeignSeller, missing })
@@ -214,24 +214,47 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
         Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
         Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
+        Add(["SELLER"], "POST", "/api/me/kiosk-applications");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/kiosk-applications/current");
         Add(["CUSTOMER", "SELLER", "ADMIN"], "POST", "/api/member/kiosk-applications/{id:guid}/reconcile");
         Add(["ADMIN", "OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-applications", "/api/operations/kiosk-applications/{id:guid}", "/api/operations/kiosk-applications/{id:guid}/evidence/{attachmentId:guid}");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-applications/{id:guid}/confirm", "/api/operations/kiosk-applications/{id:guid}/schedule", "/api/operations/kiosk-applications/{id:guid}/rework", "/api/operations/kiosk-applications/{id:guid}/handover", "/api/operations/kiosk-applications/{id:guid}/reject", "/api/operations/kiosk-applications/{id:guid}/platform-failure", "/api/operations/kiosks/enroll", "/api/operations/kiosks/{id:guid}/provision-key");
+        Add(["OPERATIONS_MANAGER"], "DELETE", "/api/operations/kiosks/{id:guid}");
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/eligible-kiosks");
         Add(["TECHNICIAN"], "GET", "/api/staff/kiosk-installations", "/api/staff/kiosk-installations/{id:guid}", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/evidence/{attachmentId:guid}");
         Add(["TECHNICIAN"], "POST", "/api/staff/kiosk-installations/{id:guid}/start", "/api/staff/kiosk-installations/{id:guid}/evidence/upload", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/submit");
         Add(["ADMIN"], "GET", "/api/admin/kiosk-applications/refunds", "/api/admin/kiosk-applications/{id:guid}/refund/proof/{attachmentId:guid}");
         Add(["ADMIN"], "POST", "/api/admin/kiosk-applications/{id:guid}/refund/approve", "/api/admin/kiosk-applications/{id:guid}/refund/confirm", "/api/admin/kiosk-applications/{id:guid}/refund/bank-details", "/api/admin/kiosk-applications/{id:guid}/refund/evidence/upload");
+        // KioskTerminations
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/termination-requests");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/termination-requests/current");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-termination-requests");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-termination-requests/{id:guid}/evidence/upload", "/api/operations/kiosk-termination-requests/{id:guid}/review", "/api/operations/kiosk-termination-requests/{id:guid}/complete");
         Add([], "POST", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/sellers", "/api/receipts/lookup", "/api/payments/webhook");
+        // SellerPaymentChannels
+        Add([], "POST", "/api/payments/channels/{versionId:guid}/webhook");
+        Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/payment-channel");
+        Add(["ADMIN"], "PUT", "/api/sellers/{sellerId:guid}/payment-channel");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/payment-channel/verify");
+        Add(["ADMIN", "SELLER"], "PATCH", "/api/sellers/{sellerId:guid}/payment-channel/status");
+        Add(["ADMIN"], "GET", "/api/admin/payment-channels");
+        // SellerPaymentsEndpoints
+        Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/payments", "/api/sellers/{sellerId:guid}/payments/{paymentId:guid}");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/payments/{paymentId:guid}/reconcile");
+        Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/reports/sales");
+        // SellerRefunds
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/refunds", "/api/sellers/{sellerId:guid}/refunds/{refundId:guid}");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/refunds/{refundId:guid}/bank-details", "/api/sellers/{sellerId:guid}/refunds/{refundId:guid}/evidence/upload", "/api/sellers/{sellerId:guid}/refunds/{refundId:guid}/submit-transfer");
+        Add(["ADMIN"], "GET", "/api/admin/refunds/{refundId:guid}/seller-submission");
         Add(["ADMIN"], "GET", "/openapi/{documentName}.json",
-            "/api/admin/sellers", "/api/admin/slots",
+            "/api/admin/sellers", "/api/admin/slots", "/api/admin/kiosks",
             "/api/admin/reports/v_admin_queue", "/api/admin/reports/v_refund_queue", "/api/admin/reports/v_revenue_daily",
             "/api/admin/reports/v_platform_revenue", "/api/admin/reports/v_ai_effectiveness",
             "/api/admin/incidents", "/api/admin/incidents/{incidentId:guid}",
             "/api/admin/complaints", "/api/admin/complaints/{complaintId:guid}",
             "/api/admin/refunds", "/api/admin/refunds/{refundId:guid}",
-            "/api/admin/withdrawals", "/api/admin/withdrawals/{withdrawalId:guid}");
+            "/api/admin/withdrawals", "/api/admin/withdrawals/{withdrawalId:guid}",
+            "/api/admin/accounts", "/api/admin/accounts/{userId:guid}/profile");
         Add(["ADMIN"], "POST", "/api/admin/refunds/{refundId:guid}/bank-details", "/api/admin/withdrawals/{withdrawalId:guid}/bank-details");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}",
             "/api/sellers/{sellerId:guid}/subscriptions",
@@ -240,8 +263,13 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/me/products/{productId:guid}/photos");
         Add(["ADMIN", "SELLER"], "POST", "/api/me/products/{productId:guid}/photos",
             "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/payment-link");
+        // ShopLoyalty
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/member/loyalty", "/api/member/loyalty/{sellerId:guid}");
+        Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/loyalty-settings");
+        Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/loyalty-settings");
         Add(["SELLER"], "GET", "/api/me/products");
         Add(["SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/slots");
+        Add(["SELLER"], "GET", "/api/me/kiosks");
         Add(["SELLER"], "DELETE", "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/bouquet");
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/products");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/products/{productId:guid}");
@@ -251,6 +279,36 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/kiosks/{kioskId:guid}/surveys/{surveyId:guid}");
         Add(["KIOSK", "CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/customer/history", "/api/kiosks/{kioskId:guid}/customer/points");
+        Add(["CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/pickup/orders", "/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}");
+        Add(["CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}/open");
+        // PreorderCapacity
+        Add([], "GET", "/api/kiosks/{kioskId:guid}/preorder-availability");
+        // KioskCustomerFlows (kiosk-support)
+        Add([], "GET", "/api/kiosk-support/{kioskId:guid}");
+        Add([], "POST", "/api/kiosk-support/{kioskId:guid}/device");
+        // StaffPreorders
+        Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/preorders");
+        Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/preorders/{requestId:guid}/fulfill");
+        // SellerStaffChat
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/chat/open");
+        Add(["SELLER_STAFF"], "POST", "/api/staff/chats/open");
+        Add(["SELLER", "SELLER_STAFF"], "GET", "/api/seller-staff/chats", "/api/seller-staff/chats/{chatId:guid}/messages", "/api/seller-staff/chats/{chatId:guid}/messages/{messageId:guid}/image");
+        Add(["SELLER", "SELLER_STAFF"], "POST", "/api/seller-staff/chats/{chatId:guid}/read", "/api/seller-staff/chats/{chatId:guid}/messages", "/api/seller-staff/chats/{chatId:guid}/images");
+        // AccountHierarchyEndpoints (new detail/edit routes)
+        Add(["ADMIN"], "GET", "/api/admin/managers/{id:guid}");
+        Add(["ADMIN"], "PUT", "/api/admin/managers/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/technicians/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/technicians/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/customers");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/customers", "/api/operations/customers/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/customers/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/customers/{id:guid}/status");
+        // OperationsSellerEndpoints
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/sellers", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/status-history", "/api/operations/sellers/{sellerId:guid}/accounts");
+        Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/accounts/{userId:guid}");
+        Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/sellers/{sellerId:guid}/status");
+        // Flower presence is a portal Account read, not a kiosk-scoped customer session.
+        Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/kiosks/{id:guid}/flower-presence");
         return entries.ToArray();
 
         void Add(string[] roles, string method, params string[] paths)
