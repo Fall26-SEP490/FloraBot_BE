@@ -93,6 +93,9 @@ builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, TenantAutho
 builder.Services.AddHttpClient("sms", client => client.Timeout = TimeSpan.FromSeconds(5));
 builder.Services.AddHttpClient<PayOsClient>(client => client.Timeout = TimeSpan.FromSeconds(10))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("payos", client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<IPayOsClientResolver, PayOsClientResolver>(builder.Services);
 builder.Services.AddScoped<FlowExecutor>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(EmailSettings.Load(builder.Configuration, builder.Environment.IsDevelopment()));
@@ -312,6 +315,12 @@ app.MapKioskApplications();
 app.MapSellerSlotZones();
 app.MapSellerSlotBouquets();
 app.MapPayOs();
+app.MapSellerPaymentChannels();
+app.MapSellerPayments();
+app.MapShopLoyalty();
+app.MapSellerRefunds();
+app.MapKioskTerminations();
+app.MapPreorderCapacity();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();
 AiAdvisor.MapReads(app);

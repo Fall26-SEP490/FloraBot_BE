@@ -80,6 +80,7 @@ public sealed class TestGoogleValidator : IGoogleIdentityValidator
 
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
+    private static int snowflakeWorkerId;
     public TestEmailSender EmailSender { get; } = new();
     public TestGoogleValidator GoogleValidator { get; } = new();
 
@@ -108,6 +109,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddTransient<IStartupFilter, TestRemoteIpStartupFilter>();
             services.AddSingleton<ITransactionalEmailSender>(EmailSender);
             services.AddSingleton<IGoogleIdentityValidator>(GoogleValidator);
+            services.AddSingleton<DotNetCore.CAP.Internal.ISnowflakeId>(_ =>
+                new DotNetCore.CAP.Internal.SnowflakeId(Interlocked.Increment(ref snowflakeWorkerId)));
             services.AddHttpClient<TransactionalEmailSender>().ConfigurePrimaryHttpMessageHandler(() => new TestLoopbackMessageHandler());
         });
     }

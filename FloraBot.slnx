@@ -7,5 +7,9 @@
     <Project Path="tests/FloraBot.BrowserHost/FloraBot.BrowserHost.csproj" />
     <Project Path="tests/FloraBot.Api.Tests/FloraBot.Api.Tests.csproj" />
     <Project Path="tests/FloraBot.Gateway.Tests/FloraBot.Gateway.Tests.csproj" />
+    <Project Path="tests/FloraBot.KioskTermination.Tests/FloraBot.KioskTermination.Tests.csproj" />
+    <Project Path="tests/FloraBot.PreorderCapacity.Tests/FloraBot.PreorderCapacity.Tests.csproj" />
+    <Project Path="tests/FloraBot.SellerRefunds.Tests/FloraBot.SellerRefunds.Tests.csproj" />
+    <Project Path="tests/FloraBot.ShopLoyalty.Tests/FloraBot.ShopLoyalty.Tests.csproj" />
   </Folder>
 </Solution>

@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 namespace FloraBot.Api.Modules.Payment;
 
 public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null);
+public sealed record PayOsConfirmWebhookResponse(string WebhookUrl, string AccountNumber, string AccountName, string? Name = null, string? ShortName = null);
 public sealed class PaymentGatewayException(string failureCode) : Exception
 {
     // A short, non-sensitive diagnostic label for server logs. Never include credentials,
@@ -12,17 +13,54 @@ public sealed class PaymentGatewayException(string failureCode) : Exception
     public string FailureCode { get; } = failureCode;
 }
 
-public sealed class PayOsClient(HttpClient client, IConfiguration config)
+public sealed class PayOsClient
 {
-    public bool IsConfigured => new[] { "PAYOS_CLIENT_ID", "PAYOS_API_KEY", "PAYOS_CHECKSUM_KEY", "PAYOS_RETURN_URL", "PAYOS_CANCEL_URL" }
-        .All(key => !string.IsNullOrWhiteSpace(config[key]));
+    private readonly HttpClient client;
+    private readonly PayOsChannelOptions options;
+
+    public PayOsClient(HttpClient client, IConfiguration config)
+        : this(client, new PayOsChannelOptions(
+            config["PAYOS_CLIENT_ID"] ?? "",
+            config["PAYOS_API_KEY"] ?? "",
+            config["PAYOS_CHECKSUM_KEY"] ?? "",
+            config["PAYOS_RETURN_URL"] ?? "",
+            config["PAYOS_CANCEL_URL"] ?? "",
+            config["PAYOS_EXPECTED_BIN"],
+            config["PAYOS_EXPECTED_ACCOUNT"],
+            config["PAYOS_EXPECTED_NAME"],
+            string.Equals(config["PAYOS_ALLOW_DEV_LOOPBACK"], "true", StringComparison.OrdinalIgnoreCase)
+        ))
+    {
+    }
+
+    internal PayOsClient(HttpClient client, PayOsChannelOptions options)
+    {
+        this.client = client;
+        this.options = options;
+    }
+
+    public static PayOsClient ForChannel(HttpClient client, PayOsChannelOptions options) => new(client, options);
+
+    public string? ExpectedBin => options.ExpectedBin;
+    public string? ExpectedAccount => options.ExpectedAccount;
+    public string? ExpectedName => options.ExpectedName;
+
+    private bool HasExpectedReceiver =>
+        !string.IsNullOrWhiteSpace(options.ExpectedBin) || !string.IsNullOrWhiteSpace(options.ExpectedAccount);
+
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(options.ClientId) &&
+        !string.IsNullOrWhiteSpace(options.ApiKey) &&
+        !string.IsNullOrWhiteSpace(options.ChecksumKey) &&
+        !string.IsNullOrWhiteSpace(options.ReturnUrl) &&
+        !string.IsNullOrWhiteSpace(options.CancelUrl);
 
     public async Task<PaymentLinkResponse> CreateAsync(long orderCode, long amount, CancellationToken ct, long? expiredAt = null)
     {
         if (!IsConfigured) throw new PaymentGatewayException("configuration_missing");
         if (amount <= 0 || orderCode is <= 0 or > 9007199254740991) throw new PaymentGatewayException("request_values_invalid");
-        var returnUrl = Callback("PAYOS_RETURN_URL");
-        var cancelUrl = Callback("PAYOS_CANCEL_URL");
+        var returnUrl = Callback(options.ReturnUrl);
+        var cancelUrl = Callback(options.CancelUrl);
         var description = "FloraBot " + orderCode.ToString(CultureInfo.InvariantCulture);
         var signed = JsonSerializer.SerializeToElement(new { amount, cancelUrl, description, orderCode, returnUrl });
         using var request = Request(HttpMethod.Post, "v2/payment-requests");
@@ -33,7 +71,7 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
             ["description"] = description,
             ["cancelUrl"] = cancelUrl,
             ["returnUrl"] = returnUrl,
-            ["signature"] = PayOsChecksum.Sign(signed, config["PAYOS_CHECKSUM_KEY"]!)
+            ["signature"] = PayOsChecksum.Sign(signed, options.ChecksumKey)
         };
         if (expiredAt is not null) payload["expiredAt"] = expiredAt.Value;
         request.Content = JsonContent.Create(payload);
@@ -41,12 +79,39 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         if (envelope.GetProperty("code").GetString() != "00")
         {
             // A previous attempt may have reached payOS before its response was lost.
-            using var lookup = Request(HttpMethod.Get, "v2/payment-requests/" + orderCode.ToString(CultureInfo.InvariantCulture));
-            envelope = await SendAsync(lookup, ct);
+            // GET lookup may lack recipient, so it cannot serve as new link recovery when receiver is unproven.
+            // Only legacy platform path without expected receiver does GET lookup fallback.
+            if (!HasExpectedReceiver)
+            {
+                using var lookup = Request(HttpMethod.Get, "v2/payment-requests/" + orderCode.ToString(CultureInfo.InvariantCulture));
+                envelope = await SendAsync(lookup, ct);
+            }
         }
         var data = VerifiedData(envelope);
         if (data.GetProperty("orderCode").GetInt64() != orderCode || data.GetProperty("amount").GetInt64() != amount ||
             data.GetProperty("status").GetString() != "PENDING") throw new PaymentGatewayException("provider_data_mismatch");
+
+        // When expected receiver fields are configured, signed response MUST contain and match expected bin/account
+        if (HasExpectedReceiver)
+        {
+            if (!string.IsNullOrWhiteSpace(options.ExpectedBin))
+            {
+                if (!data.TryGetProperty("bin", out var binProp) || binProp.ValueKind != JsonValueKind.String ||
+                    !string.Equals(binProp.GetString(), options.ExpectedBin, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PaymentGatewayException("provider_receiver_bin_mismatch");
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(options.ExpectedAccount))
+            {
+                if (!data.TryGetProperty("accountNumber", out var accProp) || accProp.ValueKind != JsonValueKind.String ||
+                    !string.Equals(accProp.GetString(), options.ExpectedAccount, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PaymentGatewayException("provider_receiver_account_mismatch");
+                }
+            }
+        }
+
         string url;
         if (data.TryGetProperty("checkoutUrl", out var checkout)) url = checkout.GetString()!;
         else
@@ -80,16 +145,46 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         return VerifiedData(envelope);
     }
 
-    private string Callback(string key)
+    public async Task<PayOsConfirmWebhookResponse> ConfirmWebhookAsync(string webhookUrl, CancellationToken ct)
     {
-        var value = config[key];
-        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || !string.IsNullOrEmpty(uri.UserInfo))
+        if (!IsConfigured) throw new PaymentGatewayException("configuration_missing");
+        if (string.IsNullOrWhiteSpace(webhookUrl) || !Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) || (uri.Scheme != "https" && !options.AllowDevLoopback))
+            throw new PaymentGatewayException("webhook_url_invalid");
+
+        using var request = Request(HttpMethod.Post, "confirm-webhook");
+        request.Content = JsonContent.Create(new { webhookUrl });
+        var envelope = await SendAsync(request, ct);
+
+        if (envelope.ValueKind != JsonValueKind.Object ||
+            !envelope.TryGetProperty("code", out var code) || code.GetString() != "00")
+        {
+            var safeCode = envelope.TryGetProperty("code", out var c) && Regex.IsMatch(c.GetString() ?? "", "^[0-9]{1,4}$") ? c.GetString()! : "other";
+            throw new PaymentGatewayException("provider_code_" + safeCode);
+        }
+
+        if (!envelope.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            throw new PaymentGatewayException("provider_data_missing");
+
+        var returnedUrl = data.TryGetProperty("webhookUrl", out var u) ? u.GetString() ?? "" : "";
+        var accountNumber = data.TryGetProperty("accountNumber", out var a) ? a.GetString() ?? "" : "";
+        var accountName = data.TryGetProperty("accountName", out var n) ? n.GetString() ?? "" : "";
+        var name = data.TryGetProperty("name", out var nm) ? nm.GetString() : null;
+        var shortName = data.TryGetProperty("shortName", out var sn) ? sn.GetString() : null;
+
+        if (string.IsNullOrWhiteSpace(accountNumber))
+            throw new PaymentGatewayException("provider_account_missing");
+
+        return new PayOsConfirmWebhookResponse(returnedUrl, accountNumber, accountName, name, shortName);
+    }
+
+    private string Callback(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || !string.IsNullOrEmpty(uri.UserInfo))
             throw new PaymentGatewayException("callback_url_invalid");
-        var allowDevLoopback = string.Equals(config["PAYOS_ALLOW_DEV_LOOPBACK"], "true", StringComparison.OrdinalIgnoreCase);
         if (uri.Scheme == "https")
-            return value;
-        if (allowDevLoopback && uri.Scheme == "http" && IsLoopbackHost(uri.Host))
-            return value;
+            return url;
+        if (options.AllowDevLoopback && uri.Scheme == "http" && IsLoopbackHost(uri.Host))
+            return url;
         throw new PaymentGatewayException("callback_url_requires_https");
     }
 
@@ -103,8 +198,8 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
     private HttpRequestMessage Request(HttpMethod method, string path)
     {
         var request = new HttpRequestMessage(method, "https://api-merchant.payos.vn/" + path);
-        request.Headers.Add("x-client-id", config["PAYOS_CLIENT_ID"]);
-        request.Headers.Add("x-api-key", config["PAYOS_API_KEY"]);
+        request.Headers.Add("x-client-id", options.ClientId);
+        request.Headers.Add("x-api-key", options.ApiKey);
         return request;
     }
 
@@ -130,7 +225,7 @@ public sealed class PayOsClient(HttpClient client, IConfiguration config)
         if (!envelope.TryGetProperty("data", out var data)) throw new PaymentGatewayException("provider_data_missing");
         if (!envelope.TryGetProperty("signature", out var signature) || signature.ValueKind != JsonValueKind.String)
             throw new PaymentGatewayException("provider_signature_missing");
-        if (!PayOsChecksum.Verify(data, signature.GetString()!, config["PAYOS_CHECKSUM_KEY"]!))
+        if (!PayOsChecksum.Verify(data, signature.GetString()!, options.ChecksumKey))
             throw new PaymentGatewayException("provider_signature_invalid");
         return data;
     }
