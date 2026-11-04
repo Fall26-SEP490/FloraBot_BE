@@ -456,11 +456,13 @@ public sealed class SellerRefundsIntegrationTests : IClassFixture<SellerRefundsT
             condition.CommandText = mode switch
             {
                 "not-pending" => "UPDATE payment.payments SET status='FAILED' WHERE id=@id",
-                "not-approved" => "UPDATE payment.payments SET approved_by=NULL WHERE id=@id",
+                "not-approved" => "UPDATE payment.payments SET approved_by=@nonAdmin WHERE id=@id",
                 "no-bank" => "UPDATE ordering.orders SET refund_bank_name=NULL, refund_bank_holder=NULL, refund_bank_account_enc=NULL WHERE id=@id",
                 _ => "SELECT 1 WHERE @id IS NOT NULL"
             };
             condition.Parameters.AddWithValue("id", mode == "no-bank" ? orderId : refundId);
+            // Refund rows require an approver FK; a non-Admin marker is not human Admin approval.
+            condition.Parameters.AddWithValue("nonAdmin", ownerId);
             await condition.ExecuteNonQueryAsync();
         }
 
