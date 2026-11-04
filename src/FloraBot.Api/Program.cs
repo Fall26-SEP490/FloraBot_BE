@@ -89,6 +89,7 @@ if (builder.Configuration.GetValue("MQTT_ENABLED", false))
     builder.Services.AddSingleton(DeviceKeyRing.Load(builder.Configuration["MQTT_CREDENTIALS_FILE"]
         ?? throw new InvalidOperationException("MQTT_CREDENTIALS_FILE is required.")));
     builder.Services.AddScoped<DeviceEventInbox>();
+    builder.Services.AddScoped<FlowerPresenceReceiver>();
     builder.Services.AddScoped<DeviceCommandDispatcher>();
     builder.Services.AddHostedService<MqttEventWorker>();
 }
@@ -324,6 +325,7 @@ app.MapCustomerPoints();
 app.MapAccessoryCatalog();
 app.MapSellerAccessories();
 app.MapKioskLocations();
+app.MapFlowerPresence();
 app.MapProductPhotos();
 app.MapProducts();
 PrivateEvidence.MapPrivateEvidence(app);
