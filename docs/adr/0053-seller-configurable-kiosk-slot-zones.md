@@ -1,6 +1,6 @@
 # 0053: Seller-configurable kiosk slot zones
 
-Status: Accepted — 2026-10-30
+Status: Superseded by [ADR 0060](0060-requested-kiosk-layout-pricing.md) — 2026-11-04. The original decision below is retained as history.
 
 ## Decision
 

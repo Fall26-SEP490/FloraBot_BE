@@ -24,22 +24,7 @@ public static class OnboardingPackages
 {
     public static void MapOnboardingPackages(this WebApplication app)
     {
-        app.MapGet("/api/kiosk-packages", async (FloraDbContext db, CancellationToken ct) =>
-        {
-            var packages = await db.SubscriptionPackages.AsNoTracking()
-                .Where(x => x.BillingCycle == "ANNUAL" && x.Status == "ACTIVE")
-                .OrderBy(x => x.AnnualFee)
-                .Select(x => new KioskPackageResponse(
-                    x.Id,
-                    x.Name,
-                    x.AnnualFee,
-                    x.MaxSlots,
-                    12,
-                    x.Status,
-                    Description(x.Name, x.MaxSlots)
-                )).ToListAsync(ct);
-            return Results.Ok(packages);
-        }).AllowAnonymous().WithTags("Identity").Produces<List<KioskPackageResponse>>();
+        FloraBot.Api.Modules.KioskOps.KioskSlotPricing.MapKioskSlotPricing(app);
     }
 
     public static async Task<OnboardingPackageInfo?> FindActiveAnnualPackageAsync(FloraDbContext db, Guid packageId, CancellationToken ct)
@@ -64,6 +49,4 @@ public static class OnboardingPackages
             .ToDictionaryAsync(x => x.Id, x => x.AnnualFee, ct);
     }
 
-    private static string Description(string name, int total) =>
-        $"Gói {name} 1 năm với tổng sức chứa {total} ô; chủ shop tự phân loại từng ô thành Walk-in hoặc Pre-order.";
 }

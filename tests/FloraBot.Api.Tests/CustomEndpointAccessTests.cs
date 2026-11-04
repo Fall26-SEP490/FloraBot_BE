@@ -220,6 +220,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN", "OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-applications", "/api/operations/kiosk-applications/{id:guid}", "/api/operations/kiosk-applications/{id:guid}/evidence/{attachmentId:guid}");
         Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-applications/{id:guid}/confirm", "/api/operations/kiosk-applications/{id:guid}/schedule", "/api/operations/kiosk-applications/{id:guid}/rework", "/api/operations/kiosk-applications/{id:guid}/handover", "/api/operations/kiosk-applications/{id:guid}/reject", "/api/operations/kiosk-applications/{id:guid}/platform-failure", "/api/operations/kiosks/enroll", "/api/operations/kiosks/{id:guid}/provision-key");
         Add(["OPERATIONS_MANAGER"], "DELETE", "/api/operations/kiosks/{id:guid}");
+        Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/kiosk-pricing");
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/eligible-kiosks");
         Add(["TECHNICIAN"], "GET", "/api/staff/kiosk-installations", "/api/staff/kiosk-installations/{id:guid}", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/evidence/{attachmentId:guid}");
         Add(["TECHNICIAN"], "POST", "/api/staff/kiosk-installations/{id:guid}/start", "/api/staff/kiosk-installations/{id:guid}/evidence/upload", "/api/staff/kiosk-installations/{id:guid}/evidence", "/api/staff/kiosk-installations/{id:guid}/submit");
