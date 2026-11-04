@@ -27,6 +27,9 @@ public sealed class DeviceKeyRing
     public bool Verify(SignedDeviceEvent message, string hardware, DateTimeOffset now) =>
         keys.TryGetValue(hardware, out var key) && DeviceProtocol.Verify(message, hardware, key, now);
 
+    public bool Verify(SignedFlowerPresence message, string hardware, DateTimeOffset now) =>
+        keys.TryGetValue(hardware, out var key) && FlowerPresenceProtocol.Verify(message, hardware, key, now);
+
     public bool Verify(UnlockCommand message, DateTimeOffset now) =>
         keys.TryGetValue(message.HardwareId, out var key) && DeviceProtocol.Verify(message, message.HardwareId, key, now);
 

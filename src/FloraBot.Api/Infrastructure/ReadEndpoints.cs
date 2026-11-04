@@ -20,7 +20,7 @@ public sealed record ProductResponse(
 public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId);
 public sealed record SellerPackageResponse(string Name, long MonthlyFee, int MaxSlots, string Status);
 public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions);
-public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName);
+public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName, string? ImageUrl = null);
 public sealed record PackageResponse(Guid Id, string Name, long MonthlyFee, int MaxSlots);
 public sealed record AdminSellerResponse(Guid Id, string ShopName, string Status, Guid? PackageId, DateOnly? PackageExpiresAt, string Phone, string? Address);
 public sealed record AdminSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? CurrentSellerId, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, string KioskStatus);

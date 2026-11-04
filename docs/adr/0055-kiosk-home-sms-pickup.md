@@ -1,0 +1,19 @@
+# 0055: Touchscreen Home, SMS preorder pickup and support handoff
+
+The kiosk separates Home, walk-in checkout, preorder pickup and staff handoff. Staff selection is navigation only; portal role/tenant policies still authorize all staff work.
+
+The existing SMS OTP endpoints issue a ten-minute kiosk-bound customer token after phone verification. New `pickup/orders` reads require `KioskMember`, match `kiosk_id`, and filter both the order and web request by the authenticated customer. They return eligible paid preorders at the current kiosk, after the pickup time, before the deadline, and only when a bouquet has been prepared. Responses exclude receipt capabilities and hardware tokens.
+
+SMS resolves the existing account by its saved normalized phone; it does not merge an email-only registration with another phone account. The website therefore explains the profile-phone prerequisite before ordering and at collection. An explicit receipt fallback remains available at pickup when SMS delivery or a profile phone is unavailable, through the original receipt-capability flow.
+
+An explicit `pickup/orders/{orderId}/open` request rechecks customer ownership and kiosk under an order row lock. It obtains the receipt capability internally, delegates readiness, deadline, door-cycle and token rules to `flow.request_pickup`, publishes domain changes using the existing CAP transaction, and commits once. Device keys alone cannot invoke these endpoints. Command acceptance is not physical opening; a scoped order-status read supplies actual completion/failure feedback. The client never retries uncertain unlock responses automatically and drops private state when leaving or hiding the screen.
+
+Public kiosk support metadata exposes business identity only, through KioskOps/Identity reader boundaries. A public device report validates a bounded description and is limited to three requests per IP per ten minutes. It creates an audited DEVICE_FAULT incident for admin triage, without changing stock/slot states, payment states, refunds or hardware commands. Shop support delegates to the website's authenticated customer/seller chat; order complaints/refunds retain their receipt/evidence rules.
+
+`PaymentLinkResponse.qrCode` is an additive nullable field copied only from verified signed payOS data, after existing amount/order/status checks. Old responses/providers without a QR retain checkout-link behavior. Catalog reads add a nullable shop image sourced through existing public catalog views; generic client images remain labelled as illustrations.
+
+The `--export-openapi <file>` command starts a loopback schema-only host, with database initialization and hosted services skipped and MQTT/jobs disabled. It writes OpenAPI for reproducible FE/Kios contract generation. Normal API startup is unchanged.
+
+Verification: API build and focused support-validation/signed-QR/device-protocol/email-template unit tests pass. Kiosk browser tests cover service/language selection, staff navigation without commands, SMS/ownership-token handoff, explicit opening, completion polling, uncertain-response behavior, receipt fallback, mobile reporting and existing privacy/checkout flows with mocked transports. Onboarding tests now compile against the current total-slot contract instead of removed per-zone package fields. No live SMS, payOS charge or physical door operation is performed. Full database and infrastructure suites require their separate disposable environment; they are not run by schema export.
+
+Deployment requires matching BE, FE and Kios versions, configured production SMS delivery, existing MQTT provisioning, and correct closed-door sensors. This feature adds no migration or firmware pin change. Deployments taking the latest main must separately account for the existing multi-kiosk lease migration in ADR 0054; schema export does not apply it.
