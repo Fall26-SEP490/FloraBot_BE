@@ -346,7 +346,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // 1. Enroll a test kiosk with exact Trial slots (1 Walk-in, 1 Preorder)
+        // 1. Enroll a test kiosk with the Trial total capacity; Seller sets zones later.
         var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
             $"K-TEST-{Guid.NewGuid():N}"[..12], "Kiosk Test Handover", $"ESP32-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
@@ -715,7 +715,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // Enroll two kiosks with 1W + 1P
+        // Enroll two kiosks with two unclassified physical slots each.
         var k1Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
             $"K-SCH1-{Guid.NewGuid():N}"[..12], "Kiosk Sched 1", $"ESP-S1-{Guid.NewGuid():N}"[..16], null, "HCM", 2
         ));
