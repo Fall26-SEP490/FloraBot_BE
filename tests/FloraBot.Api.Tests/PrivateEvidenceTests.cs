@@ -202,7 +202,7 @@ public sealed class PrivateEvidenceTests(ApiFactory factory) : IClassFixture<Api
         var order = Guid.NewGuid();
         await using var setup = source.CreateCommand("""
             INSERT INTO ordering.orders(id,order_code,checkout_id,seller_id,kiosk_id,status,subtotal,total_amount,tracking_token,completed_at)
-            VALUES(@id,'EVD-'||@id,@id,@id,@id,'COMPLETED',350000,350000,flow.new_tracking_token(),public.app_now()) RETURNING tracking_token;
+            VALUES(@id,'EVD-'||@id,@id,'20000000-0000-0000-0000-000000000001',@id,'COMPLETED',350000,350000,flow.new_tracking_token(),public.app_now()) RETURNING tracking_token;
             """);
         setup.Parameters.AddWithValue("id", order); var token = (string)(await setup.ExecuteScalarAsync())!;
         using var client = app.CreateClient();

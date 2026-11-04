@@ -24,7 +24,7 @@ public sealed class StaffIncidentResolutionTests(ApiFactory factory) : IClassFix
               VALUES(@kiosk,@kiosk::text,'Resolution fixture','Fixture','HCM',@kiosk::text,@kiosk::text,'ONLINE','fixture');
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,status) VALUES(@slot,@kiosk,'A01',0,'FAULT');
             INSERT INTO ordering.orders(id,order_code,checkout_id,seller_id,kiosk_id,status,subtotal,total_amount,tracking_token)
-              VALUES(@order,@order::text,@order,@order,@kiosk,'DISPENSE_FAILED',350000,350000,flow.new_tracking_token());
+              VALUES(@order,@order::text,@order,'20000000-0000-0000-0000-000000000001',@kiosk,'DISPENSE_FAILED',350000,350000,flow.new_tracking_token());
             INSERT INTO ordering.disputes(id,kind,kiosk_id,slot_id,order_id,reason)
               VALUES(@incident,@kind,@kiosk,@slot,@order,'Door repaired after inspection');
             """);

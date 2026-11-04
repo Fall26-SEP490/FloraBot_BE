@@ -17,8 +17,10 @@ public sealed class CheckoutAccessTests(ApiFactory factory) : IClassFixture<ApiF
         var checkout = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var customer = Guid.NewGuid();
         var first = Guid.NewGuid(); var second = Guid.NewGuid();
         await using var setup = new NpgsqlCommand("""
+            INSERT INTO identity.users(id,email,full_name,role)
+            VALUES(@customer,@customer::text || '@checkout.test','Checkout customer','CUSTOMER');
             INSERT INTO ordering.orders(id,order_code,checkout_id,customer_id,seller_id,kiosk_id,subtotal,total_amount,tracking_token,created_at)
-            SELECT id,id::text,@checkout,@customer,id,@kiosk,25000,25000,upper(substr(md5(id::text),1,8)),CURRENT_TIMESTAMP - age
+            SELECT id,id::text,@checkout,@customer,'20000000-0000-0000-0000-000000000001'::uuid,@kiosk,25000,25000,upper(substr(md5(id::text),1,8)),CURRENT_TIMESTAMP - age
             FROM (VALUES (@first,interval '2 minutes'),(@second,interval '1 minute')) fixture(id,age);
             SELECT min(created_at + flow.cfg_min('hold_minutes')) FROM ordering.orders WHERE checkout_id=@checkout;
             """, connection, transaction);

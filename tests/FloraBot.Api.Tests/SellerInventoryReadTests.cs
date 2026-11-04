@@ -51,22 +51,46 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
     private static async Task<SellerSlotResponse> Read(HttpClient client, Fixture f)
         => Assert.Single((await client.GetFromJsonAsync<List<SellerSlotResponse>>(Route(f)))!);
 
-    private async Task AddOrder(Fixture f, Guid order, string status, string paymentStatus, int ageSeconds = 0)
+    private async Task AddOrder(Fixture f, Guid order, string status, string paymentStatus, int ageSeconds = 0, bool legacy = true)
     {
+        // Read-model fixtures cover preserved platform receipts; new direct receipts have separate HTTP coverage.
+        var loyaltyPolicy = legacy ? "LEGACY_GLOBAL" : "SHOP_POLICY";
+        var provenance = legacy ? "PLATFORM_LEGACY" : "DIRECT_REQUIRED";
         await Execute(f, $$"""
-            INSERT INTO ordering.orders(id,order_code,checkout_id,seller_id,kiosk_id,status,subtotal,total_amount,tracking_token,created_at)
-            VALUES(@order,@order::text,@order,@seller,@kiosk,'{{status}}',350000,350000,left(replace(@order::text,'-',''),8),public.app_now()+interval '{{ageSeconds}} seconds');
+            INSERT INTO ordering.orders(id,order_code,checkout_id,seller_id,kiosk_id,status,subtotal,total_amount,tracking_token,created_at,loyalty_policy)
+            VALUES(@order,@order::text,@order,@seller,@kiosk,'{{status}}',350000,350000,left(replace(@order::text,'-',''),8),public.app_now()+interval '{{ageSeconds}} seconds','{{loyaltyPolicy}}');
             INSERT INTO ordering.order_items(order_id,item_type,bouquet_id,slot_id,name_snapshot,quantity,unit_price,line_total,line_status)
             VALUES(@order,'BOUQUET',@bouquet,@slot,'Inventory test',1,350000,350000,
               CASE WHEN '{{status}}' IN ('EXPIRED','CANCELLED') THEN 'CANCELLED' ELSE 'ACTIVE' END);
-            INSERT INTO payment.payments(id,kind,purpose,checkout_id,gateway,idempotency_key,amount,status,paid_at)
+            INSERT INTO payment.payments(id,kind,purpose,checkout_id,gateway,idempotency_key,amount,status,paid_at,funding_provenance)
             VALUES(@order,'CHARGE','ORDER_CHECKOUT',@order,'MANUAL',@order::text,350000,'{{paymentStatus}}',
-              CASE WHEN '{{paymentStatus}}'='SUCCEEDED' THEN public.app_now() ELSE NULL END);
+              CASE WHEN '{{paymentStatus}}'='SUCCEEDED' THEN public.app_now() ELSE NULL END,'{{provenance}}');
             """, order);
     }
 
     [Fact]
-    public async Task VerifiedPaymentChangesBouquetAndOrderReadWhileProductStaysActiveAndPickupClearsSlot()
+    public async Task UnboundNewSaleCannotBePaidThroughLegacySqlPath()
+    {
+        var f = await Setup();
+        var order = Guid.NewGuid();
+        await AddOrder(f, order, "AWAITING_PAYMENT", "PENDING", legacy: false);
+        await Execute(f, """
+            UPDATE kiosk_ops.bouquets SET status='HELD' WHERE id=@bouquet;
+            UPDATE kiosk_ops.slots SET status='HELD',hold_order_id=@order,
+                hold_until=public.app_now()+interval '10 minutes' WHERE id=@slot;
+            """, order);
+        var error = await Assert.ThrowsAsync<PostgresException>(() =>
+            Execute(f, "SELECT flow.checkout_paid(@order,@order::text,true,350000)", order));
+        Assert.Equal("P0001", error.SqlState);
+        Assert.Contains("chưa được gắn kênh", error.MessageText);
+        using var client = Client(f);
+        var row = await Read(client, f);
+        Assert.Equal("PENDING", row.PaymentStatus);
+        Assert.Equal("AWAITING_PAYMENT", row.OrderStatus);
+    }
+
+    [Fact]
+    public async Task VerifiedLegacyPaymentChangesBouquetAndOrderReadWhileProductStaysActiveAndPickupClearsSlot()
     {
         var f = await Setup(); var order = Guid.NewGuid();
         using var client = Client(f);
