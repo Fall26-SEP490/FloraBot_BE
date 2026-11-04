@@ -359,6 +359,7 @@ public partial class FloraDbContext : DbContext
                 .HasColumnName("id");
             entity.Property(e => e.Address).HasColumnName("address");
             entity.Property(e => e.ApiKeyHash).HasColumnName("api_key_hash");
+            entity.Property(e => e.RequestedApplicationId).HasColumnName("requested_application_id");
             entity.Property(e => e.Code).HasColumnName("code");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("app_now()")
@@ -401,6 +402,10 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.WalkInSlots).HasColumnName("walk_in_slots");
             entity.Property(e => e.PreorderSlots).HasColumnName("preorder_slots");
             entity.Property(e => e.TotalSlots).HasColumnName("total_slots");
+            entity.Property(e => e.PricingMode).HasColumnName("pricing_mode");
+            entity.Property(e => e.WalkInAnnualPrice).HasColumnName("walk_in_annual_price");
+            entity.Property(e => e.PreorderAnnualPrice).HasColumnName("preorder_annual_price");
+            entity.Property(e => e.PricingVersion).HasColumnName("pricing_version");
             entity.Property(e => e.PaymentId).HasColumnName("payment_id");
             entity.Property(e => e.AssignedTechnicianId).HasColumnName("assigned_technician_id");
             entity.Property(e => e.AssignedKioskId).HasColumnName("assigned_kiosk_id");
