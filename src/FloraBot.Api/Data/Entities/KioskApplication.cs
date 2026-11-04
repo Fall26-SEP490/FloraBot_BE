@@ -10,6 +10,11 @@ public partial class KioskApplication
 
     public Guid PackageId { get; set; }
 
+    public string PricingMode { get; set; } = "PACKAGE";
+    public long? WalkInAnnualPrice { get; set; }
+    public long? PreorderAnnualPrice { get; set; }
+    public int? PricingVersion { get; set; }
+
     public string ShopName { get; set; } = null!;
 
     public string Phone { get; set; } = null!;

@@ -26,6 +26,7 @@ public partial class Kiosk
     public DateTime? LastHeartbeatAt { get; set; }
 
     public string? ApiKeyHash { get; set; }
+    public Guid? RequestedApplicationId { get; set; }
 
     public double? Latitude { get; set; }
 

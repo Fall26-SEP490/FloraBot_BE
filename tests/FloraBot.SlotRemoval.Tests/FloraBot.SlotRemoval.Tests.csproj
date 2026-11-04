@@ -20,5 +20,6 @@
     <Compile Include="../FloraBot.Api.Tests/PayOsClientQrTests.cs" Link="PayOsClientQrTests.cs" />
     <Compile Include="../FloraBot.Api.Tests/PaymentLinkTests.cs" Link="PaymentLinkTests.cs" />
     <Compile Include="../FloraBot.Api.Tests/TechnicianInstallationReadTests.cs" Link="TechnicianInstallationReadTests.cs" />
+    <Compile Include="../FloraBot.Api.Tests/RequestedKioskLayoutTests.cs" Link="RequestedKioskLayoutTests.cs" />
   </ItemGroup>
 </Project>
