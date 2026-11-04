@@ -16,38 +16,33 @@ namespace FloraBot.PreorderCapacity.Tests;
 
 public class PreorderCapacityTestFactory : WebApplicationFactory<Program>
 {
-    public string? DatabaseUrl { get; private set; }
-    public string? ValkeyUrl { get; private set; }
+    public string DatabaseUrl { get; }
+    public string ValkeyUrl { get; }
 
     public PreorderCapacityTestFactory()
     {
-        DatabaseUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
-        ValkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        DatabaseUrl = RequireDatabaseUrl();
+        ValkeyUrl = RequireValkeyUrl();
+    }
 
-        if (File.Exists("COORDINATOR-TEST-ENV.json"))
+    public static string RequireDatabaseUrl()
+    {
+        var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
+        if (string.IsNullOrWhiteSpace(dbUrl))
         {
-            try
-            {
-                var json = File.ReadAllText("COORDINATOR-TEST-ENV.json");
-                using var doc = JsonDocument.Parse(json);
-                if (string.IsNullOrWhiteSpace(DatabaseUrl) && doc.RootElement.TryGetProperty("database", out var dbProp))
-                {
-                    var dbName = dbProp.GetString();
-                    DatabaseUrl = $"Host=127.0.0.1;Port=55436;Database={dbName};Username=florabot;Password=local-florabot-only";
-                }
-                if (string.IsNullOrWhiteSpace(ValkeyUrl) && doc.RootElement.TryGetProperty("valkey", out var vProp))
-                {
-                    ValkeyUrl = vProp.GetString();
-                }
-            }
-            catch
-            {
-                // Fallback
-            }
+            throw new InvalidOperationException("TEST_DATABASE_URL environment variable is required and must not be empty.");
         }
+        return dbUrl;
+    }
 
-        DatabaseUrl ??= Environment.GetEnvironmentVariable("DATABASE_URL");
-        ValkeyUrl ??= "127.0.0.1:51640,defaultDatabase=11";
+    public static string RequireValkeyUrl()
+    {
+        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        if (string.IsNullOrWhiteSpace(valkeyUrl))
+        {
+            throw new InvalidOperationException("TEST_VALKEY_URL environment variable is required and must not be empty.");
+        }
+        return valkeyUrl;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -55,9 +50,9 @@ public class PreorderCapacityTestFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureLogging(logging => logging.ClearProviders().AddConsole());
 
-        var valkeySetting = (ValkeyUrl ?? "127.0.0.1:51640").Contains("abortConnect")
-            ? ValkeyUrl!
-            : $"{ValkeyUrl ?? "127.0.0.1:51640"},abortConnect=false";
+        var valkeySetting = ValkeyUrl.Contains("abortConnect")
+            ? ValkeyUrl
+            : $"{ValkeyUrl},abortConnect=false";
 
         var settings = new Dictionary<string, string?>
         {
@@ -147,7 +142,7 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
     {
         Assert.False(
             string.IsNullOrWhiteSpace(_factory.DatabaseUrl),
-            "TEST_DATABASE_URL or COORDINATOR-TEST-ENV.json is required for integration tests.");
+            "TEST_DATABASE_URL is required for integration tests.");
     }
 
     private sealed record CapacityFixture(
@@ -670,7 +665,7 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
     }
 
     [Fact]
-    public async Task ZoneChange_ShrinkingPreorderCapacity_BlockedWhenObligationsExist()
+    public async Task FixedRentalLayout_RejectsCapacityReductionWhileReservationsRemain()
     {
         var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
         var pickupAt = DateTimeOffset.UtcNow.AddDays(1);
@@ -692,7 +687,7 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
             await cmd.ExecuteNonQueryAsync();
         }
 
-        // Attempt to shrink PREORDER capacity by switching the 1 PREORDER slot to WALK_IN -> MUST throw P0001
+        // ADR0060 retires zone changes, including reductions that would invalidate reservations.
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "SELECT flow.seller_set_slot_zone(@kiosk, @slot, @actor, 'WALK_IN')";
@@ -701,7 +696,8 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
             cmd.Parameters.AddWithValue("actor", f.SellerUserId);
 
             var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteNonQueryAsync());
-            Assert.Equal("P0001", ex.SqlState);
+            Assert.Equal("42501", ex.SqlState);
+            Assert.Contains("fixed at rental", ex.MessageText);
         }
     }
 

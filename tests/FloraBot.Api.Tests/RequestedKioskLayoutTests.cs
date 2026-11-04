@@ -47,15 +47,21 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var originalVersion = originalPricing.GetProperty("version").GetInt32();
         await Status(HttpStatusCode.Forbidden, customer.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 100000, preorderAnnualPrice = 200000, expectedVersion = originalVersion
+            walkInAnnualPrice = 100000,
+            preorderAnnualPrice = 200000,
+            expectedVersion = originalVersion
         }));
         await Status(HttpStatusCode.BadRequest, manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = -1, preorderAnnualPrice = 200000, expectedVersion = originalVersion
+            walkInAnnualPrice = -1,
+            preorderAnnualPrice = 200000,
+            expectedVersion = originalVersion
         }));
         var firstPricing = await Json(manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 100000, preorderAnnualPrice = 200000, expectedVersion = originalVersion
+            walkInAnnualPrice = 100000,
+            preorderAnnualPrice = 200000,
+            expectedVersion = originalVersion
         }));
         var firstVersion = firstPricing.GetProperty("version").GetInt32();
         Assert.True(firstVersion > originalVersion);
@@ -82,13 +88,17 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
 
         var secondPricing = await Json(manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 120000, preorderAnnualPrice = 250000, expectedVersion = firstVersion
+            walkInAnnualPrice = 120000,
+            preorderAnnualPrice = 250000,
+            expectedVersion = firstVersion
         }));
         var secondVersion = secondPricing.GetProperty("version").GetInt32();
         Assert.True(secondVersion > firstVersion);
         await Status(HttpStatusCode.Conflict, manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 1, preorderAnnualPrice = 1, expectedVersion = firstVersion
+            walkInAnnualPrice = 1,
+            preorderAnnualPrice = 1,
+            expectedVersion = firstVersion
         }));
         await Status(HttpStatusCode.Conflict, otherCustomer.PostAsJsonAsync(Applications,
             ApplicationBody(secondCustomerId, firstVersion)));
@@ -175,8 +185,12 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         // The next kiosk uses current prices, retaining the existing shop and bank.
         var additional = await Json(seller.PostAsJsonAsync("/api/me/kiosk-applications", new
         {
-            installationAddress = "Second branch test address", latitude = 10.81, longitude = 106.72,
-            walkInSlots = 1, preorderSlots = 1, pricingVersion = secondVersion
+            installationAddress = "Second branch test address",
+            latitude = 10.81,
+            longitude = 106.72,
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = secondVersion
         }));
         Assert.Equal(sellerId, additional.GetProperty("sellerId").GetGuid());
         Assert.Equal("AWAITING_PAYMENT", additional.GetProperty("status").GetString());
@@ -216,7 +230,7 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
             Assert.Equal("42501", denied.SqlState);
         }
         // Other slot attributes and same-value updates remain valid.
-        await Sql(data,"UPDATE kiosk_ops.slots SET zone=zone WHERE id=@slot",("slot",slotId));
+        await Sql(data, "UPDATE kiosk_ops.slots SET zone=zone WHERE id=@slot", ("slot", slotId));
     }
 
     private HttpClient Client(string role, Guid user, Guid? seller = null)
@@ -228,24 +242,37 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
 
     private static Dictionary<string, object?> ApplicationBody(Guid customerId, int? version) => new()
     {
-        ["shopName"] = "Layout test shop", ["phone"] = "0901234567",
+        ["shopName"] = "Layout test shop",
+        ["phone"] = "0901234567",
         ["contactEmail"] = customerId.ToString("N") + "@example.invalid",
-        ["installationAddress"] = "First branch test address", ["latitude"] = 10.78, ["longitude"] = 106.69,
-        ["bankName"] = "TEST BANK", ["bankHolder"] = "TEST CUSTOMER", ["bankAccountNumber"] = "1234567890",
-        ["walkInSlots"] = 2, ["preorderSlots"] = 2, ["pricingVersion"] = version,
+        ["installationAddress"] = "First branch test address",
+        ["latitude"] = 10.78,
+        ["longitude"] = 106.69,
+        ["bankName"] = "TEST BANK",
+        ["bankHolder"] = "TEST CUSTOMER",
+        ["bankAccountNumber"] = "1234567890",
+        ["walkInSlots"] = 2,
+        ["preorderSlots"] = 2,
+        ["pricingVersion"] = version,
         ["packageId"] = Guid.NewGuid()
     };
 
     private static object Enroll(Guid applicationId) => new
     {
-        code = "K-LAYOUT-" + Guid.NewGuid().ToString("N")[..12], name = "Requested layout test kiosk",
-        hardwareId = "TEST-" + Guid.NewGuid().ToString("N"), mqttClientId = "TEST-" + Guid.NewGuid().ToString("N"),
-        region = "HCM", applicationId
+        code = "K-LAYOUT-" + Guid.NewGuid().ToString("N")[..12],
+        name = "Requested layout test kiosk",
+        hardwareId = "TEST-" + Guid.NewGuid().ToString("N"),
+        mqttClientId = "TEST-" + Guid.NewGuid().ToString("N"),
+        region = "HCM",
+        applicationId
     };
 
     private static object Schedule(Guid technicianId, Guid kioskId) => new
     {
-        technicianId, kioskId, scheduledDate = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd"), timeWindow = "09:00 - 12:00"
+        technicianId,
+        kioskId,
+        scheduledDate = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd"),
+        timeWindow = "09:00 - 12:00"
     };
 
     private static string Zone(Guid kiosk, Guid slot) => $"/api/operations/kiosks/{kiosk}/slots/{slot}/zone";

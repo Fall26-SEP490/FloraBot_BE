@@ -18,38 +18,33 @@ namespace FloraBot.KioskTermination.Tests;
 
 public class KioskTerminationTestFactory : WebApplicationFactory<Program>
 {
-    public string? DatabaseUrl { get; private set; }
-    public string? ValkeyUrl { get; private set; }
+    public string DatabaseUrl { get; }
+    public string ValkeyUrl { get; }
 
     public KioskTerminationTestFactory()
     {
-        DatabaseUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
-        ValkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        DatabaseUrl = RequireDatabaseUrl();
+        ValkeyUrl = RequireValkeyUrl();
+    }
 
-        if (File.Exists("COORDINATOR-TEST-ENV.json"))
+    public static string RequireDatabaseUrl()
+    {
+        var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
+        if (string.IsNullOrWhiteSpace(dbUrl))
         {
-            try
-            {
-                var json = File.ReadAllText("COORDINATOR-TEST-ENV.json");
-                using var doc = JsonDocument.Parse(json);
-                if (string.IsNullOrWhiteSpace(DatabaseUrl) && doc.RootElement.TryGetProperty("database", out var dbProp))
-                {
-                    var dbName = dbProp.GetString();
-                    DatabaseUrl = $"Host=127.0.0.1;Port=55436;Database={dbName};Username=florabot;Password=local-florabot-only";
-                }
-                if (string.IsNullOrWhiteSpace(ValkeyUrl) && doc.RootElement.TryGetProperty("valkey", out var vProp))
-                {
-                    ValkeyUrl = vProp.GetString();
-                }
-            }
-            catch
-            {
-                // Fallback
-            }
+            throw new InvalidOperationException("TEST_DATABASE_URL environment variable is required and must not be empty.");
         }
+        return dbUrl;
+    }
 
-        DatabaseUrl ??= Environment.GetEnvironmentVariable("DATABASE_URL");
-        ValkeyUrl ??= "127.0.0.1:51640,defaultDatabase=11";
+    public static string RequireValkeyUrl()
+    {
+        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        if (string.IsNullOrWhiteSpace(valkeyUrl))
+        {
+            throw new InvalidOperationException("TEST_VALKEY_URL environment variable is required and must not be empty.");
+        }
+        return valkeyUrl;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -57,9 +52,9 @@ public class KioskTerminationTestFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureLogging(logging => logging.ClearProviders().AddConsole());
 
-        var valkeySetting = (ValkeyUrl ?? "127.0.0.1:51640").Contains("abortConnect")
-            ? ValkeyUrl!
-            : $"{ValkeyUrl ?? "127.0.0.1:51640"},abortConnect=false";
+        var valkeySetting = ValkeyUrl.Contains("abortConnect")
+            ? ValkeyUrl
+            : $"{ValkeyUrl},abortConnect=false";
 
         var settings = new Dictionary<string, string?>
         {
@@ -140,7 +135,7 @@ public sealed class KioskTerminationIntegrationTests : IClassFixture<KioskTermin
     {
         Assert.False(
             string.IsNullOrWhiteSpace(_factory.DatabaseUrl),
-            "TEST_DATABASE_URL or COORDINATOR-TEST-ENV.json is required for integration tests.");
+            "TEST_DATABASE_URL is required for integration tests.");
     }
 
     private sealed record TestFixture(

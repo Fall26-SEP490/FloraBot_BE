@@ -36,14 +36,33 @@ public sealed class SellerRefundsStartupFilter : IStartupFilter
 
 public sealed class SellerRefundsTestFactory : WebApplicationFactory<Program>
 {
+    public string DatabaseUrl { get; }
+    public string ValkeyUrl { get; }
+
+    public SellerRefundsTestFactory()
+    {
+        DatabaseUrl = RequireDatabaseUrl();
+        ValkeyUrl = RequireValkeyUrl();
+    }
+
     public static string RequireDatabaseUrl()
     {
         var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
         if (string.IsNullOrWhiteSpace(dbUrl))
         {
-            Assert.Fail("TEST_DATABASE_URL is required for DB tests but was not provided. Absence FAILS as required.");
+            throw new InvalidOperationException("TEST_DATABASE_URL environment variable is required and must not be empty.");
         }
         return dbUrl;
+    }
+
+    public static string RequireValkeyUrl()
+    {
+        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        if (string.IsNullOrWhiteSpace(valkeyUrl))
+        {
+            throw new InvalidOperationException("TEST_VALKEY_URL environment variable is required and must not be empty.");
+        }
+        return valkeyUrl;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -51,14 +70,8 @@ public sealed class SellerRefundsTestFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureLogging(logging => logging.ClearProviders());
 
-        var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
-        if (!string.IsNullOrWhiteSpace(dbUrl))
-        {
-            builder.UseSetting("DATABASE_URL", dbUrl);
-        }
-
-        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL") ?? "127.0.0.1:51640,defaultDatabase=11";
-        builder.UseSetting("VALKEY_URL", valkeyUrl);
+        builder.UseSetting("DATABASE_URL", DatabaseUrl);
+        builder.UseSetting("VALKEY_URL", ValkeyUrl);
 
         builder.UseSetting("JWT_SIGNING_KEY", "test-only-key-at-least-thirty-two-bytes-long-not-production");
         builder.UseSetting("JOBS_ENABLED", "false");
@@ -364,6 +377,112 @@ public sealed class SellerRefundsIntegrationTests : IClassFixture<SellerRefundsT
             var auditCount = (long)(await auditCmd.ExecuteScalarAsync() ?? 0L);
             Assert.True(auditCount >= 1, "Audit record for viewing refund bank details must exist.");
         }
+    }
+
+    [Theory]
+    [InlineData("missing", HttpStatusCode.NotFound)]
+    [InlineData("not-pending", HttpStatusCode.Conflict)]
+    [InlineData("not-approved", HttpStatusCode.Conflict)]
+    [InlineData("no-bank", HttpStatusCode.Conflict)]
+    public async Task SubmitTransfer_Preconditions_ReturnDomainErrorsWithoutReaderFailure(string mode, HttpStatusCode expected)
+    {
+        await using var conn = await OpenDbConnectionAsync();
+
+        var sellerId = Guid.NewGuid();
+        var ownerId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        var parentChargeId = Guid.NewGuid();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+
+        await SeedSellerAsync(conn, sellerId, $"Submit Shop {suffix}", $"09{Random.Shared.Next(10000000, 99999999)}");
+        await SeedUserAsync(conn, ownerId, "Submit Owner", $"subowner-{suffix}@florabot.test", $"09{Random.Shared.Next(10000000, 99999999)}", "SELLER", "ACTIVE", sellerId);
+        await SeedUserAsync(conn, customerId, "Submit Customer", $"subcust-{suffix}@florabot.test", $"09{Random.Shared.Next(10000000, 99999999)}", "CUSTOMER", "ACTIVE");
+
+        var protection = _factory.Services.GetRequiredService<IDataProtectionProvider>();
+        var encryptedAccount = EncryptAccount(protection, "1122334455");
+
+        var checkoutId = Guid.NewGuid();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO ordering.orders (
+                    id, order_code, checkout_id, customer_id, seller_id, kiosk_id,
+                    status, subtotal, discount_amount, total_amount, points_redeemed, points_earned,
+                    tracking_token, refund_bank_name, refund_bank_holder, refund_bank_account_enc,
+                    created_at, updated_at, completed_at
+                ) VALUES (
+                    @orderId, @orderCode, @checkoutId, @customerId, @sellerId, '40000000-0000-0000-0000-000000000001'::uuid,
+                    'COMPLETED', 100000, 0, 100000, 0, 0,
+                    @trackingToken, 'ACB', 'LE THI C', @encAccount,
+                    public.app_now(), public.app_now(), public.app_now()
+                );
+
+                INSERT INTO payment.payments (
+                    id, kind, purpose, checkout_id, order_id, gateway, idempotency_key,
+                    amount, status, paid_at, funding_provenance, is_direct_receipt, created_at, updated_at
+                ) VALUES (
+                    @parentChargeId, 'CHARGE', 'ORDER_CHECKOUT', @checkoutId, @orderId, 'PAYOS', @chargeIdem,
+                    100000, 'SUCCEEDED', public.app_now(), 'SELLER_DIRECT', true, public.app_now(), public.app_now()
+                );
+
+                INSERT INTO payment.payments (
+                    id, kind, purpose, checkout_id, order_id, parent_payment_id, gateway, idempotency_key,
+                    amount, status, approved_by, reason, funding_provenance, is_direct_receipt, created_at, updated_at
+                ) VALUES (
+                    @refundId, 'REFUND', 'ORDER_CHECKOUT', @checkoutId, @orderId, @parentChargeId, 'MANUAL', @refIdem,
+                    100000, 'PENDING', '10000000-0000-0000-0000-000000000001'::uuid, 'Direct refund test',
+                    'SELLER_DIRECT', true, public.app_now(), public.app_now()
+                );
+                """;
+            cmd.Parameters.AddWithValue("orderId", orderId);
+            cmd.Parameters.AddWithValue("orderCode", $"FB-SUB-{suffix}");
+            cmd.Parameters.AddWithValue("checkoutId", checkoutId);
+            cmd.Parameters.AddWithValue("customerId", customerId);
+            cmd.Parameters.AddWithValue("sellerId", sellerId);
+            cmd.Parameters.AddWithValue("trackingToken", $"trk-sub-{suffix}");
+            cmd.Parameters.AddWithValue("encAccount", encryptedAccount);
+            cmd.Parameters.AddWithValue("parentChargeId", parentChargeId);
+            cmd.Parameters.AddWithValue("chargeIdem", $"chg-sub-{suffix}");
+            cmd.Parameters.AddWithValue("refundId", refundId);
+            cmd.Parameters.AddWithValue("refIdem", $"ref-sub-{suffix}");
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var targetRefundId = mode == "missing" ? Guid.NewGuid() : refundId;
+        await using (var condition = conn.CreateCommand())
+        {
+            condition.CommandText = mode switch
+            {
+                "not-pending" => "UPDATE payment.payments SET status='FAILED' WHERE id=@id",
+                "not-approved" => "UPDATE payment.payments SET approved_by=NULL WHERE id=@id",
+                "no-bank" => "UPDATE ordering.orders SET refund_bank_name=NULL, refund_bank_holder=NULL, refund_bank_account_enc=NULL WHERE id=@id",
+                _ => "SELECT 1 WHERE @id IS NOT NULL"
+            };
+            condition.Parameters.AddWithValue("id", mode == "no-bank" ? orderId : refundId);
+            await condition.ExecuteNonQueryAsync();
+        }
+
+        // Issue a correctly bound test ticket so validation reaches the guarded database lookup.
+        var privateEvidence = _factory.Services.GetRequiredService<PrivateEvidence>();
+        var binding = $"seller_refund:{ownerId}:{sellerId}:{targetRefundId}";
+        var verifiedMedia = new VerifiedMedia($"https://res.cloudinary.com/demo/image/upload/proof-{suffix}.jpg", $"proof-{suffix}", "image/jpeg", 1024, "abcd1234abcd1234");
+        var ticketResp = privateEvidence.Issue("seller_direct_refund", binding, verifiedMedia);
+
+        using var client = _factory.CreateClient();
+        var token = _factory.CreateToken(ownerId, "SELLER", sellerId);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        using var response = await client.PostAsJsonAsync(
+            $"/api/sellers/{sellerId}/refunds/{targetRefundId}/submit-transfer",
+            new SellerSubmitTransferRequest(100000, "VND", "ACB", "LE THI C", "1122334455",
+                $"TXN-{suffix}", DateTimeOffset.UtcNow.AddMinutes(-5), ticketResp.Reference));
+        Assert.Equal(expected, response.StatusCode);
+        await using var verify = conn.CreateCommand();
+        verify.CommandText = "SELECT count(*) FROM payment.seller_refund_transfers WHERE refund_id=@id";
+        verify.Parameters.AddWithValue("id", refundId);
+        Assert.Equal(0L, (long)(await verify.ExecuteScalarAsync())!);
     }
 
     [Fact]

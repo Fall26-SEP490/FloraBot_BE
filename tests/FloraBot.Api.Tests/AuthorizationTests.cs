@@ -87,7 +87,9 @@ public sealed class AuthorizationTests(ApiFactory factory) : IClassFixture<ApiFa
     {
         _ = factory.CreateClient();
         var allowed = new HashSet<string> { "/api/kiosk-packages", "/api/kiosk-locations", "/api/shop/catalog", "/api/auth/config", "/api/auth/google", "/api/auth/register", "/api/auth/register/verify", "/api/auth/forgot-password", "/api/auth/reset-password", "/health", "/api/auth/login", "/api/auth/admin/login", "/api/auth/refresh", "/api/auth/logout", "/api/packages", "/api/kiosks",
-            "/api/receipts/lookup", "/api/receipts/{orderId:guid}/evidence", "/api/receipts/flows/open_dispute", "/api/receipts/flows/submit_refund_info", "/api/sellers", "/api/payments/webhook" };
+            "/api/receipts/lookup", "/api/receipts/{orderId:guid}/evidence", "/api/receipts/flows/open_dispute", "/api/receipts/flows/submit_refund_info", "/api/sellers", "/api/payments/webhook",
+            "/api/payments/channels/{versionId:guid}/webhook", "/api/kiosks/{kioskId:guid}/preorder-availability",
+            "/api/kiosk-support/{kioskId:guid}", "/api/kiosk-support/{kioskId:guid}/device" };
         var routes = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
         foreach (var route in routes.Where(r => r.Metadata.GetMetadata<IAllowAnonymous>() is not null)) Assert.Contains(route.RoutePattern.RawText!, allowed);
         foreach (var route in routes.Where(r => r.Metadata.GetMetadata<IAllowAnonymous>() is null)) Assert.NotEmpty(route.Metadata.GetOrderedMetadata<IAuthorizeData>());

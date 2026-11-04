@@ -14,14 +14,33 @@ namespace FloraBot.ShopLoyalty.Tests;
 
 public sealed class ShopLoyaltyTestFactory : WebApplicationFactory<Program>
 {
+    public string DatabaseUrl { get; }
+    public string ValkeyUrl { get; }
+
+    public ShopLoyaltyTestFactory()
+    {
+        DatabaseUrl = RequireDatabaseUrl();
+        ValkeyUrl = RequireValkeyUrl();
+    }
+
     public static string RequireDatabaseUrl()
     {
         var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
         if (string.IsNullOrWhiteSpace(dbUrl))
         {
-            Assert.Fail("TEST_DATABASE_URL is required for DB tests but was not provided. Absence FAILS as required.");
+            throw new InvalidOperationException("TEST_DATABASE_URL environment variable is required and must not be empty.");
         }
         return dbUrl;
+    }
+
+    public static string RequireValkeyUrl()
+    {
+        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL");
+        if (string.IsNullOrWhiteSpace(valkeyUrl))
+        {
+            throw new InvalidOperationException("TEST_VALKEY_URL environment variable is required and must not be empty.");
+        }
+        return valkeyUrl;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -29,14 +48,8 @@ public sealed class ShopLoyaltyTestFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureLogging(logging => logging.ClearProviders());
 
-        var dbUrl = Environment.GetEnvironmentVariable("TEST_DATABASE_URL");
-        if (!string.IsNullOrWhiteSpace(dbUrl))
-        {
-            builder.UseSetting("DATABASE_URL", dbUrl);
-        }
-
-        var valkeyUrl = Environment.GetEnvironmentVariable("TEST_VALKEY_URL") ?? "127.0.0.1:51640,defaultDatabase=11";
-        builder.UseSetting("VALKEY_URL", valkeyUrl);
+        builder.UseSetting("DATABASE_URL", DatabaseUrl);
+        builder.UseSetting("VALKEY_URL", ValkeyUrl);
 
         builder.UseSetting("JWT_SIGNING_KEY", "test-only-key-at-least-thirty-two-bytes-long-not-production");
         builder.UseSetting("JOBS_ENABLED", "false");

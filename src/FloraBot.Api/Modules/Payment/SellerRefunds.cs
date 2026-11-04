@@ -243,7 +243,8 @@ public static class SellerRefunds
                     }
 
                     var canAccessBank = isApproved && pStatus == "PENDING" && hasBank;
-                    var canSubmit = isApproved && pStatus == "PENDING" && hasBank && (sub is null || sub.Status == "REJECTED");
+                    // Only permit submission when no previous submission exists (resubmission not supported)
+                    var canSubmit = isApproved && pStatus == "PENDING" && hasBank && sub is null;
 
                     detail = new SellerRefundDetailResponse(
                         reader.GetGuid(0),
@@ -540,7 +541,7 @@ public static class SellerRefunds
                 await using var reader = await cmd.ExecuteReaderAsync(ct);
                 if (!await reader.ReadAsync(ct))
                 {
-                    await reader.CloseAsync(ct);
+                    await reader.CloseAsync();
                     await tx.RollbackAsync(ct);
                     return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Khoản hoàn tiền không tồn tại hoặc không thuộc shop này.");
                 }
@@ -552,21 +553,21 @@ public static class SellerRefunds
 
                 if (pStatus != "PENDING")
                 {
-                    await reader.CloseAsync(ct);
+                    await reader.CloseAsync();
                     await tx.RollbackAsync(ct);
                     return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Khoản hoàn tiền không ở trạng thái chờ chi.");
                 }
 
                 if (!isApproved)
                 {
-                    await reader.CloseAsync(ct);
+                    await reader.CloseAsync();
                     await tx.RollbackAsync(ct);
                     return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Khoản hoàn tiền cần được quản trị viên duyệt trước khi gửi xác nhận chuyển khoản.");
                 }
 
                 if (reader.IsDBNull(5) || reader.IsDBNull(6) || reader.IsDBNull(7))
                 {
-                    await reader.CloseAsync(ct);
+                    await reader.CloseAsync();
                     await tx.RollbackAsync(ct);
                     return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Chưa có thông tin tài khoản nhận hoàn tiền của khách hàng.");
                 }
