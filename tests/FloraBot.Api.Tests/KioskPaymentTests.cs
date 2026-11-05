@@ -9,6 +9,7 @@ using FloraBot.Api.Modules.Payment;
 using FloraBot.Api.Modules.Notify;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
@@ -27,16 +28,38 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
     [InlineData(true, false, false, true, true)]
     public async Task CheckoutPaymentDispensesOnceAndProtectsKioskAndCustomer(bool signedIn, bool failDoor, bool reportFault, bool viaInbox, bool recoverAfterOffline)
     {
+        var seller = Guid.NewGuid();
+        var secretRef = "channel-" + seller.ToString("N");
         var gateway = new Gateway();
         using var app = factory.WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("PAYOS_CLIENT_ID", "test-client"); builder.UseSetting("PAYOS_API_KEY", "test-api");
-            builder.UseSetting("PAYOS_RETURN_URL", "https://example.invalid/return"); builder.UseSetting("PAYOS_CANCEL_URL", "https://example.invalid/cancel");
-            builder.ConfigureServices(services => services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => gateway));
+            builder.UseSetting("PAYOS_CLIENT_ID", "test-client");
+            builder.UseSetting("PAYOS_API_KEY", "test-api");
+            builder.UseSetting("PAYOS_CHECKSUM_KEY", "test-only-checksum-key");
+            builder.UseSetting("PAYOS_RETURN_URL", "https://example.invalid/return");
+            builder.UseSetting("PAYOS_CANCEL_URL", "https://example.invalid/cancel");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:SellerId", seller.ToString());
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", "test-client");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ApiKey", "test-api");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", "test-only-checksum-key");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedBin", "970415");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedAccount", "1010099887766");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedName", "TIEM HOA TEST");
+            builder.ConfigureServices(services =>
+            {
+                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => gateway);
+                services.AddHttpClient("payos").ConfigurePrimaryHttpMessageHandler(() => gateway);
+                services.AddSingleton<IPayOsClientResolver>(sp =>
+                {
+                    var config = sp.GetRequiredService<IConfiguration>();
+                    var httpClient = new HttpClient(gateway) { Timeout = TimeSpan.FromSeconds(10) };
+                    return PayOsClientResolver.ForTest(httpClient, config);
+                });
+            });
         });
         using var scope = app.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
-        var seller = Guid.NewGuid(); var user = Guid.NewGuid(); var product = Guid.NewGuid();
+        var user = Guid.NewGuid(); var product = Guid.NewGuid();
         var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid(); var customer = Guid.NewGuid(); var stranger = Guid.NewGuid();
         var key = "kiosk-test-" + kiosk;
         await using var setup = source.CreateCommand("""
@@ -49,10 +72,17 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             VALUES(@product,@seller,'Test bouquet',350000,48,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash,last_heartbeat_at)
             VALUES(@kiosk,@kiosk::text,'Test kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash,CURRENT_TIMESTAMP);
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
-            """);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone) VALUES(@slot,@kiosk,'A01',0,'WALK_IN');
+            INSERT INTO payment.payment_channel_versions (
+                id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account,
+                expected_bank_name, state, verified_at
+            ) VALUES (
+                public.uuid_v7(), @seller, 1, @secretRef, '970415', '1010099887766',
+                'TIEM HOA TEST', 'ACTIVE', public.app_now()
+            );
+            """ + "\n" + CurrentMainKioskFixture.AssignKioskWithLeaseSql);
         foreach (var (name, id) in new[] { ("seller", seller), ("user", user), ("product", product), ("kiosk", kiosk), ("slot", slot), ("customer", customer), ("stranger", stranger) }) setup.Parameters.AddWithValue(name, id);
+        setup.Parameters.AddWithValue("secretRef", secretRef);
         setup.Parameters.AddWithValue("hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant());
         await setup.ExecuteNonQueryAsync();
         await using var stock = source.CreateCommand("SELECT flow.stock_bouquet(flow.new_batch(),@product,@slot,@user,@qr)");
@@ -80,11 +110,12 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         Assert.Equal(HttpStatusCode.NotFound, (await otherCustomer.GetAsync(path)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await otherCustomer.PostAsync(path + "/payment-link", null)).StatusCode);
         var linkResponse = await client.PostAsync(path + "/payment-link", null);
-        linkResponse.EnsureSuccessStatusCode();
+        var linkBody = await linkResponse.Content.ReadAsStringAsync();
+        Assert.True(linkResponse.IsSuccessStatusCode, $"HTTP {(int)linkResponse.StatusCode}: {linkBody}");
         var link = await linkResponse.Content.ReadFromJsonAsync<PaymentLinkResponse>();
         Assert.Equal(350000, link!.Amount);
         Assert.Equal(new DateTimeOffset(pending.PayBefore).ToUnixTimeSeconds(), gateway.Deadline);
-        var data = JsonSerializer.SerializeToElement(new { orderCode = link.OrderCode, amount = 350000, reference = "test-" + checkout, code = "00" });
+        var data = JsonSerializer.SerializeToElement(new { orderCode = link.OrderCode, amount = 350000, reference = "test-" + checkout, code = "00", accountNumber = "1010099887766" });
         var envelope = new { data, signature = PayOsChecksum.Sign(data, "test-only-checksum-key"), code = "00", desc = "success", success = true };
         if (recoverAfterOffline)
         {
@@ -352,10 +383,10 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         Assert.Equal(slot, pickupEvent.GetProperty("slot_id").GetGuid());
         Assert.Equal(bouquet, pickupEvent.GetProperty("bouquet_id").GetGuid());
         Assert.Equal(DateTimeKind.Utc, pickupEvent.GetProperty("picked_up_at").GetDateTime().Kind);
-        await using var verify = source.CreateCommand("SELECT count(*),sum(amount)::bigint FROM payment.ledger_entries WHERE ref_type='ORDER' AND ref_id=@id");
+        await using var verify = source.CreateCommand("SELECT count(*),coalesce(sum(amount),0)::bigint FROM payment.ledger_entries WHERE ref_type='ORDER' AND ref_id=@id");
         verify.Parameters.AddWithValue("id", paid.Orders[0].Id);
         await using var reader = await verify.ExecuteReaderAsync();
-        Assert.True(await reader.ReadAsync()); Assert.Equal(2, reader.GetInt64(0)); Assert.Equal(0, reader.GetInt64(1));
+        Assert.True(await reader.ReadAsync()); Assert.Equal(0, reader.GetInt64(0)); Assert.Equal(0, reader.GetInt64(1));
         await reader.DisposeAsync();
         stock.Parameters["qr"].Value = "expired-" + product;
         var nextBouquet = (Guid)(await stock.ExecuteScalarAsync())!;
@@ -375,7 +406,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             """);
         expire.Parameters.AddWithValue("id", expiredCheckout);
         await expire.ExecuteNonQueryAsync();
-        var lateData = JsonSerializer.SerializeToElement(new { orderCode = lateCode, amount = 350000, reference = "late-" + expiredCheckout, code = "00" });
+        var lateData = JsonSerializer.SerializeToElement(new { orderCode = lateCode, amount = 350000, reference = "late-" + expiredCheckout, code = "00", accountNumber = "1010099887766" });
         (await client.PostAsJsonAsync("/api/payments/webhook", new { data = lateData, signature = PayOsChecksum.Sign(lateData, "test-only-checksum-key") })).EnsureSuccessStatusCode();
         events.Parameters["id"].Value = expiredCheckout.ToString();
         Assert.Null(await events.ExecuteScalarAsync());
@@ -421,7 +452,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             Assert.Equal(350000, body.GetProperty("amount").GetInt64());
             Deadline = body.GetProperty("expiredAt").GetInt64();
             Assert.InRange(Deadline, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), DateTimeOffset.UtcNow.AddMinutes(8).ToUnixTimeSeconds());
-            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = 350000, status = "PENDING", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07" });
+            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = 350000, status = "PENDING", bin = "970415", accountNumber = "1010099887766", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07" });
             return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { code = "00", data, signature = PayOsChecksum.Sign(data, "test-only-checksum-key") }) };
         }
     }
