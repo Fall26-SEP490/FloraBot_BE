@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using FloraBot.Api.Auth;
 using FloraBot.Api.Data.Entities;
+using FloraBot.Api.Modules.Identity;
 using FloraBot.Api.Modules.Payment;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -147,5 +148,148 @@ public sealed class LoyaltyCheckoutTests(ApiFactory factory) : IClassFixture<Api
             """);
         restored.Parameters.AddWithValue("customer", customer); restored.Parameters.AddWithValue("checkout", checkout);
         restored.Parameters.AddWithValue("kiosk", kiosk); Assert.Equal(true, await restored.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task CustomerPointsEndpoint_ReturnsPerShopBalance_IsolatingGlobalAndOtherShops()
+    {
+        using var scope = factory.Services.CreateScope();
+        var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var tokenService = scope.ServiceProvider.GetRequiredService<TokenService>();
+
+        var customer = Guid.NewGuid();
+        var inactiveCustomer = Guid.NewGuid();
+        var sellerA = Guid.NewGuid();
+        var sellerB = Guid.NewGuid();
+        var kioskA = Guid.NewGuid();
+        var kioskB = Guid.NewGuid();
+        var slotA = Guid.NewGuid();
+        var slotB = Guid.NewGuid();
+        var keyA = "key-a-" + kioskA;
+        var keyB = "key-b-" + kioskB;
+        var hashA = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(keyA)));
+        var hashB = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(keyB)));
+
+        await using var setup = source.CreateCommand("""
+            INSERT INTO identity.sellers(id, shop_name, phone, status, package_id, package_expires_at)
+            VALUES (@sellerA, 'Shop A', '0901111111', 'ACTIVE', '20000000-0000-0000-0000-00000000000a', CURRENT_DATE + 30),
+                   (@sellerB, 'Shop B', '0902222222', 'ACTIVE', '20000000-0000-0000-0000-00000000000a', CURRENT_DATE + 30);
+
+            INSERT INTO identity.users(id, email, full_name, role, status, loyalty_points)
+            VALUES (@customer, @customer::text || '@example.invalid', 'Customer Active', 'CUSTOMER', 'ACTIVE', 999999),
+                   (@inactiveCustomer, @inactiveCustomer::text || '@example.invalid', 'Customer Inactive', 'CUSTOMER', 'DISABLED', 100000);
+
+            INSERT INTO identity.shop_loyalty_balances(customer_id, seller_id, balance, debt)
+            VALUES (@customer, @sellerA, 300000, 0),
+                   (@customer, @sellerB, 50000, 0);
+
+            INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, api_key_hash)
+            VALUES (@kioskA, @kioskA::text, 'Kiosk A', 'Address A', 'HCM', @kioskA::text, @kioskA::text, 'ONLINE', @hashA),
+                   (@kioskB, @kioskB::text, 'Kiosk B', 'Address B', 'HCM', @kioskB::text, @kioskB::text, 'ONLINE', @hashB);
+
+            INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, zone)
+            VALUES (@slotA, @kioskA, 'A01', 0, 'WALK_IN'),
+                   (@slotB, @kioskB, 'B01', 0, 'WALK_IN');
+
+            SELECT flow.assign_kiosk(@kioskA, @sellerA, '10000000-0000-0000-0000-000000000001');
+            SELECT flow.assign_kiosk(@kioskB, @sellerB, '10000000-0000-0000-0000-000000000001');
+            """);
+        setup.Parameters.AddWithValue("sellerA", sellerA);
+        setup.Parameters.AddWithValue("sellerB", sellerB);
+        setup.Parameters.AddWithValue("customer", customer);
+        setup.Parameters.AddWithValue("inactiveCustomer", inactiveCustomer);
+        setup.Parameters.AddWithValue("kioskA", kioskA);
+        setup.Parameters.AddWithValue("kioskB", kioskB);
+        setup.Parameters.AddWithValue("hashA", hashA);
+        setup.Parameters.AddWithValue("hashB", hashB);
+        setup.Parameters.AddWithValue("slotA", slotA);
+        setup.Parameters.AddWithValue("slotB", slotB);
+        await setup.ExecuteNonQueryAsync();
+
+        var member = new User { Id = customer, Role = "CUSTOMER", FullName = "Customer Active", Status = "ACTIVE" };
+
+        // 1. Visit Kiosk A: should return Shop A balance (300,000), NOT global (999,999) or Shop B (50,000)
+        using var clientA = factory.CreateClient();
+        clientA.DefaultRequestHeaders.Authorization = new("Bearer", tokenService.Issue(member, kioskId: kioskA.ToString()));
+
+        var responseA = await clientA.GetAsync($"/api/kiosks/{kioskA}/customer/points");
+        responseA.EnsureSuccessStatusCode();
+        Assert.True(responseA.Headers.CacheControl?.NoStore);
+        var pointsA = (await responseA.Content.ReadFromJsonAsync<CustomerPointsResponse>())!;
+        Assert.Equal(300000, pointsA.LoyaltyPoints);
+        await using var capCommand = source.CreateCommand("SELECT flow.cfg('points_max_redeem_percent')");
+        Assert.Equal((decimal)(await capCommand.ExecuteScalarAsync())!, pointsA.MaxRedeemPercent);
+
+        // 2. Visit Kiosk B: should return Shop B balance (50,000)
+        using var clientB = factory.CreateClient();
+        clientB.DefaultRequestHeaders.Authorization = new("Bearer", tokenService.Issue(member, kioskId: kioskB.ToString()));
+
+        var responseB = await clientB.GetAsync($"/api/kiosks/{kioskB}/customer/points");
+        responseB.EnsureSuccessStatusCode();
+        Assert.True(responseB.Headers.CacheControl?.NoStore);
+        var pointsB = (await responseB.Content.ReadFromJsonAsync<CustomerPointsResponse>())!;
+        Assert.Equal(50000, pointsB.LoyaltyPoints);
+
+        // 3. Foreign / Cross-kiosk claim-to-route protection
+        var forbiddenB = await clientA.GetAsync($"/api/kiosks/{kioskB}/customer/points");
+        Assert.Equal(HttpStatusCode.Forbidden, forbiddenB.StatusCode);
+        var forbiddenRandom = await clientA.GetAsync($"/api/kiosks/{Guid.NewGuid()}/customer/points");
+        Assert.Equal(HttpStatusCode.Forbidden, forbiddenRandom.StatusCode);
+
+        // 4. Inactive caller rejected with 401 Unauthorized
+        var inactiveUser = new User { Id = inactiveCustomer, Role = "CUSTOMER", FullName = "Customer Inactive", Status = "DISABLED" };
+        using var inactiveClient = factory.CreateClient();
+        inactiveClient.DefaultRequestHeaders.Authorization = new("Bearer", tokenService.Issue(inactiveUser, kioskId: kioskA.ToString()));
+        var inactiveResponse = await inactiveClient.GetAsync($"/api/kiosks/{kioskA}/customer/points");
+        Assert.Equal(HttpStatusCode.Unauthorized, inactiveResponse.StatusCode);
+
+        // 5. Unauthorized callers rejected
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync($"/api/kiosks/{kioskA}/customer/points")).StatusCode);
+
+        using var device = factory.CreateClient();
+        device.DefaultRequestHeaders.Add("X-Kiosk-Key", keyA);
+        Assert.Equal(HttpStatusCode.Forbidden, (await device.GetAsync($"/api/kiosks/{kioskA}/customer/points")).StatusCode);
+
+        using var admin = factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
+        Assert.Equal(HttpStatusCode.Forbidden, (await admin.GetAsync($"/api/kiosks/{kioskA}/customer/points")).StatusCode);
+
+        // 6. Debt semantics: active debt blocks redemption, available points becomes 0
+        await using var debtCmd = source.CreateCommand("UPDATE identity.shop_loyalty_balances SET debt = 250 WHERE customer_id = @customer AND seller_id = @sellerA");
+        debtCmd.Parameters.AddWithValue("customer", customer);
+        debtCmd.Parameters.AddWithValue("sellerA", sellerA);
+        await debtCmd.ExecuteNonQueryAsync();
+
+        var responseWithDebt = await clientA.GetAsync($"/api/kiosks/{kioskA}/customer/points");
+        responseWithDebt.EnsureSuccessStatusCode();
+        var pointsDebt = (await responseWithDebt.Content.ReadFromJsonAsync<CustomerPointsResponse>())!;
+        Assert.Equal(0, pointsDebt.LoyaltyPoints);
+
+        // Shop B remains isolated and unaffected by Shop A debt
+        var responseBStill50k = await clientB.GetAsync($"/api/kiosks/{kioskB}/customer/points");
+        responseBStill50k.EnsureSuccessStatusCode();
+        Assert.Equal(50000, (await responseBStill50k.Content.ReadFromJsonAsync<CustomerPointsResponse>())!.LoyaltyPoints);
+
+        // 7. SELLER role as buyer supported when visiting kiosk
+        var sellerBuyer = Guid.NewGuid();
+        await using var sellerBuyerCmd = source.CreateCommand("""
+            INSERT INTO identity.users(id, email, full_name, role, status, seller_id, password_hash)
+            VALUES (@id, @id::text || '@example.invalid', 'Seller Buyer', 'SELLER', 'ACTIVE', @sellerB, '!unprovisioned');
+            INSERT INTO identity.shop_loyalty_balances(customer_id, seller_id, balance, debt)
+            VALUES (@id, @sellerA, 75000, 0);
+            """);
+        sellerBuyerCmd.Parameters.AddWithValue("id", sellerBuyer);
+        sellerBuyerCmd.Parameters.AddWithValue("sellerB", sellerB);
+        sellerBuyerCmd.Parameters.AddWithValue("sellerA", sellerA);
+        await sellerBuyerCmd.ExecuteNonQueryAsync();
+
+        var sellerMember = new User { Id = sellerBuyer, Role = "SELLER", FullName = "Seller Buyer", SellerId = sellerB, Status = "ACTIVE", PasswordHash = "!unprovisioned" };
+        using var sellerClient = factory.CreateClient();
+        sellerClient.DefaultRequestHeaders.Authorization = new("Bearer", tokenService.Issue(sellerMember, kioskId: kioskA.ToString()));
+
+        var sellerPointsResponse = await sellerClient.GetAsync($"/api/kiosks/{kioskA}/customer/points");
+        sellerPointsResponse.EnsureSuccessStatusCode();
+        Assert.Equal(75000, (await sellerPointsResponse.Content.ReadFromJsonAsync<CustomerPointsResponse>())!.LoyaltyPoints);
     }
 }

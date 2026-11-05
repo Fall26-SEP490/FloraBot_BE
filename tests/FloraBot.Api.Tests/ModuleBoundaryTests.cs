@@ -46,6 +46,7 @@ public sealed class ModuleBoundaryTests
             "FloraBot.Api.Modules.Payment.PayOsWebhookProcessor",
             "FloraBot.Api.Modules.Payment.PayOsClientResolver",
             "FloraBot.Api.Modules.Identity.ShopLoyalty",
+            "FloraBot.Api.Modules.Identity.CustomerPoints",
             "FloraBot.Api.Modules.Ordering.PreorderCapacity",
             "FloraBot.Api.Modules.KioskOps.KioskTerminations"
         ];
