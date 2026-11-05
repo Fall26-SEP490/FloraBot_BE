@@ -39,26 +39,76 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         return client;
     }
 
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private async Task<KioskSlotPricingResponse> EnsurePricingConfiguredAsync()
+    {
+        using var client = _factory.CreateClient();
+        var res = await client.GetAsync("/api/kiosk-packages");
+        var body = await res.Content.ReadAsStringAsync();
+        Assert.True(res.IsSuccessStatusCode, $"HTTP {(int)res.StatusCode}: {body}");
+        var pricing = JsonSerializer.Deserialize<KioskSlotPricingResponse>(body, JsonOptions);
+        Assert.NotNull(pricing);
+        if (pricing.Configured && pricing.WalkInAnnualPrice is > 0 && pricing.PreorderAnnualPrice is > 0)
+        {
+            return pricing;
+        }
+
+        using var scope = _factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var managerId = Guid.NewGuid();
+        await using var cmd = data.CreateCommand("""
+            INSERT INTO identity.users(id, email, full_name, password_hash, role, status)
+            VALUES(@id, @email, 'Pricing Manager', '!hash', 'OPERATIONS_MANAGER', 'ACTIVE')
+            ON CONFLICT (id) DO NOTHING;
+            """);
+        cmd.Parameters.AddWithValue("id", managerId);
+        cmd.Parameters.AddWithValue("email", $"pricing-mgr-{managerId:N}@example.invalid");
+        await cmd.ExecuteNonQueryAsync();
+
+        using var mgrClient = CreateClientForRole("OPERATIONS_MANAGER", userId: managerId);
+        var putRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
+            5000, 5000, pricing.Version));
+        var putBody = await putRes.Content.ReadAsStringAsync();
+        Assert.True(putRes.IsSuccessStatusCode, $"HTTP {(int)putRes.StatusCode}: {putBody}");
+        var configured = JsonSerializer.Deserialize<KioskSlotPricingResponse>(putBody, JsonOptions);
+        Assert.NotNull(configured);
+        return configured;
+    }
+
+    private static async Task<KioskApplicationResponse> ReadApplicationAsync(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, $"HTTP {(int)response.StatusCode}: {body}");
+        var app = JsonSerializer.Deserialize<KioskApplicationResponse>(body, JsonOptions);
+        Assert.NotNull(app);
+        return app;
+    }
+
     [Fact]
     public async Task PackageCatalog_ExposesActiveAnnualPackagesWithExactCapacities()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         using var client = _factory.CreateClient();
-        var packages = await client.GetFromJsonAsync<List<KioskPackageResponse>>("/api/kiosk-packages");
-        Assert.NotNull(packages);
-        Assert.True(packages.Count >= 3);
+        var response = await client.GetAsync("/api/kiosk-packages");
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, $"HTTP {(int)response.StatusCode}: {body}");
 
-        var trial = packages.Single(x => x.Name == "Trial");
-        Assert.Equal(10000, trial.AnnualFee);
-        Assert.Equal(2, trial.TotalSlots);
-        Assert.Equal(12, trial.TermMonths);
-
-        var pro = packages.Single(x => x.Name == "Pro");
-        Assert.Equal(15000, pro.AnnualFee);
-        Assert.Equal(8, pro.TotalSlots);
-
-        var max = packages.Single(x => x.Name == "Max");
-        Assert.Equal(20000, max.AnnualFee);
-        Assert.Equal(12, max.TotalSlots);
+        var result = JsonSerializer.Deserialize<KioskSlotPricingResponse>(body, JsonOptions);
+        Assert.NotNull(result);
+        Assert.True(result.Configured);
+        Assert.NotNull(result.WalkInAnnualPrice);
+        Assert.NotNull(result.PreorderAnnualPrice);
+        Assert.True(result.WalkInAnnualPrice > 0);
+        Assert.True(result.PreorderAnnualPrice > 0);
+        Assert.True(result.Version > 0);
+        Assert.Equal(12, result.TermMonths);
+        Assert.Equal(1, result.MinSlots);
+        Assert.Equal(50, result.MaxSlots);
     }
 
     [Theory]
@@ -100,6 +150,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Customer_CanCreateApplication_AndEnforcesOneInFlightRule()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         using var client = CreateClientForRole("CUSTOMER", userId: customerId);
         using var scope = _factory.Services.CreateScope();
@@ -112,10 +163,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUser.Parameters.AddWithValue("email", $"test-cust-{customerId:N}@example.invalid");
         await insertUser.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id,
+            trialPkg?.Id,
             "Tiệm Hoa Tươi Tắn",
             "0901234567",
             "contact@tiemhoa.vn",
@@ -124,17 +175,23 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             106.6712,
             "Vietcombank",
             "LE THI C",
-            "0071009876543"
+            "0071009876543",
+            WalkInSlots: 1,
+            PreorderSlots: 1,
+            PricingVersion: pricing.Version
         );
 
         var response = await client.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        response.EnsureSuccessStatusCode();
-        var created = await response.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(created);
+        var created = await ReadApplicationAsync(response);
         Assert.Equal("AWAITING_PAYMENT", created.Status);
         Assert.Equal("Tiệm Hoa Tươi Tắn", created.ShopName);
         Assert.Equal("6543", created.BankAccountSuffix); // Masked suffix
         Assert.True(created.CanVoluntaryCancel);
+        Assert.Equal(1, created.WalkInSlots);
+        Assert.Equal(1, created.PreorderSlots);
+        Assert.Equal(2, created.TotalSlots);
+        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        Assert.Equal(expectedFee, created.AnnualFee);
 
         // Second creation for same customer should fail with 409 Conflict
         var secondResponse = await client.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
@@ -142,15 +199,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Fetch current application
         var currentResponse = await client.GetAsync("/api/member/kiosk-applications/current");
-        currentResponse.EnsureSuccessStatusCode();
-        var current = await currentResponse.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(current);
+        var current = await ReadApplicationAsync(currentResponse);
         Assert.Equal(created.Id, current.Id);
     }
 
     [Fact]
     public async Task Customer_CanVoluntaryCancel_UnpaidApplication()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         using var client = CreateClientForRole("CUSTOMER", userId: customerId);
         using var scope = _factory.Services.CreateScope();
@@ -162,10 +218,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUser.Parameters.AddWithValue("email", $"cancel-cust-{customerId:N}@example.invalid");
         await insertUser.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id,
+            trialPkg?.Id,
             "Shop Huỷ",
             "0909888777",
             "cancel@shop.vn",
@@ -174,24 +230,25 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             106.70,
             "Techcombank",
             "HOANG VAN D",
-            "19030012345678"
+            "19030012345678",
+            WalkInSlots: 1,
+            PreorderSlots: 1,
+            PricingVersion: pricing.Version
         );
 
         var createRes = await client.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        createRes.EnsureSuccessStatusCode();
-        var created = (await createRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var created = await ReadApplicationAsync(createRes);
 
         // Cancel unpaid application
         var cancelRes = await client.PostAsJsonAsync($"/api/member/kiosk-applications/{created.Id}/cancel", new CancelKioskApplicationRequest("Đổi kế hoạch"));
-        cancelRes.EnsureSuccessStatusCode();
-        var cancelled = await cancelRes.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(cancelled);
+        var cancelled = await ReadApplicationAsync(cancelRes);
         Assert.Equal("CANCELLED", cancelled.Status);
     }
 
     [Fact]
     public async Task LatePayment_AfterCancel_RoutesToRefundRequired_NeverReactivates()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         using var client = CreateClientForRole("CUSTOMER", userId: customerId);
         using var scope = _factory.Services.CreateScope();
@@ -203,19 +260,20 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUser.Parameters.AddWithValue("email", $"late-cust-{customerId:N}@example.invalid");
         await insertUser.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Late Pay", "0911222333", "late@shop.vn", "789 Điện Biên Phủ", 10.79, 106.69, "MBBank", "VU THI E", "0900123456789"
+            trialPkg?.Id, "Shop Late Pay", "0911222333", "late@shop.vn", "789 Điện Biên Phủ", 10.79, 106.69, "MBBank", "VU THI E", "0900123456789",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         );
 
         var createRes = await client.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        createRes.EnsureSuccessStatusCode();
-        var created = (await createRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var created = await ReadApplicationAsync(createRes);
 
         // Cancel while unpaid
         var cancelRes = await client.PostAsJsonAsync($"/api/member/kiosk-applications/{created.Id}/cancel", new CancelKioskApplicationRequest("Hủy trước khi trả"));
-        cancelRes.EnsureSuccessStatusCode();
+        var cancelBody = await cancelRes.Content.ReadAsStringAsync();
+        Assert.True(cancelRes.IsSuccessStatusCode, $"HTTP {(int)cancelRes.StatusCode}: {cancelBody}");
 
         // Late payment arrives via flow.kiosk_application_paid
         await using var latePayment = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -236,6 +294,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task ManagerContactConfirm_LocksVoluntaryCancellation()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         var managerId = Guid.NewGuid();
         using var custClient = CreateClientForRole("CUSTOMER", userId: customerId);
@@ -256,15 +315,15 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("memail", $"confirm-mgr-{managerId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Khoá Hủy", "0933444555", "lock@shop.vn", "100 CMT8, Q3", 10.77, 106.68, "ACB", "TRAN VAN F", "888899991111"
+            trialPkg?.Id, "Shop Khoá Hủy", "0933444555", "lock@shop.vn", "100 CMT8, Q3", 10.77, 106.68, "ACB", "TRAN VAN F", "888899991111",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         );
 
         var createRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        createRes.EnsureSuccessStatusCode();
-        var created = (await createRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var created = await ReadApplicationAsync(createRes);
 
         // Simulate payment settled -> PAID_REVIEW
         await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -274,9 +333,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Manager confirms contact
         var confirmRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{created.Id}/confirm", new ConfirmKioskApplicationRequest("Đã gọi điện xác nhận mặt bằng"));
-        confirmRes.EnsureSuccessStatusCode();
-        var confirmed = await confirmRes.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(confirmed);
+        var confirmed = await ReadApplicationAsync(confirmRes);
         Assert.Equal("CONFIRMED", confirmed.Status);
         Assert.False(confirmed.CanVoluntaryCancel);
 
@@ -319,6 +376,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Handover_ExecutesAtomicActivation_PromotesToSeller_AssignsKioskAndYearSubscription()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         var managerId = Guid.NewGuid();
         var techId = Guid.NewGuid();
@@ -344,42 +402,47 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("temail", $"ho-tech-{techId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // 1. Enroll a test kiosk with the Trial total capacity; Seller sets zones later.
-        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-TEST-{Guid.NewGuid():N}"[..12], "Kiosk Test Handover", $"ESP32-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        enrollRes.EnsureSuccessStatusCode();
-        var enrolledKiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
-
-        // 2. Create customer application
+        // 1. Create customer application with 1 walk-in + 1 preorder slot
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id, "Hoa Lan Hoàng Gia", "0977888999", "lan@hoanggia.vn", "999 An Dương Vương, Q5", 10.75, 106.66, "VietinBank", "NGUYEN THI G", "1010099887766"
+            trialPkg?.Id, "Hoa Lan Hoàng Gia", "0977888999", "lan@hoanggia.vn", "999 An Dương Vương, Q5", 10.75, 106.66, "VietinBank", "NGUYEN THI G", "1010099887766",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         );
         var createRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        createRes.EnsureSuccessStatusCode();
-        var created = (await createRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var created = await ReadApplicationAsync(createRes);
+        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
 
-        // 3. Settle payment -> PAID_REVIEW
+        // 2. Settle payment -> PAID_REVIEW
         await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
         pay.Parameters.AddWithValue("pid", created.PaymentId!.Value);
         pay.Parameters.AddWithValue("txn", $"PAYOS-HO-{Guid.NewGuid():N}");
         await pay.ExecuteNonQueryAsync();
 
-        // 4. Manager confirms contact -> CONFIRMED
+        // 3. Manager confirms contact -> CONFIRMED
         var confirmRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{created.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin thành công"));
-        confirmRes.EnsureSuccessStatusCode();
+        var confirmed = await ReadApplicationAsync(confirmRes);
+        Assert.Equal("CONFIRMED", confirmed.Status);
+
+        // 4. Enroll test kiosk for the confirmed application
+        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-TEST-{Guid.NewGuid():N}"[..12], "Kiosk Test Handover", $"ESP32-{Guid.NewGuid():N}"[..16], null, "HCM", 2, created.Id
+        ));
+        var enrollBody = await enrollRes.Content.ReadAsStringAsync();
+        Assert.True(enrollRes.IsSuccessStatusCode, $"HTTP {(int)enrollRes.StatusCode}: {enrollBody}");
+        var enrolledKiosk = JsonSerializer.Deserialize<EnrollKioskResponse>(enrollBody, JsonOptions)!;
 
         // 5. Manager schedules technician and kiosk -> SCHEDULED
         var schedRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{created.Id}/schedule", new ScheduleKioskApplicationRequest(
             techId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)), "09:00 - 12:00", enrolledKiosk.Id
         ));
-        schedRes.EnsureSuccessStatusCode();
+        var scheduled = await ReadApplicationAsync(schedRes);
+        Assert.Equal("SCHEDULED", scheduled.Status);
 
         // 6. Technician starts visit -> INSTALLING
         var startRes = await techClient.PostAsJsonAsync($"/api/staff/kiosk-installations/{created.Id}/start", new { });
-        startRes.EnsureSuccessStatusCode();
+        var startBody = await startRes.Content.ReadAsStringAsync();
+        Assert.True(startRes.IsSuccessStatusCode, $"HTTP {(int)startRes.StatusCode}: {startBody}");
 
         // 7. Technician attaches photo evidence directly via flow helper
         await using var attachEvidence = source.CreateCommand("SELECT flow.attach_kiosk_evidence(@id, @appId, 'https://res.cloudinary.com/demo/image/upload/sample.jpg', 'image/jpeg', 1024, 'dummyhash', @actor)");
@@ -390,12 +453,12 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // 8. Technician submits installation report -> AWAITING_HANDOVER
         var submitRes = await techClient.PostAsJsonAsync($"/api/staff/kiosk-installations/{created.Id}/submit", new SubmitInstallationReportRequest("Đã lắp đặt hoàn tất khung tủ và cảm biến"));
-        submitRes.EnsureSuccessStatusCode();
+        var submitBody = await submitRes.Content.ReadAsStringAsync();
+        Assert.True(submitRes.IsSuccessStatusCode, $"HTTP {(int)submitRes.StatusCode}: {submitBody}");
 
         // 9. Manager confirms handover -> ACTIVE
         var handoverRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{created.Id}/handover", new { });
-        handoverRes.EnsureSuccessStatusCode();
-        var activeApp = (await handoverRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var activeApp = await ReadApplicationAsync(handoverRes);
         Assert.Equal("ACTIVE", activeApp.Status);
         Assert.NotNull(activeApp.SellerId);
 
@@ -416,7 +479,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         // Active subscription for 1 calendar year created
         var sub = await db.Subscriptions.AsNoTracking().SingleAsync(x => x.SellerId == activeApp.SellerId);
         Assert.Equal("ACTIVE", sub.Status);
-        Assert.Equal(trialPkg.AnnualFee, sub.Price);
+        Assert.Equal(expectedFee, sub.Price);
         Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow.AddYears(1)), sub.PeriodTo);
     }
 
@@ -516,6 +579,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task RawJsonCoordinates_Validation_RejectsMissingSingleNullAndOutOfRange_AllowsZeroZero()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         using var client = CreateClientForRole("CUSTOMER", userId: customerId);
         using var scope = _factory.Services.CreateScope();
@@ -538,7 +602,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             installationAddress = "Address",
             bankName = "VCB",
             bankHolder = "HOLDER",
-            bankAccountNumber = "123456"
+            bankAccountNumber = "123456",
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = pricing.Version
         });
         var res1 = await client.PostAsync("/api/member/kiosk-applications", new StringContent(jsonNoCoords, Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, res1.StatusCode);
@@ -554,7 +621,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             latitude = 10.7,
             bankName = "VCB",
             bankHolder = "HOLDER",
-            bankAccountNumber = "123456"
+            bankAccountNumber = "123456",
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = pricing.Version
         });
         var res2 = await client.PostAsync("/api/member/kiosk-applications", new StringContent(jsonLatOnly, Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, res2.StatusCode);
@@ -571,7 +641,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             longitude = 106.7,
             bankName = "VCB",
             bankHolder = "HOLDER",
-            bankAccountNumber = "123456"
+            bankAccountNumber = "123456",
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = pricing.Version
         });
         var res3 = await client.PostAsync("/api/member/kiosk-applications", new StringContent(jsonNullLat, Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, res3.StatusCode);
@@ -588,7 +661,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             longitude = 106.7,
             bankName = "VCB",
             bankHolder = "HOLDER",
-            bankAccountNumber = "123456"
+            bankAccountNumber = "123456",
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = pricing.Version
         });
         var res4 = await client.PostAsync("/api/member/kiosk-applications", new StringContent(jsonOutLat, Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, res4.StatusCode);
@@ -605,21 +681,25 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             longitude = 0.0,
             bankName = "VCB",
             bankHolder = "HOLDER",
-            bankAccountNumber = "123456"
+            bankAccountNumber = "123456",
+            walkInSlots = 1,
+            preorderSlots = 1,
+            pricingVersion = pricing.Version
         });
         var res5 = await client.PostAsync("/api/member/kiosk-applications", new StringContent(jsonZeroZero, Encoding.UTF8, "application/json"));
-        Assert.Equal(HttpStatusCode.Created, res5.StatusCode);
+        var res5Body = await res5.Content.ReadAsStringAsync();
+        Assert.True(res5.StatusCode == HttpStatusCode.Created, $"Expected 201 Created, received {(int)res5.StatusCode}: {res5Body}");
     }
 
     [Fact]
     public async Task ImmutablePackageSnapshot_PreservesPurchasedTerms_WhenCatalogMutatesLater()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         var managerId = Guid.NewGuid();
         using var custClient = CreateClientForRole("CUSTOMER", userId: customerId);
         using var mgrClient = CreateClientForRole("OPERATIONS_MANAGER", userId: managerId);
         using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<FloraDbContext>();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
 
         await using var insertUsers = source.CreateCommand("""
@@ -634,56 +714,79 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("me", $"snap-m-{managerId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var originalWalk = pricing.WalkInAnnualPrice!.Value;
+        var originalPre = pricing.PreorderAnnualPrice!.Value;
+        var originalVersion = pricing.Version;
 
         var appRequest = new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Snapshot Test", "0901112233", "snap@test.vn", "123 Snap St", 10.5, 106.5, "VCB", "CHỦ", "11223344"
+            null, "Shop Snapshot Test", "0901112233", "snap@test.vn", "123 Snap St", 10.5, 106.5, "VCB", "CHỦ", "11223344",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: originalVersion
         );
         var createRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
-        createRes.EnsureSuccessStatusCode();
-        var created = (await createRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var created = await ReadApplicationAsync(createRes);
 
-        Assert.Equal(10000, created.AnnualFee);
+        var expectedFee = originalWalk + originalPre;
+        Assert.Equal(expectedFee, created.AnnualFee);
         Assert.Equal(2, created.TotalSlots);
-        Assert.Equal("Trial", created.PackageName);
+        Assert.Equal(originalVersion, created.PricingVersion);
+        Assert.Equal(originalWalk, created.WalkInAnnualPrice);
+        Assert.Equal(originalPre, created.PreorderAnnualPrice);
 
-        // Mutate catalog package in DB: price 999999, max_slots 50
-        await using var mutatePkg = source.CreateCommand("UPDATE identity.subscription_packages SET annual_fee=999999, max_slots=50 WHERE id=@id");
-        mutatePkg.Parameters.AddWithValue("id", trialPkg.Id);
-        await mutatePkg.ExecuteNonQueryAsync();
+        // Mutate authoritative per-slot pricing via OperationsManager PUT kiosk-pricing using pricing version
+        var mutatedWalk = originalWalk + 20000;
+        var mutatedPre = originalPre + 30000;
+        var updatePricingRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
+            mutatedWalk, mutatedPre, originalVersion));
+        var updateBody = await updatePricingRes.Content.ReadAsStringAsync();
+        Assert.True(updatePricingRes.IsSuccessStatusCode, $"HTTP {(int)updatePricingRes.StatusCode}: {updateBody}");
+        var mutatedPricing = JsonSerializer.Deserialize<KioskSlotPricingResponse>(updateBody, JsonOptions);
+        Assert.NotNull(mutatedPricing);
+        Assert.Equal(mutatedWalk, mutatedPricing.WalkInAnnualPrice);
+        Assert.Equal(mutatedPre, mutatedPricing.PreorderAnnualPrice);
+        Assert.True(mutatedPricing.Version > originalVersion);
+
+        // Assert new pricing calculation differs from snapshot fee
+        var newCalculatedFee = mutatedWalk + mutatedPre;
+        Assert.NotEqual(expectedFee, newCalculatedFee);
 
         try
         {
             // Verify current customer endpoint returns original snapshot
             var curRes = await custClient.GetAsync("/api/member/kiosk-applications/current");
-            curRes.EnsureSuccessStatusCode();
-            var curApp = await curRes.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-            Assert.NotNull(curApp);
-            Assert.Equal(10000, curApp.AnnualFee);
+            var curApp = await ReadApplicationAsync(curRes);
+            Assert.Equal(expectedFee, curApp.AnnualFee);
             Assert.Equal(2, curApp.TotalSlots);
-            Assert.Equal("Trial", curApp.PackageName);
+            Assert.Equal(originalVersion, curApp.PricingVersion);
+            Assert.Equal(originalWalk, curApp.WalkInAnnualPrice);
+            Assert.Equal(originalPre, curApp.PreorderAnnualPrice);
 
             // Verify manager list returns original snapshot
             var mgrListRes = await mgrClient.GetAsync($"/api/operations/kiosk-applications?status=AWAITING_PAYMENT");
-            mgrListRes.EnsureSuccessStatusCode();
-            var page = await mgrListRes.Content.ReadFromJsonAsync<KioskApplicationPage>();
+            var mgrBody = await mgrListRes.Content.ReadAsStringAsync();
+            Assert.True(mgrListRes.IsSuccessStatusCode, $"HTTP {(int)mgrListRes.StatusCode}: {mgrBody}");
+            var page = JsonSerializer.Deserialize<KioskApplicationPage>(mgrBody, JsonOptions);
             Assert.NotNull(page);
             var item = page.Items.Single(x => x.Id == created.Id);
-            Assert.Equal(10000, item.AnnualFee);
+            Assert.Equal(expectedFee, item.AnnualFee);
             Assert.Equal(2, item.TotalSlots);
+            Assert.Equal(originalVersion, item.PricingVersion);
+            Assert.Equal(originalWalk, item.WalkInAnnualPrice);
+            Assert.Equal(originalPre, item.PreorderAnnualPrice);
         }
         finally
         {
-            // Restore catalog package
-            await using var restorePkg = source.CreateCommand("UPDATE identity.subscription_packages SET annual_fee=10000, max_slots=2 WHERE id=@id");
-            restorePkg.Parameters.AddWithValue("id", trialPkg.Id);
-            await restorePkg.ExecuteNonQueryAsync();
+            // Restore original prices via API using new version
+            var restoreRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
+                originalWalk, originalPre, mutatedPricing.Version));
+            var restoreBody = await restoreRes.Content.ReadAsStringAsync();
+            Assert.True(restoreRes.IsSuccessStatusCode, $"HTTP {(int)restoreRes.StatusCode}: {restoreBody}");
         }
     }
 
     [Fact]
     public async Task Schedule_RejectsOverlappingTechnicianJobs_AndConcurrentDoubleAllocation()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var managerId = Guid.NewGuid();
         var techId = Guid.NewGuid();
         var cust1 = Guid.NewGuid();
@@ -713,24 +816,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("ce2", $"scust2-{cust2:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
-        // Enroll two kiosks with two unclassified physical slots each.
-        var k1Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-SCH1-{Guid.NewGuid():N}"[..12], "Kiosk Sched 1", $"ESP-S1-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        var kiosk1 = (await k1Res.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
-
-        var k2Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-SCH2-{Guid.NewGuid():N}"[..12], "Kiosk Sched 2", $"ESP-S2-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        var kiosk2 = (await k2Res.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
-
-        // Create two applications and confirm them
+        // Create two applications, pay and confirm them
         var app1Res = await custClient1.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Sched 1", "0901234111", "s1@t.vn", "Add 1", 10.1, 106.1, "VCB", "A", "111111"
+            trialPkg?.Id, "Shop Sched 1", "0901234111", "s1@t.vn", "Add 1", 10.1, 106.1, "VCB", "A", "111111",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        var app1 = (await app1Res.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app1 = await ReadApplicationAsync(app1Res);
         await using var p1 = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
         p1.Parameters.AddWithValue("pid", app1.PaymentId!.Value);
         p1.Parameters.AddWithValue("txn", $"PAYOS-S1-{Guid.NewGuid():N}");
@@ -739,15 +832,31 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         c1.EnsureSuccessStatusCode();
 
         var app2Res = await custClient2.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Sched 2", "0901234222", "s2@t.vn", "Add 2", 10.2, 106.2, "VCB", "B", "222222"
+            trialPkg?.Id, "Shop Sched 2", "0901234222", "s2@t.vn", "Add 2", 10.2, 106.2, "VCB", "B", "222222",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        var app2 = (await app2Res.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app2 = await ReadApplicationAsync(app2Res);
         await using var p2 = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
         p2.Parameters.AddWithValue("pid", app2.PaymentId!.Value);
         p2.Parameters.AddWithValue("txn", $"PAYOS-S2-{Guid.NewGuid():N}");
         await p2.ExecuteNonQueryAsync();
         var c2 = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app2.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin 2"));
         c2.EnsureSuccessStatusCode();
+
+        // Enroll kiosks for the confirmed applications
+        var k1Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-SCH1-{Guid.NewGuid():N}"[..12], "Kiosk Sched 1", $"ESP-S1-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app1.Id
+        ));
+        var k1Body = await k1Res.Content.ReadAsStringAsync();
+        Assert.True(k1Res.IsSuccessStatusCode, $"HTTP {(int)k1Res.StatusCode}: {k1Body}");
+        var kiosk1 = JsonSerializer.Deserialize<EnrollKioskResponse>(k1Body, JsonOptions)!;
+
+        var k2Res = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-SCH2-{Guid.NewGuid():N}"[..12], "Kiosk Sched 2", $"ESP-S2-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app2.Id
+        ));
+        var k2Body = await k2Res.Content.ReadAsStringAsync();
+        Assert.True(k2Res.IsSuccessStatusCode, $"HTTP {(int)k2Res.StatusCode}: {k2Body}");
+        var kiosk2 = JsonSerializer.Deserialize<EnrollKioskResponse>(k2Body, JsonOptions)!;
 
         var scheduledDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(3));
         var timeWindow = "09:00 - 12:00";
@@ -780,24 +889,52 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Kiosk_EnrollmentAndKeyRotation_ReturnsRawKeyOnceOnly_NoStore_FindsByHash()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var managerId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
         using var mgrClient = CreateClientForRole("OPERATIONS_MANAGER", userId: managerId);
+        using var custClient = CreateClientForRole("CUSTOMER", userId: customerId);
         using var scope = _factory.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
         var db = scope.ServiceProvider.GetRequiredService<FloraDbContext>();
 
-        await using var insertMgr = source.CreateCommand("INSERT INTO identity.users(id, email, full_name, password_hash, role, status) VALUES(@id, @email, 'Key Mgr', '!hash', 'OPERATIONS_MANAGER', 'ACTIVE') ON CONFLICT (id) DO NOTHING");
-        insertMgr.Parameters.AddWithValue("id", managerId);
-        insertMgr.Parameters.AddWithValue("email", $"kmgr-{managerId:N}@example.invalid");
-        await insertMgr.ExecuteNonQueryAsync();
+        await using var insertUsers = source.CreateCommand("""
+            INSERT INTO identity.users(id, email, full_name, password_hash, role, status) VALUES
+              (@mid, @me, 'Key Mgr', '!hash', 'OPERATIONS_MANAGER', 'ACTIVE'),
+              (@cid, @ce, 'Key Cust', '!hash', 'CUSTOMER', 'ACTIVE')
+            ON CONFLICT (id) DO NOTHING;
+            """);
+        insertUsers.Parameters.AddWithValue("mid", managerId);
+        insertUsers.Parameters.AddWithValue("me", $"kmgr-{managerId:N}@example.invalid");
+        insertUsers.Parameters.AddWithValue("cid", customerId);
+        insertUsers.Parameters.AddWithValue("ce", $"kcust-{customerId:N}@example.invalid");
+        await insertUsers.ExecuteNonQueryAsync();
 
-        // Enroll kiosk
-        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-KEY-{Guid.NewGuid():N}"[..12], "Kiosk Key Test", $"ESP-K-{Guid.NewGuid():N}"[..16], null, "HCM", 2
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+
+        // Create, pay and confirm application first
+        var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
+            trialPkg?.Id, "Shop Key Test", "0901234444", "key@test.vn", "Key St", 10.7, 106.7, "VCB", "CHỦ", "112244",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        enrollRes.EnsureSuccessStatusCode();
+        var app = await ReadApplicationAsync(appRes);
+
+        await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
+        pay.Parameters.AddWithValue("pid", app.PaymentId!.Value);
+        pay.Parameters.AddWithValue("txn", $"PAYOS-KEY-{Guid.NewGuid():N}");
+        await pay.ExecuteNonQueryAsync();
+
+        var conf = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận"));
+        conf.EnsureSuccessStatusCode();
+
+        // Enroll kiosk for the confirmed application
+        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-KEY-{Guid.NewGuid():N}"[..12], "Kiosk Key Test", $"ESP-K-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app.Id
+        ));
+        var enrollBody = await enrollRes.Content.ReadAsStringAsync();
+        Assert.True(enrollRes.IsSuccessStatusCode, $"HTTP {(int)enrollRes.StatusCode}: {enrollBody}");
         Assert.True(enrollRes.Headers.CacheControl?.NoStore);
-        var enrolled = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
+        var enrolled = JsonSerializer.Deserialize<EnrollKioskResponse>(enrollBody, JsonOptions)!;
         Assert.NotNull(enrolled.ApiKey);
         Assert.Equal(64, enrolled.ApiKey.Length);
 
@@ -808,9 +945,10 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Rotate key
         var rotateRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosks/{enrolled.Id}/provision-key", new { });
-        rotateRes.EnsureSuccessStatusCode();
+        var rotateBody = await rotateRes.Content.ReadAsStringAsync();
+        Assert.True(rotateRes.IsSuccessStatusCode, $"HTTP {(int)rotateRes.StatusCode}: {rotateBody}");
         Assert.True(rotateRes.Headers.CacheControl?.NoStore);
-        var rotated = (await rotateRes.Content.ReadFromJsonAsync<ProvisionKioskKeyResponse>())!;
+        var rotated = JsonSerializer.Deserialize<ProvisionKioskKeyResponse>(rotateBody, JsonOptions)!;
         Assert.NotNull(rotated.ApiKey);
         Assert.NotEqual(enrolled.ApiKey, rotated.ApiKey);
 
@@ -864,6 +1002,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Evidence_PrivateBinaryFetch_EnforcesRoleAndTenantAccess_RejectsTamperedTicket()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var managerId = Guid.NewGuid();
         var tech1 = Guid.NewGuid();
         var tech2 = Guid.NewGuid();
@@ -894,19 +1033,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("ce", $"evcust-{custId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
-
-        // Enroll kiosk
-        var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-EV-{Guid.NewGuid():N}"[..12], "Kiosk Evidence Test", $"ESP-EV-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        var kiosk = (await kRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         // Customer creates application
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Ev", "0901234567", "ev@test.vn", "123 Ev Rd", 10.5, 106.5, "VCB", "CHỦ", "112233"
+            trialPkg?.Id, "Shop Ev", "0901234567", "ev@test.vn", "123 Ev Rd", 10.5, 106.5, "VCB", "CHỦ", "112233",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
 
         // Pay and confirm
         await using var p = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -916,6 +1050,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         var cRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin hợp lệ"));
         cRes.EnsureSuccessStatusCode();
+
+        // Enroll kiosk for the confirmed application
+        var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-EV-{Guid.NewGuid():N}"[..12], "Kiosk Evidence Test", $"ESP-EV-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app.Id
+        ));
+        var kBody = await kRes.Content.ReadAsStringAsync();
+        Assert.True(kRes.IsSuccessStatusCode, $"HTTP {(int)kRes.StatusCode}: {kBody}");
+        var kiosk = JsonSerializer.Deserialize<EnrollKioskResponse>(kBody, JsonOptions)!;
 
         // Schedule tech 1
         var sRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
@@ -953,6 +1095,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Reconcile_RealEndpoint_AllowsLatePaidAfterCancel_TransitionsToRefundPending()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var custId = Guid.NewGuid();
         using var custClient = CreateClientForRole("CUSTOMER", userId: custId);
         using var scope = _factory.Services.CreateScope();
@@ -964,12 +1107,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertCust.Parameters.AddWithValue("ce", $"reconcile-{custId:N}@example.invalid");
         await insertCust.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Reconcile Test", "0901234888", "rec@test.vn", "456 Rec Blvd", 10.6, 106.6, "VCB", "CHỦ", "889900"
+            trialPkg?.Id, "Shop Reconcile Test", "0901234888", "rec@test.vn", "456 Rec Blvd", 10.6, 106.6, "VCB", "CHỦ", "889900",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
+        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
 
         // Reserve gateway order code
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
@@ -978,7 +1123,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Cancel while unpaid -> CANCELLED
         var cancelRes = await custClient.PostAsJsonAsync($"/api/member/kiosk-applications/{app.Id}/cancel", new CancelKioskApplicationRequest("Hủy"));
-        cancelRes.EnsureSuccessStatusCode();
+        var cancelBody = await cancelRes.Content.ReadAsStringAsync();
+        Assert.True(cancelRes.IsSuccessStatusCode, $"HTTP {(int)cancelRes.StatusCode}: {cancelBody}");
 
         // Create client with mocked PayOsClient that returns PAID status for this orderCode
         using var customFactory = _factory.WithWebHostBuilder(builder =>
@@ -989,7 +1135,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             builder.UseSetting("PAYOS_CANCEL_URL", "https://payos.vn/cancel");
             builder.ConfigureServices(services =>
             {
-                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, 10000, "PAID"));
+                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
+                services.AddHttpClient("payos").ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
             });
         });
 
@@ -999,9 +1146,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Call real HTTP reconcile endpoint
         var recRes = await customClient.PostAsJsonAsync($"/api/member/kiosk-applications/{app.Id}/reconcile", new { });
-        recRes.EnsureSuccessStatusCode();
-        var recApp = await recRes.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(recApp);
+        var recApp = await ReadApplicationAsync(recRes);
 
         // Assert transitions to REFUND_PENDING (late payment after cancellation)
         Assert.Equal("REFUND_PENDING", recApp.Status);
@@ -1015,9 +1160,11 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Lifecycle_HandoverCreatesActiveSlotAssignments_RentedEmpty_AndEnforcesZoneguards()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var managerId = Guid.NewGuid();
         var techId = Guid.NewGuid();
         var customerId = Guid.NewGuid();
+        var buyerId = Guid.NewGuid();
         using var mgrClient = CreateClientForRole("OPERATIONS_MANAGER", userId: managerId);
         using var techClient = CreateClientForRole("TECHNICIAN", userId: techId);
         using var custClient = CreateClientForRole("CUSTOMER", userId: customerId);
@@ -1029,7 +1176,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             INSERT INTO identity.users(id, email, full_name, password_hash, role, status) VALUES
               (@mid, @me, 'Zone Mgr', '!hash', 'OPERATIONS_MANAGER', 'ACTIVE'),
               (@tid, @te, 'Zone Tech', '!hash', 'TECHNICIAN', 'ACTIVE'),
-              (@cid, @ce, 'Zone Cust', '!hash', 'CUSTOMER', 'ACTIVE')
+              (@cid, @ce, 'Zone Cust', '!hash', 'CUSTOMER', 'ACTIVE'),
+              (@bid, @be, 'Zone Buyer', '!hash', 'CUSTOMER', 'ACTIVE')
             ON CONFLICT (id) DO NOTHING;
             """);
         insertUsers.Parameters.AddWithValue("mid", managerId);
@@ -1038,23 +1186,18 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("te", $"ztech-{techId:N}@example.invalid");
         insertUsers.Parameters.AddWithValue("cid", customerId);
         insertUsers.Parameters.AddWithValue("ce", $"zcust-{customerId:N}@example.invalid");
+        insertUsers.Parameters.AddWithValue("bid", buyerId);
+        insertUsers.Parameters.AddWithValue("be", $"zbuyer-{buyerId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
-
-        // Enroll kiosk with 1 WALK_IN + 1 PREORDER slot
-        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-ZN-{Guid.NewGuid():N}"[..12], "Kiosk Zone Guard", $"ESP-ZN-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        enrollRes.EnsureSuccessStatusCode();
-        var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         // Customer creates application
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Tiệm Hoa Zone Guard", "0901239999", "zone@test.vn", "777 Zone Street, Q1", 10.77, 106.69, "VCB", "CHỦ TIỆM", "99887766"
+            trialPkg?.Id, "Tiệm Hoa Zone Guard", "0901239999", "zone@test.vn", "777 Zone Street, Q1", 10.77, 106.69, "VCB", "CHỦ TIỆM", "99887766",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        appRes.EnsureSuccessStatusCode();
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
 
         // Payment settle to PAID_REVIEW
         await using var pCmd = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -1066,14 +1209,23 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         var confRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin"));
         confRes.EnsureSuccessStatusCode();
 
+        // Enroll kiosk with 1 WALK_IN + 1 PREORDER slot for confirmed application
+        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-ZN-{Guid.NewGuid():N}"[..12], "Kiosk Zone Guard", $"ESP-ZN-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app.Id
+        ));
+        var enrollBody = await enrollRes.Content.ReadAsStringAsync();
+        Assert.True(enrollRes.IsSuccessStatusCode, $"HTTP {(int)enrollRes.StatusCode}: {enrollBody}");
+        var kiosk = JsonSerializer.Deserialize<EnrollKioskResponse>(enrollBody, JsonOptions)!;
+
         // FREE slots alone cannot make a kiosk under maintenance eligible.
         await using var kioskState = source.CreateCommand("UPDATE kiosk_ops.kiosks SET status=@status WHERE id=@id");
         kioskState.Parameters.AddWithValue("id", kiosk.Id);
         kioskState.Parameters.AddWithValue("status", "MAINTENANCE");
         await kioskState.ExecuteNonQueryAsync();
-        var eligibleResponse = await mgrClient.GetAsync($"/api/operations/eligible-kiosks?packageId={trialPkg.Id}");
-        eligibleResponse.EnsureSuccessStatusCode();
-        var eligible = (await eligibleResponse.Content.ReadFromJsonAsync<List<EligibleKioskResponse>>())!;
+        var eligibleResponse = await mgrClient.GetAsync($"/api/operations/eligible-kiosks?applicationId={app.Id}");
+        var eligibleBody = await eligibleResponse.Content.ReadAsStringAsync();
+        Assert.True(eligibleResponse.IsSuccessStatusCode, $"HTTP {(int)eligibleResponse.StatusCode}: {eligibleBody}");
+        var eligible = JsonSerializer.Deserialize<List<EligibleKioskResponse>>(eligibleBody, JsonOptions)!;
         Assert.DoesNotContain(eligible, asset => asset.Id == kiosk.Id);
         var maintenanceSchedule = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
             techId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)), "09:00 - 12:00", kiosk.Id));
@@ -1115,8 +1267,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Handover
         var handRes = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/handover", new { });
-        handRes.EnsureSuccessStatusCode();
-        var handedApp = (await handRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var handedApp = await ReadApplicationAsync(handRes);
         Assert.Equal("ACTIVE", handedApp.Status);
         Assert.NotNull(handedApp.SellerId);
         var sellerId = handedApp.SellerId.Value;
@@ -1169,7 +1320,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         stockWCmd.Parameters.AddWithValue("qr", qrW);
         var bkW = (Guid)(await stockWCmd.ExecuteScalarAsync())!;
 
-        // Stock bouquet into PREORDER slot
+        // Attempting to stock bouquet into PREORDER slot via walk-in stocking API is rejected by zone guard
         var batchP = Guid.NewGuid();
         var qrP = $"QR-P-{Guid.NewGuid():N}"[..20];
         await using var stockPCmd = source.CreateCommand("SELECT flow.stock_bouquet(@batch, @prod, @slot, @actor, @qr)");
@@ -1178,10 +1329,11 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         stockPCmd.Parameters.AddWithValue("slot", slotP);
         stockPCmd.Parameters.AddWithValue("actor", customerId);
         stockPCmd.Parameters.AddWithValue("qr", qrP);
-        var bkP = (Guid)(await stockPCmd.ExecuteScalarAsync())!;
+        var exStockP = await Assert.ThrowsAsync<PostgresException>(() => stockPCmd.ExecuteScalarAsync());
+        Assert.Contains("WALK_IN", exStockP.MessageText);
 
         // 3. Zoneguard Verification:
-        // WALK_IN bouquet bkW appears on screen.v_kiosk_catalog, PREORDER bouquet bkP does NOT
+        // WALK_IN bouquet bkW appears on screen.v_kiosk_catalog
         await using var checkKioskCat = source.CreateCommand("SELECT bouquet_id FROM screen.v_kiosk_catalog WHERE kiosk_id=@kid");
         checkKioskCat.Parameters.AddWithValue("kid", kiosk.Id);
         var kioskCatBouquets = new List<Guid>();
@@ -1190,17 +1342,24 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             while (await r.ReadAsync()) kioskCatBouquets.Add(r.GetGuid(0));
         }
         Assert.Contains(bkW, kioskCatBouquets);
-        Assert.DoesNotContain(bkP, kioskCatBouquets);
 
-        // PREORDER bouquet bkP appears in screen.v_web_catalog, WALK_IN bouquet bkW does NOT
-        await using var checkWebCat = source.CreateCommand("SELECT unnest(bouquets) FROM screen.v_web_catalog WHERE kiosk_id=@kid");
+        // Product appears in screen.v_web_catalog because kiosk has a PREORDER slot, but WALK_IN bouquet does not appear in bouquets
+        await using var checkWebCat = source.CreateCommand("SELECT product_id FROM screen.v_web_catalog WHERE kiosk_id=@kid");
         checkWebCat.Parameters.AddWithValue("kid", kiosk.Id);
-        var webCatBouquets = new List<Guid>();
+        var webCatProducts = new List<Guid>();
         await using (var r = await checkWebCat.ExecuteReaderAsync())
+        {
+            while (await r.ReadAsync()) webCatProducts.Add(r.GetGuid(0));
+        }
+        Assert.Contains(productId, webCatProducts);
+
+        await using var checkWebBouquets = source.CreateCommand("SELECT unnest(bouquets) FROM screen.v_web_catalog WHERE kiosk_id=@kid");
+        checkWebBouquets.Parameters.AddWithValue("kid", kiosk.Id);
+        var webCatBouquets = new List<Guid>();
+        await using (var r = await checkWebBouquets.ExecuteReaderAsync())
         {
             while (await r.ReadAsync()) webCatBouquets.Add(r.GetGuid(0));
         }
-        Assert.Contains(bkP, webCatBouquets);
         Assert.DoesNotContain(bkW, webCatBouquets);
 
         // Make kiosk ONLINE for checkout test
@@ -1212,48 +1371,68 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         await using var coW = source.CreateCommand("SELECT flow.kiosk_checkout(@kid, ARRAY[@bq]::uuid[], @cid)");
         coW.Parameters.AddWithValue("kid", kiosk.Id);
         coW.Parameters.AddWithValue("bq", bkW);
-        coW.Parameters.AddWithValue("cid", customerId);
+        coW.Parameters.AddWithValue("cid", buyerId);
         var coWId = (Guid)(await coW.ExecuteScalarAsync())!;
         Assert.NotEqual(Guid.Empty, coWId);
-
-        // Direct walk-in kiosk_checkout for bkP (PREORDER) FAILS with zone error
-        await using var coP = source.CreateCommand("SELECT flow.kiosk_checkout(@kid, ARRAY[@bq]::uuid[], @cid)");
-        coP.Parameters.AddWithValue("kid", kiosk.Id);
-        coP.Parameters.AddWithValue("bq", bkP);
-        coP.Parameters.AddWithValue("cid", customerId);
-        var exP = await Assert.ThrowsAsync<PostgresException>(() => coP.ExecuteScalarAsync());
-        Assert.Contains("PREORDER", exP.MessageText);
 
         // 5. Web preorder flow.web_request on WALK_IN slot bouquet FAILS
         await using var webReqW = source.CreateCommand("SELECT flow.web_request(@id, @cid, 'STOCK', @pid, @kid, @bq, public.app_now()+interval '1 day', 'Huong dan')");
         webReqW.Parameters.AddWithValue("id", Guid.NewGuid());
-        webReqW.Parameters.AddWithValue("cid", customerId);
+        webReqW.Parameters.AddWithValue("cid", buyerId);
         webReqW.Parameters.AddWithValue("pid", productId);
         webReqW.Parameters.AddWithValue("kid", kiosk.Id);
         webReqW.Parameters.AddWithValue("bq", bkW);
         var exWebW = await Assert.ThrowsAsync<PostgresException>(() => webReqW.ExecuteScalarAsync());
-        Assert.Contains("WALK_IN", exWebW.MessageText);
+        Assert.Contains("Web chỉ nhận đơn đặt hoa theo mẫu", exWebW.MessageText);
 
-        // 6. Custom preorder fulfillment via flow.web_fulfill on WALK_IN slot FAILS
+        // 6. Custom preorder fulfillment via flow.web_fulfill:
         var customReqId = Guid.NewGuid();
         var fakeOrderId = Guid.NewGuid();
+        var checkoutId = Guid.NewGuid();
+        var channelId = Guid.NewGuid();
+        var paymentChargeId = Guid.NewGuid();
+        var secretRef = "test-chan-" + Guid.NewGuid().ToString("N")[..12];
         await using var createCustom = source.CreateCommand("SELECT flow.web_request(@id, @cid, 'CUSTOM', @pid, @kid, NULL, public.app_now()+interval '3 hours', 'Dat rieng 10 ky tu it nhat')");
         createCustom.Parameters.AddWithValue("id", customReqId);
-        createCustom.Parameters.AddWithValue("cid", customerId);
+        createCustom.Parameters.AddWithValue("cid", buyerId);
         createCustom.Parameters.AddWithValue("pid", productId);
         createCustom.Parameters.AddWithValue("kid", kiosk.Id);
         await createCustom.ExecuteNonQueryAsync();
 
         await using var createOrder = source.CreateCommand("""
+            INSERT INTO payment.payment_channel_versions (
+                id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account,
+                expected_bank_name, state, verified_at
+            ) VALUES (
+                @channelId, @sid, 1, @secretRef, '970436', '99887766',
+                'CHỦ TIỆM', 'ACTIVE', public.app_now()
+            );
+
+            INSERT INTO payment.payments (
+                id, kind, purpose, checkout_id, order_id, gateway, idempotency_key,
+                amount, status, paid_at, seller_id, channel_id, channel_version,
+                receiver_snapshot, funding_provenance, is_direct_receipt
+            ) VALUES (
+                @payId, 'CHARGE', 'ORDER_CHECKOUT', @checkoutId, @oid, 'PAYOS', 'charge-custom-' || @oid::text,
+                50000, 'SUCCEEDED', public.app_now(), @sid, @channelId, 1,
+                jsonb_build_object('bin','970436','accountNumber','99887766','accountName','CHỦ TIỆM','provider','PAYOS'),
+                'SELLER_DIRECT', true
+            );
+
             INSERT INTO ordering.orders(id, order_code, checkout_id, customer_id, seller_id, kiosk_id, status, subtotal, total_amount, tracking_token)
-            VALUES(@oid, flow.new_order_code(), gen_random_uuid(), @cid, @sid, @kid, 'PAID', 50000, 50000, flow.new_tracking_token());
-            UPDATE ordering.web_requests SET order_id=@oid, pickup_at=public.app_now()+interval '1 hour', pickup_before=public.app_now()+interval '5 hours' WHERE id=@id;
+            VALUES(@oid, flow.new_order_code(), @checkoutId, @bid, @sid, @kid, 'PAID', 50000, 50000, flow.new_tracking_token());
+
+            UPDATE ordering.web_requests SET order_id=@oid, state='ORDERED', pickup_at=public.app_now()+interval '1 hour', pickup_before=public.app_now()+interval '5 hours' WHERE id=@id;
             """);
         createOrder.Parameters.AddWithValue("oid", fakeOrderId);
-        createOrder.Parameters.AddWithValue("cid", customerId);
+        createOrder.Parameters.AddWithValue("checkoutId", checkoutId);
+        createOrder.Parameters.AddWithValue("bid", buyerId);
         createOrder.Parameters.AddWithValue("sid", sellerId);
         createOrder.Parameters.AddWithValue("kid", kiosk.Id);
         createOrder.Parameters.AddWithValue("id", customReqId);
+        createOrder.Parameters.AddWithValue("channelId", channelId);
+        createOrder.Parameters.AddWithValue("secretRef", secretRef);
+        createOrder.Parameters.AddWithValue("payId", paymentChargeId);
         await createOrder.ExecuteNonQueryAsync();
 
         // Release slotW to RENTED_EMPTY for test
@@ -1261,6 +1440,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         freeSlotW.Parameters.AddWithValue("slot", slotW);
         await freeSlotW.ExecuteNonQueryAsync();
 
+        // Fulfilling custom preorder on WALK_IN slot (slotW) FAILS with zone guard
         await using var fulfillWalkIn = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-W')");
         fulfillWalkIn.Parameters.AddWithValue("id", customReqId);
         fulfillWalkIn.Parameters.AddWithValue("sid", sellerId);
@@ -1268,6 +1448,32 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         fulfillWalkIn.Parameters.AddWithValue("slot", slotW);
         var exFulfill = await Assert.ThrowsAsync<PostgresException>(() => fulfillWalkIn.ExecuteScalarAsync());
         Assert.Contains("PREORDER", exFulfill.MessageText);
+
+        // Fulfilling custom preorder on PREORDER slot (slotP) SUCCEEDS
+        await using var fulfillPreorder = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-P')");
+        fulfillPreorder.Parameters.AddWithValue("id", customReqId);
+        fulfillPreorder.Parameters.AddWithValue("sid", sellerId);
+        fulfillPreorder.Parameters.AddWithValue("actor", customerId);
+        fulfillPreorder.Parameters.AddWithValue("slot", slotP);
+        var bkP = (Guid)(await fulfillPreorder.ExecuteScalarAsync())!;
+        Assert.NotEqual(Guid.Empty, bkP);
+
+        // Direct walk-in kiosk_checkout for bkP (PREORDER) FAILS with zone/status error
+        await using var coP = source.CreateCommand("SELECT flow.kiosk_checkout(@kid, ARRAY[@bq]::uuid[], @cid)");
+        coP.Parameters.AddWithValue("kid", kiosk.Id);
+        coP.Parameters.AddWithValue("bq", bkP);
+        coP.Parameters.AddWithValue("cid", buyerId);
+        var exP = await Assert.ThrowsAsync<PostgresException>(() => coP.ExecuteScalarAsync());
+        Assert.Contains("không còn sẵn để bán", exP.MessageText);
+
+        // PREORDER bouquet bkP does NOT appear on screen.v_kiosk_catalog
+        checkKioskCat.Parameters["kid"].Value = kiosk.Id;
+        var kioskCatAfterPreorder = new List<Guid>();
+        await using (var r = await checkKioskCat.ExecuteReaderAsync())
+        {
+            while (await r.ReadAsync()) kioskCatAfterPreorder.Add(r.GetGuid(0));
+        }
+        Assert.DoesNotContain(bkP, kioskCatAfterPreorder);
     }
 
     [Fact]
@@ -1286,7 +1492,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         var subId = Guid.NewGuid();
         var payId = Guid.NewGuid();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var pkgId = trialPkg?.Id ?? Guid.Parse("20000000-0000-0000-0000-00000000000c");
 
         var handoverTs = new DateTime(2026, 10, 15, 14, 0, 0, DateTimeKind.Utc);
         var expiryTs = handoverTs.AddYears(1); // 2027-10-15 14:00:00 UTC
@@ -1304,14 +1511,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             INSERT INTO identity.users(id, email, full_name, password_hash, role, status, seller_id)
             VALUES(@oid, @oe, 'Owner Exp', '!hash', 'SELLER', 'ACTIVE', @sid);
 
-            INSERT INTO identity.subscriptions(id, seller_id, package_id, period_from, period_to, period_from_ts, period_to_ts, price, status, payment_id)
-            VALUES(@subId, @sid, @pkg, @fromDate, @expDate, @handoverTs, @expTs, 10000, 'ACTIVE', @payId);
+            INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, seller_id)
+            VALUES(@kid, @kcode, 'Kiosk Expiry Test', 'Address', 'HCM', @hwId, lower(@kcode), 'ONLINE', @sid);
 
-            INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status)
-            VALUES(@kid, @kcode, 'Kiosk Expiry Test', 'Address', 'HCM', @hwId, lower(@kcode), 'ONLINE');
+            INSERT INTO identity.subscriptions(id, seller_id, package_id, period_from, period_to, period_from_ts, period_to_ts, price, status, payment_id, kiosk_id)
+            VALUES(@subId, @sid, @pkg, @fromDate, @expDate, @handoverTs, @expTs, 10000, 'ACTIVE', @payId, @kid);
 
-            INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, status, current_seller_id)
-            VALUES(@slotId, @kid, 'W01', 0, 'RENTED_EMPTY', @sid);
+            INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, status, current_seller_id, zone)
+            VALUES(@slotId, @kid, 'W01', 0, 'RENTED_EMPTY', @sid, 'WALK_IN');
 
             INSERT INTO kiosk_ops.slot_assignments(slot_id, seller_id, assigned_by, assigned_at, status)
             VALUES(@slotId, @sid, @oid, @handoverTs, 'ACTIVE');
@@ -1328,7 +1535,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         setup.Parameters.AddWithValue("oid", ownerId);
         setup.Parameters.AddWithValue("oe", $"oexp-{ownerId:N}@example.invalid");
         setup.Parameters.AddWithValue("sid", sellerId);
-        setup.Parameters.AddWithValue("pkg", trialPkg.Id);
+        setup.Parameters.AddWithValue("pkg", pkgId);
         setup.Parameters.AddWithValue("expDate", DateOnly.FromDateTime(expiryTs));
         setup.Parameters.AddWithValue("expTs", expiryTs);
         setup.Parameters.AddWithValue("subId", subId);
@@ -1474,14 +1681,16 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("ce", $"rcust-{custId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var pricing = await EnsurePricingConfiguredAsync();
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         // 1. Customer applies
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Tiệm Hoa Kế Toán Hoàn", "0901237777", "acc@test.vn", "777 Ledger St, Q1", 10.77, 106.69, "Vietcombank", "NGUYEN VAN ACC", "99001122"
+            trialPkg?.Id, "Tiệm Hoa Kế Toán Hoàn", "0901237777", "acc@test.vn", "777 Ledger St, Q1", 10.77, 106.69, "Vietcombank", "NGUYEN VAN ACC", "99001122",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        appRes.EnsureSuccessStatusCode();
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
+        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
 
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
         reserve.Parameters.AddWithValue("pid", app.PaymentId!.Value);
@@ -1496,7 +1705,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             builder.UseSetting("PAYOS_CANCEL_URL", "https://payos.vn/cancel");
             builder.ConfigureServices(services =>
             {
-                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, 10000, "PAID"));
+                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
+                services.AddHttpClient("payos").ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
             });
         });
 
@@ -1504,9 +1714,9 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         customClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _factory.Token("CUSTOMER", userId: custId));
 
         var recRes = await customClient.PostAsJsonAsync($"/api/member/kiosk-applications/{app.Id}/reconcile", new { });
-        recRes.EnsureSuccessStatusCode();
+        var recApp = await ReadApplicationAsync(recRes);
 
-        // Assert Step 1 Ledger: GATEWAY_CLEARING = +10000, PLATFORM_SUBSCRIPTION = -10000, REFUND_CLEARING = 0
+        // Assert Step 1 Ledger: GATEWAY_CLEARING = +expectedFee, PLATFORM_SUBSCRIPTION = -expectedFee, REFUND_CLEARING = 0
         await using var checkL1 = source.CreateCommand("""
             SELECT account, sum(amount) FROM payment.ledger_entries
             WHERE (ref_type='KIOSK_APPLICATION' AND ref_id=@aid) OR (ref_type='REFUND' AND ref_id=@pid)
@@ -1519,15 +1729,16 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         {
             while (await r.ReadAsync()) balances1[r.GetString(0)] = r.GetInt64(1);
         }
-        Assert.Equal(10000L, balances1["GATEWAY_CLEARING"]);
-        Assert.Equal(-10000L, balances1["PLATFORM_SUBSCRIPTION"]);
+        Assert.Equal(expectedFee, balances1["GATEWAY_CLEARING"]);
+        Assert.Equal(-expectedFee, balances1["PLATFORM_SUBSCRIPTION"]);
         Assert.False(balances1.ContainsKey("REFUND_CLEARING"));
 
         // 2. Customer voluntary cancel -> REFUND_PENDING
         var cancelRes = await customClient.PostAsJsonAsync($"/api/member/kiosk-applications/{app.Id}/cancel", new CancelKioskApplicationRequest("Khách đổi ý"));
-        cancelRes.EnsureSuccessStatusCode();
+        var cancelBody = await cancelRes.Content.ReadAsStringAsync();
+        Assert.True(cancelRes.IsSuccessStatusCode, $"HTTP {(int)cancelRes.StatusCode}: {cancelBody}");
 
-        // Assert Step 2 Ledger: PLATFORM_SUBSCRIPTION = 0 (reversed!), REFUND_CLEARING = -10000 (liability)
+        // Assert Step 2 Ledger: PLATFORM_SUBSCRIPTION = 0 (reversed!), REFUND_CLEARING = -expectedFee (liability)
         await using var checkL2 = source.CreateCommand("""
             SELECT account, sum(amount) FROM payment.ledger_entries
             WHERE (ref_type='KIOSK_APPLICATION' AND ref_id=@aid) OR (ref_type='REFUND' AND ref_id=@pid)
@@ -1540,9 +1751,9 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         {
             while (await r.ReadAsync()) balances2[r.GetString(0)] = r.GetInt64(1);
         }
-        Assert.Equal(10000L, balances2["GATEWAY_CLEARING"]);
+        Assert.Equal(expectedFee, balances2["GATEWAY_CLEARING"]);
         Assert.Equal(0L, balances2["PLATFORM_SUBSCRIPTION"]);
-        Assert.Equal(-10000L, balances2["REFUND_CLEARING"]);
+        Assert.Equal(-expectedFee, balances2["REFUND_CLEARING"]);
 
         // 3. Admin 1 approves refund
         var appApprove = await client1.PostAsJsonAsync($"/api/admin/kiosk-applications/{app.Id}/refund/approve", new { });
@@ -1633,14 +1844,16 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("me", $"reconcile-ops-{opsMgrId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var pricing = await EnsurePricingConfiguredAsync();
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         using var ownerClient = CreateClientForRole("CUSTOMER", userId: custId);
         var appRes = await ownerClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Tiệm Hoa CAP Outbox", "0901235555", "cap@test.vn", "888 CAP Avenue, Q1", 10.78, 106.70, "VCB", "CHỦ TIỆM", "55667788"
+            trialPkg?.Id, "Tiệm Hoa CAP Outbox", "0901235555", "cap@test.vn", "888 CAP Avenue, Q1", 10.78, 106.70, "VCB", "CHỦ TIỆM", "55667788",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        appRes.EnsureSuccessStatusCode();
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
+        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
 
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
         reserve.Parameters.AddWithValue("pid", app.PaymentId!.Value);
@@ -1654,7 +1867,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             builder.UseSetting("PAYOS_CANCEL_URL", "https://payos.vn/cancel");
             builder.ConfigureServices(services =>
             {
-                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, 10000, "PAID"));
+                services.AddHttpClient<PayOsClient>().ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
+                services.AddHttpClient("payos").ConfigurePrimaryHttpMessageHandler(() => new MockReconcileHandler(orderCode, expectedFee, "PAID"));
             });
         });
 
@@ -1684,9 +1898,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         using var adminClient = customFactory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
         adminClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _factory.Token("ADMIN", userId: adminId));
         var adminRes = await adminClient.PostAsJsonAsync($"/api/member/kiosk-applications/{app.Id}/reconcile", new { });
-        adminRes.EnsureSuccessStatusCode();
-        var reconciledApp = await adminRes.Content.ReadFromJsonAsync<KioskApplicationResponse>();
-        Assert.NotNull(reconciledApp);
+        var reconciledApp = await ReadApplicationAsync(adminRes);
         Assert.Equal("PAID_REVIEW", reconciledApp.Status);
 
         // 5. Verify CAP Outbox message was published
@@ -1746,22 +1958,17 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("ce4", $"rc4-{cust4:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var pricing = await EnsurePricingConfiguredAsync();
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         async Task<(EnrollKioskResponse Kiosk, KioskApplicationResponse App)> CreateAndConfirm(Guid cid, string shop)
         {
             using var c = CreateClientForRole("CUSTOMER", userId: cid);
-            var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-                $"K-RNG-{Guid.NewGuid():N}"[..12], "Kiosk Range Test", $"ESP-RNG-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-            ));
-            kRes.EnsureSuccessStatusCode();
-            var k = (await kRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
-
             var aRes = await c.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-                trialPkg.Id, shop, "0901236666", "rng@test.vn", "123 Range St", 10.7, 106.7, "VCB", "CHỦ", "667788"
+                trialPkg?.Id, shop, "0901236666", "rng@test.vn", "123 Range St", 10.7, 106.7, "VCB", "CHỦ", "667788",
+                WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
             ));
-            aRes.EnsureSuccessStatusCode();
-            var a = (await aRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+            var a = await ReadApplicationAsync(aRes);
 
             await using var pCmd = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
             pCmd.Parameters.AddWithValue("pid", a.PaymentId!.Value);
@@ -1770,6 +1977,14 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
             var conf = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{a.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận"));
             conf.EnsureSuccessStatusCode();
+
+            var kRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+                $"K-RNG-{Guid.NewGuid():N}"[..12], "Kiosk Range Test", $"ESP-RNG-{Guid.NewGuid():N}"[..16], null, "HCM", 2, a.Id
+            ));
+            var kBody = await kRes.Content.ReadAsStringAsync();
+            Assert.True(kRes.IsSuccessStatusCode, $"HTTP {(int)kRes.StatusCode}: {kBody}");
+            var k = JsonSerializer.Deserialize<EnrollKioskResponse>(kBody, JsonOptions)!;
+
             return (k, a);
         }
 
@@ -1836,20 +2051,15 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         Assert.Contains(HttpStatusCode.Conflict, statuses);
 
         // 6. Kiosk with FAULT slot cannot be scheduled -> 409 Conflict
-        var faultyKioskRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-FLT-{Guid.NewGuid():N}"[..12], "Kiosk Faulty", $"ESP-FLT-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        faultyKioskRes.EnsureSuccessStatusCode();
-        var faultyKiosk = (await faultyKioskRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
+        // Pick whichever app didn't win the race
+        var (loserKiosk, loserApp) = results[0].StatusCode == HttpStatusCode.Conflict ? (kiosk3, app3) : (kiosk4, app4);
 
         await using var setFault = source.CreateCommand("UPDATE kiosk_ops.slots SET status='FAULT' WHERE kiosk_id=@kid AND zone='WALK_IN'");
-        setFault.Parameters.AddWithValue("kid", faultyKiosk.Id);
+        setFault.Parameters.AddWithValue("kid", loserKiosk.Id);
         await setFault.ExecuteNonQueryAsync();
 
-        // Pick whichever app didn't win the race
-        var loserApp = results[0].StatusCode == HttpStatusCode.Conflict ? app3 : app4;
         var scheduleFaulty = await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{loserApp.Id}/schedule", new ScheduleKioskApplicationRequest(
-            techId, date.AddDays(1), "09:00 - 12:00", faultyKiosk.Id
+            techId, date.AddDays(1), "09:00 - 12:00", loserKiosk.Id
         ));
         Assert.Equal(HttpStatusCode.Conflict, scheduleFaulty.StatusCode);
     }
@@ -1857,6 +2067,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task EvidenceAttachment_StaleOrConcurrentTransition_RejectsAttachAndLeavesNoOrphanEvidenceOrAudit()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         var managerId = Guid.NewGuid();
         var techId = Guid.NewGuid();
@@ -1889,19 +2100,13 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("femail", $"stale-foreign-{foreignTechId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
-
-        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-STL-{Guid.NewGuid():N}"[..12], "Kiosk Stale Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        enrollRes.EnsureSuccessStatusCode();
-        var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Stale Shop", "0901234777", "stale@example.invalid", "123 Stale Rd", 10.7, 106.6, "VCB", "CHỦ", "123456"
+            trialPkg?.Id, "Stale Shop", "0901234777", "stale@example.invalid", "123 Stale Rd", 10.7, 106.6, "VCB", "CHỦ", "123456",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        appRes.EnsureSuccessStatusCode();
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
 
         // Pay -> PAID_REVIEW
         await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -1911,6 +2116,13 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Confirm
         (await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin khách hàng"))).EnsureSuccessStatusCode();
+
+        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-STL-{Guid.NewGuid():N}"[..12], "Kiosk Stale Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app.Id
+        ));
+        var enrollBody = await enrollRes.Content.ReadAsStringAsync();
+        Assert.True(enrollRes.IsSuccessStatusCode, $"HTTP {(int)enrollRes.StatusCode}: {enrollBody}");
+        var kiosk = JsonSerializer.Deserialize<EnrollKioskResponse>(enrollBody, JsonOptions)!;
 
         // Schedule
         (await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
@@ -1992,6 +2204,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Handover_WhenCustomerRoleChangedToStaffBeforeHandover_RejectsAndNeverPromotesOrAllocates()
     {
+        var pricing = await EnsurePricingConfiguredAsync();
         var customerId = Guid.NewGuid();
         var managerId = Guid.NewGuid();
         var techId = Guid.NewGuid();
@@ -2018,26 +2231,20 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("temail", $"priv-tech-{techId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var trialPkg = await db.SubscriptionPackages.FirstAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
+        var trialPkg = await db.SubscriptionPackages.FirstOrDefaultAsync(x => x.Name == "Trial" && x.BillingCycle == "ANNUAL");
 
         // Verify flow.create_kiosk_application directly rejects non-CUSTOMER role with 42501
         await using var staffApplyCmd = source.CreateCommand("SELECT flow.create_kiosk_application(@staffId, @pkg, 'Shop', '0901112222', 'staff@test.vn', 'Addr', 10.7, 106.6, 'VCB', 'HOLDER', 'enc')");
         staffApplyCmd.Parameters.AddWithValue("staffId", managerId);
-        staffApplyCmd.Parameters.AddWithValue("pkg", trialPkg.Id);
+        staffApplyCmd.Parameters.AddWithValue("pkg", trialPkg?.Id ?? Guid.NewGuid());
         var staffEx = await Assert.ThrowsAsync<PostgresException>(() => staffApplyCmd.ExecuteScalarAsync());
         Assert.Equal("42501", staffEx.SqlState);
 
-        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
-            $"K-PRV-{Guid.NewGuid():N}"[..12], "Kiosk Priv Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2
-        ));
-        enrollRes.EnsureSuccessStatusCode();
-        var kiosk = (await enrollRes.Content.ReadFromJsonAsync<EnrollKioskResponse>())!;
-
         var appRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", new CreateKioskApplicationRequest(
-            trialPkg.Id, "Shop Priv Esc", "0901234999", "priv@test.vn", "789 Priv Ave", 10.75, 106.65, "TCB", "CHỦ", "778899"
+            trialPkg?.Id, "Shop Priv Esc", "0901234999", "priv@test.vn", "789 Priv Ave", 10.75, 106.65, "TCB", "CHỦ", "778899",
+            WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
-        appRes.EnsureSuccessStatusCode();
-        var app = (await appRes.Content.ReadFromJsonAsync<KioskApplicationResponse>())!;
+        var app = await ReadApplicationAsync(appRes);
 
         // Settle payment -> PAID_REVIEW
         await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -2047,6 +2254,13 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Manager confirms -> CONFIRMED
         (await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/confirm", new ConfirmKioskApplicationRequest("Xác nhận thông tin khách hàng"))).EnsureSuccessStatusCode();
+
+        var enrollRes = await mgrClient.PostAsJsonAsync("/api/operations/kiosks/enroll", new EnrollKioskRequest(
+            $"K-PRV-{Guid.NewGuid():N}"[..12], "Kiosk Priv Test", $"ESP-{Guid.NewGuid():N}"[..16], null, "HCM", 2, app.Id
+        ));
+        var enrollBody = await enrollRes.Content.ReadAsStringAsync();
+        Assert.True(enrollRes.IsSuccessStatusCode, $"HTTP {(int)enrollRes.StatusCode}: {enrollBody}");
+        var kiosk = JsonSerializer.Deserialize<EnrollKioskResponse>(enrollBody, JsonOptions)!;
 
         // Manager schedules -> SCHEDULED
         (await mgrClient.PostAsJsonAsync($"/api/operations/kiosk-applications/{app.Id}/schedule", new ScheduleKioskApplicationRequest(
