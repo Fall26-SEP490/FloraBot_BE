@@ -91,7 +91,7 @@ public static class KioskTerminations
                 return Results.Problem(statusCode: 403, detail: "Kiosk không thuộc quyền sở hữu của Seller này.");
 
             await using var lockSellerCmd = new NpgsqlCommand(
-                "SELECT 1 FROM identity.sellers WHERE id = @seller FOR UPDATE",
+                "SELECT kiosk_ops.v2_term_lock_seller(@seller)",
                 connection, tx);
             lockSellerCmd.Parameters.AddWithValue("seller", sellerId);
             await lockSellerCmd.ExecuteNonQueryAsync(ct);
@@ -209,17 +209,12 @@ public static class KioskTerminations
 
             await using var cmd = new NpgsqlCommand("""
                 SELECT
-                  t.id, t.kiosk_id, k.code, k.name, t.seller_id, s.shop_name,
-                  t.status, t.reason, t.requested_at, t.requested_by,
-                  t.review_action, t.review_reason, t.reviewed_at, t.reviewed_by,
-                  t.correlated_task_id, t.completed_at, t.completed_by, t.completion_notes,
-                  t.version, t.created_at, t.updated_at
-                FROM kiosk_ops.kiosk_terminations t
-                JOIN kiosk_ops.kiosks k ON k.id = t.kiosk_id
-                JOIN identity.sellers s ON s.id = t.seller_id
-                WHERE (@status IS NULL OR t.status = @status)
-                ORDER BY t.created_at DESC
-                LIMIT @take OFFSET @skip
+                  id, kiosk_id, kiosk_code, kiosk_name, seller_id, shop_name,
+                  status, reason, requested_at, requested_by,
+                  review_action, review_reason, reviewed_at, reviewed_by,
+                  correlated_task_id, completed_at, completed_by, completion_notes,
+                  version, created_at, updated_at
+                FROM kiosk_ops.v2_term_list_requests(@status, @take, @skip)
                 """, connection);
 
             cmd.Parameters.AddWithValue("status", NpgsqlDbType.Text, (object?)status ?? DBNull.Value);
@@ -403,7 +398,7 @@ public static class KioskTerminations
             await lockSlotsCmd.ExecuteNonQueryAsync(ct);
 
             await using var lockSellerCmd = new NpgsqlCommand(
-                "SELECT 1 FROM identity.sellers WHERE id = @seller FOR UPDATE",
+                "SELECT kiosk_ops.v2_term_lock_seller(@seller)",
                 connection, tx);
             lockSellerCmd.Parameters.AddWithValue("seller", sellerId);
             await lockSellerCmd.ExecuteNonQueryAsync(ct);
@@ -443,11 +438,9 @@ public static class KioskTerminations
                 if (!await PrivateEvidence.LockUnusedAsync(connection, tx, media.Url, ct))
                     return Results.Problem(statusCode: 409, detail: "Ảnh minh chứng đã được gắn vào hồ sơ khác.");
 
-                await using var attachCmd = new NpgsqlCommand("""
-                    INSERT INTO notify.attachments(id, owner_service, owner_type, owner_id, file_url, mime_type, size_bytes, sha256, phase, uploaded_by)
-                    VALUES(@attId, 'kiosk_ops', 'kiosk_termination', @termId, @url, @mime, @size, @hash, 'EVIDENCE', @actor)
-                    ON CONFLICT (id) DO NOTHING
-                    """, connection, tx);
+                await using var attachCmd = new NpgsqlCommand(
+                    "SELECT kiosk_ops.v2_term_attach_evidence(@attId, @termId, @url, @mime, @size, @hash, @actor)",
+                    connection, tx);
                 attachCmd.Parameters.AddWithValue("attId", evidenceId.Value);
                 attachCmd.Parameters.AddWithValue("termId", id);
                 attachCmd.Parameters.AddWithValue("url", media.Url);
@@ -506,7 +499,7 @@ public static class KioskTerminations
         CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(
-            "SELECT status, role, seller_id FROM identity.users WHERE id = @id",
+            "SELECT status, role, seller_id FROM kiosk_ops.v2_term_get_user(@id)",
             conn, tx);
         cmd.Parameters.AddWithValue("id", userId);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -528,15 +521,12 @@ public static class KioskTerminations
     {
         await using var cmd = new NpgsqlCommand("""
             SELECT
-              t.id, t.kiosk_id, k.code, k.name, t.seller_id, s.shop_name,
-              t.status, t.reason, t.requested_at, t.requested_by,
-              t.review_action, t.review_reason, t.reviewed_at, t.reviewed_by,
-              t.correlated_task_id, t.completed_at, t.completed_by, t.completion_notes,
-              t.version, t.created_at, t.updated_at
-            FROM kiosk_ops.kiosk_terminations t
-            LEFT JOIN kiosk_ops.kiosks k ON k.id = t.kiosk_id
-            LEFT JOIN identity.sellers s ON s.id = t.seller_id
-            WHERE t.id = @id
+              id, kiosk_id, kiosk_code, kiosk_name, seller_id, shop_name,
+              status, reason, requested_at, requested_by,
+              review_action, review_reason, reviewed_at, reviewed_by,
+              correlated_task_id, completed_at, completed_by, completion_notes,
+              version, created_at, updated_at
+            FROM kiosk_ops.v2_term_get_request(@id)
             """, connection, tx);
         cmd.Parameters.AddWithValue("id", id);
 

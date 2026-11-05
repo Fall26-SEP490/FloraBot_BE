@@ -67,7 +67,7 @@ public static class SellerPaymentChannels
 
         await using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = "SELECT id, role, status, seller_id FROM identity.users WHERE id = @id";
+        cmd.CommandText = "SELECT id, role, status, seller_id FROM payment.v2_cp_get_actor(@id)";
         cmd.Parameters.AddWithValue("id", actorId);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -243,7 +243,7 @@ public static class SellerPaymentChannels
                 if (!actorOk) return actorError!;
 
                 await using var checkSeller = connection.CreateCommand();
-                checkSeller.CommandText = "SELECT id FROM identity.sellers WHERE id = @sellerId";
+                checkSeller.CommandText = "SELECT id FROM payment.v2_cp_get_seller(@sellerId)";
                 checkSeller.Parameters.AddWithValue("sellerId", sellerId);
                 if (await checkSeller.ExecuteScalarAsync(ct) is null)
                 {
@@ -324,7 +324,7 @@ public static class SellerPaymentChannels
                 // Serialize concurrent binds by locking the seller row FOR UPDATE
                 await using var checkSeller = connection.CreateCommand();
                 checkSeller.Transaction = tx;
-                checkSeller.CommandText = "SELECT id, status FROM identity.sellers WHERE id = @sellerId FOR UPDATE";
+                checkSeller.CommandText = "SELECT id, status FROM payment.v2_cp_lock_seller(@sellerId)";
                 checkSeller.Parameters.AddWithValue("sellerId", sellerId);
                 var sellerStatus = await checkSeller.ExecuteScalarAsync(ct);
                 if (sellerStatus is null)
@@ -692,19 +692,9 @@ public static class SellerPaymentChannels
 
                 await using var cmd = connection.CreateCommand();
                 cmd.CommandText = """
-                    SELECT DISTINCT ON (v.seller_id)
-                        v.seller_id,
-                        s.shop_name,
-                        v.version,
-                        v.state,
-                        v.expected_bank_bin,
-                        v.expected_bank_account,
-                        v.expected_bank_name,
-                        v.verified_at,
-                        v.updated_at
-                    FROM payment.payment_channel_versions v
-                    JOIN identity.sellers s ON s.id = v.seller_id
-                    ORDER BY v.seller_id, v.version DESC
+                    SELECT seller_id, shop_name, version, state, expected_bank_bin,
+                           expected_bank_account, expected_bank_name, verified_at, updated_at
+                    FROM payment.v2_cp_list_admin_channels()
                     """;
 
                 var results = new List<AdminPaymentChannelItemResponse>();

@@ -31,13 +31,37 @@ public sealed class ModuleBoundaryTests
     private static readonly Regex TableReference = new("\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+\"?(identity|catalog|kiosk_ops|ordering|payment|notify|ai|screen)\"?\\s*\\.", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     [Fact]
-    public void ModulesReferenceOnlyTheirOwnEntitiesAndSqlTables()
+    public void ModulesReferenceOnlyTheirOwnEntitiesAndSqlTables() => AssertModuleBoundaries();
+
+    [Fact]
+    public void BusinessV2ContractsKeepSchemaOwnership()
+    {
+        string[] owners =
+        [
+            "FloraBot.Api.Modules.Payment.SellerPaymentChannels",
+            "FloraBot.Api.Modules.Payment.SellerPaymentsEndpoints",
+            "FloraBot.Api.Modules.Payment.SellerRefunds",
+            "FloraBot.Api.Modules.Payment.KioskPaymentLinks",
+            "FloraBot.Api.Modules.Payment.WebPaymentLinks",
+            "FloraBot.Api.Modules.Payment.PayOsWebhookProcessor",
+            "FloraBot.Api.Modules.Payment.PayOsClientResolver",
+            "FloraBot.Api.Modules.Identity.ShopLoyalty",
+            "FloraBot.Api.Modules.Ordering.PreorderCapacity",
+            "FloraBot.Api.Modules.KioskOps.KioskTerminations"
+        ];
+        var types = typeof(Program).Assembly.GetTypes();
+        Assert.All(owners, owner => Assert.Contains(types, type => type.FullName == owner));
+        AssertModuleBoundaries(type => owners.Any(owner => type.FullName == owner ||
+            type.FullName?.StartsWith(owner + "+", StringComparison.Ordinal) == true));
+    }
+
+    private static void AssertModuleBoundaries(Func<Type, bool>? include = null)
     {
         using var db = new FloraDbContext(new DbContextOptionsBuilder<FloraDbContext>().UseNpgsql("Host=unused;Database=unused;Username=unused").Options);
         var entities = db.Model.GetEntityTypes().ToDictionary(x => x.ClrType, x => x.GetViewSchema() ?? x.GetSchema()!);
         Assert.All(entities.Values, schema => Assert.Contains(schema, Schemas.Values));
         var violations = new HashSet<string>();
-        foreach (var type in typeof(Program).Assembly.GetTypes().Where(x => Owner(x) is not null))
+        foreach (var type in typeof(Program).Assembly.GetTypes().Where(x => Owner(x) is not null && (include is null || include(x))))
         {
             var owner = Owner(type)!;
             Assert.True(Schemas.TryGetValue(owner, out var schema), $"Unmapped module {owner}");

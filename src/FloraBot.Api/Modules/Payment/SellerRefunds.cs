@@ -110,27 +110,17 @@ public static class SellerRefunds
 
             var items = new List<SellerRefundSummary>();
             await using (var cmd = new NpgsqlCommand("""
-                SELECT p.id,
-                       p.order_id,
-                       o.order_code,
-                       p.amount,
-                       p.status,
-                       st.status AS submission_status,
-                       p.reason,
-                       p.created_at,
-                       (p.approved_by IS NOT NULL AND EXISTS(
-                           SELECT 1 FROM identity.users u WHERE u.id = p.approved_by AND u.role = 'ADMIN' AND u.status = 'ACTIVE'
-                       )) AS is_approved,
-                       st.transferred_at
-                FROM payment.payments p
-                JOIN ordering.orders o ON o.id = p.order_id
-                LEFT JOIN payment.seller_refund_transfers st ON st.refund_id = p.id
-                WHERE p.kind = 'REFUND'
-                  AND o.seller_id = @sellerId
-                  AND (p.funding_provenance = 'SELLER_DIRECT' OR coalesce(p.is_direct_receipt, false) = true)
-                  AND (@statusFilter IS NULL OR p.status = @statusFilter)
-                ORDER BY p.created_at DESC, p.id DESC
-                OFFSET @offset LIMIT @fetchCount
+                SELECT id,
+                       order_id,
+                       order_code,
+                       amount,
+                       status,
+                       submission_status,
+                       reason,
+                       created_at,
+                       is_approved,
+                       transferred_at
+                FROM payment.v2_rf_list_seller_refunds(@sellerId, @statusFilter, @offset, @fetchCount)
                 """, conn))
             {
                 cmd.Parameters.AddWithValue("sellerId", sellerId);
@@ -189,32 +179,24 @@ public static class SellerRefunds
 
             SellerRefundDetailResponse? detail = null;
             await using (var cmd = new NpgsqlCommand("""
-                SELECT p.id,
-                       p.order_id,
-                       o.order_code,
-                       p.amount,
-                       p.status,
-                       p.reason,
-                       p.created_at,
-                       (p.approved_by IS NOT NULL AND EXISTS(
-                           SELECT 1 FROM identity.users u WHERE u.id = p.approved_by AND u.role = 'ADMIN' AND u.status = 'ACTIVE'
-                       )) AS is_approved,
-                       o.refund_bank_name IS NOT NULL AS has_bank,
-                       st.id AS sub_id,
-                       st.provider_reference,
-                       st.transferred_at,
-                       st.status AS sub_status,
-                       st.note AS sub_note,
-                       st.created_at AS sub_created,
-                       st.reviewed_by,
-                       st.reviewed_at
-                FROM payment.payments p
-                JOIN ordering.orders o ON o.id = p.order_id
-                LEFT JOIN payment.seller_refund_transfers st ON st.refund_id = p.id
-                WHERE p.id = @refundId
-                  AND p.kind = 'REFUND'
-                  AND o.seller_id = @sellerId
-                  AND (p.funding_provenance = 'SELLER_DIRECT' OR coalesce(p.is_direct_receipt, false) = true)
+                SELECT id,
+                       order_id,
+                       order_code,
+                       amount,
+                       status,
+                       reason,
+                       created_at,
+                       is_approved,
+                       has_bank,
+                       sub_id,
+                       provider_reference,
+                       transferred_at,
+                       sub_status,
+                       sub_note,
+                       sub_created,
+                       reviewed_by,
+                       reviewed_at
+                FROM payment.v2_rf_get_seller_refund_detail(@sellerId, @refundId)
                 """, conn))
             {
                 cmd.Parameters.AddWithValue("refundId", refundId);
@@ -308,22 +290,14 @@ public static class SellerRefunds
             string? refundBankAccountEnc = null;
 
             await using (var cmd = new NpgsqlCommand("""
-                SELECT p.id,
-                       p.order_id,
-                       p.status,
-                       (p.approved_by IS NOT NULL AND EXISTS(
-                           SELECT 1 FROM identity.users u WHERE u.id = p.approved_by AND u.role = 'ADMIN' AND u.status = 'ACTIVE'
-                       )) AS is_approved,
-                       o.refund_bank_name,
-                       o.refund_bank_holder,
-                       o.refund_bank_account_enc
-                FROM payment.payments p
-                JOIN ordering.orders o ON o.id = p.order_id
-                WHERE p.id = @refundId
-                  AND p.kind = 'REFUND'
-                  AND o.seller_id = @sellerId
-                  AND (p.funding_provenance = 'SELLER_DIRECT' OR coalesce(p.is_direct_receipt, false) = true)
-                FOR UPDATE OF p, o
+                SELECT id,
+                       order_id,
+                       status,
+                       is_approved,
+                       refund_bank_name,
+                       refund_bank_holder,
+                       refund_bank_account_enc
+                FROM payment.v2_rf_lock_refund_for_bank_details(@sellerId, @refundId)
                 """, conn, tx))
             {
                 cmd.Parameters.AddWithValue("refundId", refundId);
@@ -423,16 +397,8 @@ public static class SellerRefunds
 
             // Verify refund exists, is approved direct refund in pending status
             await using (var checkCmd = new NpgsqlCommand("""
-                SELECT p.status,
-                       (p.approved_by IS NOT NULL AND EXISTS(
-                           SELECT 1 FROM identity.users u WHERE u.id = p.approved_by AND u.role = 'ADMIN' AND u.status = 'ACTIVE'
-                       )) AS is_approved
-                FROM payment.payments p
-                JOIN ordering.orders o ON o.id = p.order_id
-                WHERE p.id = @refundId
-                  AND p.kind = 'REFUND'
-                  AND o.seller_id = @sellerId
-                  AND (p.funding_provenance = 'SELLER_DIRECT' OR coalesce(p.is_direct_receipt, false) = true)
+                SELECT status, is_approved
+                FROM payment.v2_rf_check_evidence_upload_eligibility(@sellerId, @refundId)
                 """, conn))
             {
                 checkCmd.Parameters.AddWithValue("refundId", refundId);
@@ -516,23 +482,15 @@ public static class SellerRefunds
             string? refundBankAccountEnc;
 
             await using (var cmd = new NpgsqlCommand("""
-                SELECT p.id,
-                       p.order_id,
-                       p.amount,
-                       p.status,
-                       (p.approved_by IS NOT NULL AND EXISTS(
-                           SELECT 1 FROM identity.users u WHERE u.id = p.approved_by AND u.role = 'ADMIN' AND u.status = 'ACTIVE'
-                       )) AS is_approved,
-                       o.refund_bank_name,
-                       o.refund_bank_holder,
-                       o.refund_bank_account_enc
-                FROM payment.payments p
-                JOIN ordering.orders o ON o.id = p.order_id
-                WHERE p.id = @refundId
-                  AND p.kind = 'REFUND'
-                  AND o.seller_id = @sellerId
-                  AND (p.funding_provenance = 'SELLER_DIRECT' OR coalesce(p.is_direct_receipt, false) = true)
-                FOR UPDATE OF p, o
+                SELECT id,
+                       order_id,
+                       amount,
+                       status,
+                       is_approved,
+                       refund_bank_name,
+                       refund_bank_holder,
+                       refund_bank_account_enc
+                FROM payment.v2_rf_lock_refund_for_submit_transfer(@sellerId, @refundId)
                 """, conn, tx))
             {
                 cmd.Parameters.AddWithValue("refundId", refundId);
@@ -675,7 +633,7 @@ public static class SellerRefunds
 
             Guid? attachmentId = null;
             await using (var getAttachCmd = new NpgsqlCommand("""
-                SELECT id FROM notify.attachments WHERE file_url = @url
+                SELECT id FROM payment.v2_rf_get_attachment_id(@url)
                 """, conn, tx))
             {
                 getAttachCmd.Parameters.AddWithValue("url", verifiedMedia.Url);
@@ -769,29 +727,26 @@ public static class SellerRefunds
 
             await using var conn = await data.OpenConnectionAsync(ct);
             await using var cmd = new NpgsqlCommand("""
-                SELECT st.id,
-                       st.refund_id,
-                       st.seller_id,
-                       s.shop_name,
-                       st.submitted_by,
-                       u.full_name AS submitter_name,
-                       st.amount,
-                       st.currency,
-                       st.receiver_bank_name,
-                       st.receiver_bank_holder,
-                       st.provider_reference,
-                       st.transferred_at,
-                       st.evidence_attachment_id,
-                       st.evidence_url,
-                       st.status,
-                       st.note,
-                       st.created_at,
-                       st.reviewed_by,
-                       st.reviewed_at
-                FROM payment.seller_refund_transfers st
-                JOIN identity.sellers s ON s.id = st.seller_id
-                JOIN identity.users u ON u.id = st.submitted_by
-                WHERE st.refund_id = @refundId
+                SELECT id,
+                       refund_id,
+                       seller_id,
+                       shop_name,
+                       submitted_by,
+                       submitter_name,
+                       amount,
+                       currency,
+                       receiver_bank_name,
+                       receiver_bank_holder,
+                       provider_reference,
+                       transferred_at,
+                       evidence_attachment_id,
+                       evidence_url,
+                       status,
+                       note,
+                       created_at,
+                       reviewed_by,
+                       reviewed_at
+                FROM payment.v2_rf_get_admin_seller_submission(@refundId)
                 """, conn);
             cmd.Parameters.AddWithValue("refundId", refundId);
 
@@ -835,15 +790,8 @@ public static class SellerRefunds
         NpgsqlTransaction? tx = null)
     {
         await using var cmd = new NpgsqlCommand("""
-            SELECT u.id
-            FROM identity.users u
-            JOIN identity.sellers s ON s.id = u.seller_id
-            WHERE u.id = @actorId
-              AND u.role = 'SELLER'
-              AND u.seller_id = @sellerId
-              AND u.status = 'ACTIVE'
-              AND s.status = 'ACTIVE'
-            FOR SHARE
+            SELECT id
+            FROM payment.v2_rf_verify_active_seller_owner(@actorId, @sellerId)
             """, conn, tx);
         cmd.Parameters.AddWithValue("actorId", actorId);
         cmd.Parameters.AddWithValue("sellerId", sellerId);

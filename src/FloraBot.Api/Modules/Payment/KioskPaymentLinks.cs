@@ -55,7 +55,7 @@ public static class KioskPaymentLinks
                     deadline = snapshot.PayBefore;
 
                     // Derive seller from actual checkout orders
-                    await using var sellerCmd = new NpgsqlCommand("SELECT DISTINCT seller_id FROM ordering.orders WHERE checkout_id=@id", connection, transaction);
+                    await using var sellerCmd = new NpgsqlCommand("SELECT seller_id FROM payment.v2_link_get_checkout_sellers(@id)", connection, transaction);
                     sellerCmd.Parameters.AddWithValue("id", checkoutId);
                     var sellers = new List<Guid>();
                     await using (var sReader = await sellerCmd.ExecuteReaderAsync(ct))

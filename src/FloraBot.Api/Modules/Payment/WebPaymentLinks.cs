@@ -43,7 +43,7 @@ public static class WebPaymentLinks
                     // Derive seller from orders
                     await using var sellerCmd = connection.CreateCommand();
                     sellerCmd.Transaction = tx;
-                    sellerCmd.CommandText = "SELECT DISTINCT seller_id FROM ordering.orders WHERE checkout_id=@checkout";
+                    sellerCmd.CommandText = "SELECT seller_id FROM payment.v2_link_get_checkout_sellers(@checkout)";
                     sellerCmd.Parameters.AddWithValue("checkout", checkout.Value);
                     var sellers = new List<Guid>();
                     await using (var sReader = await sellerCmd.ExecuteReaderAsync(ct))

@@ -88,7 +88,7 @@ public static class SellerPaymentsEndpoints
 
         await using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = "SELECT id, role, status, seller_id FROM identity.users WHERE id = @id";
+        cmd.CommandText = "SELECT id, role, status, seller_id FROM payment.v2_sp_get_actor(@id)";
         cmd.Parameters.AddWithValue("id", actorId);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -281,8 +281,7 @@ public static class SellerPaymentsEndpoints
                     await using var orderCmd = connection.CreateCommand();
                     orderCmd.CommandText = """
                         SELECT id, order_code, status, total_amount, tracking_token, points_redeemed, discount_amount
-                        FROM ordering.orders
-                        WHERE checkout_id = @checkoutId
+                        FROM payment.v2_sp_get_checkout_orders(@checkoutId)
                         """;
                     orderCmd.Parameters.AddWithValue("checkoutId", checkoutId.Value);
                     await using var oReader = await orderCmd.ExecuteReaderAsync(ct);
@@ -455,18 +454,8 @@ public static class SellerPaymentsEndpoints
 
                 await using var summaryCmd = connection.CreateCommand();
                 summaryCmd.CommandText = """
-                    SELECT
-                        COALESCE(SUM(CASE WHEN p.status = 'SUCCEEDED' AND p.kind = 'CHARGE' THEN p.amount ELSE 0 END), 0) AS gross_paid,
-                        COALESCE(SUM(CASE WHEN p.status = 'SUCCEEDED' AND p.kind = 'REFUND' THEN p.amount ELSE 0 END), 0) AS total_refunded,
-                        COUNT(DISTINCT CASE WHEN p.status = 'SUCCEEDED' AND p.kind = 'CHARGE' THEN o.id END) AS paid_orders,
-                        COUNT(DISTINCT CASE WHEN o.status IN ('PAID', 'DISPENSING', 'AWAITING_PAYMENT') THEN o.id END) AS unclaimed_orders,
-                        COALESCE(SUM(CASE WHEN p.status = 'PENDING' AND p.kind = 'CHARGE' THEN p.amount ELSE 0 END), 0) AS pending_amount
-                    FROM payment.payments p
-                    JOIN ordering.orders o ON o.checkout_id = p.checkout_id
-                    WHERE p.seller_id = @sellerId AND p.is_direct_receipt = true
-                      AND (@from IS NULL OR p.created_at >= @from)
-                      AND (@to IS NULL OR p.created_at <= @to)
-                      AND (@kioskId IS NULL OR o.kiosk_id = @kioskId)
+                    SELECT gross_paid, total_refunded, paid_orders, unclaimed_orders, pending_amount
+                    FROM payment.v2_sp_get_sales_summary(@sellerId, @from, @to, @kioskId)
                     """;
                 summaryCmd.Parameters.AddWithValue("sellerId", sellerId);
                 summaryCmd.Parameters.Add("from", NpgsqlDbType.TimestampTz).Value = (object?)from ?? DBNull.Value;
@@ -491,17 +480,8 @@ public static class SellerPaymentsEndpoints
                 // Breakdown by kiosk
                 await using var kioskCmd = connection.CreateCommand();
                 kioskCmd.CommandText = """
-                    SELECT k.id, k.code, k.name,
-                           COALESCE(SUM(CASE WHEN p.status = 'SUCCEEDED' AND p.kind = 'CHARGE' THEN p.amount ELSE 0 END), 0) AS gross_paid,
-                           COUNT(DISTINCT o.id) AS order_count
-                    FROM kiosk_ops.kiosks k
-                    JOIN ordering.orders o ON o.kiosk_id = k.id
-                    JOIN payment.payments p ON p.checkout_id = o.checkout_id AND p.is_direct_receipt = true AND p.seller_id = @sellerId
-                    WHERE (@from IS NULL OR p.created_at >= @from)
-                      AND (@to IS NULL OR p.created_at <= @to)
-                      AND (@kioskId IS NULL OR k.id = @kioskId)
-                    GROUP BY k.id, k.code, k.name
-                    ORDER BY gross_paid DESC, k.name;
+                    SELECT id, code, name, gross_paid, order_count
+                    FROM payment.v2_sp_get_sales_by_kiosk(@sellerId, @from, @to, @kioskId)
                     """;
                 kioskCmd.Parameters.AddWithValue("sellerId", sellerId);
                 kioskCmd.Parameters.Add("from", NpgsqlDbType.TimestampTz).Value = (object?)from ?? DBNull.Value;

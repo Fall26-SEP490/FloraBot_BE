@@ -71,3 +71,7 @@ An accepted termination blocks new obligations while retaining existing paid ful
 ## Local verification
 
 The four focused test factories require explicit `TEST_DATABASE_URL` and `TEST_VALKEY_URL`; they never fall back to the application's DATABASE_URL or a local coordinator file. Supply a disposable initialized database and discover the actual published cache port after Docker restarts. Full API runs should also set `TEST_JOBS_DATABASE_URL` to a separately initialized disposable jobs database. Keep test DB/Valkey bindings separate from an application instance. See the coordinator's final verification report for executed results and known upstream baseline failures; this guide itself is not a test-pass certificate.
+
+## Private database contracts
+
+Apply the three `20261104_zz_*_contracts.sql` migrations after the Business V2 migrations. Payment/refund and termination endpoints use typed SQL contracts for foreign-module data instead of accessing foreign tables directly. Locking contracts execute in the caller transaction; receiver snapshots, tenant checks, private evidence binding and audit behavior remain unchanged. These functions are internal database contracts and are not HTTP endpoints.
