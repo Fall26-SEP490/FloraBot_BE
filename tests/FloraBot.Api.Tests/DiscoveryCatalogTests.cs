@@ -247,8 +247,11 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
     }
 
     [Fact]
-    public async Task WebCatalogEndpoint_ReturnsStockedPreorderBouquetsWithSearchAndPagination()
+    public async Task WebCatalogEndpoint_ReturnsActiveProductTemplatesWithSearchAndPagination()
     {
+        // The old premise of pre-stocking PREORDER slots via flow.stock_bouquet is retired because
+        // flow.stock_bouquet requires WALK_IN slots. The web catalog (screen.v_web_catalog) lists active
+        // product templates for future preorder fulfillment at kiosks with active PREORDER capacity.
         var sellerId = Guid.NewGuid();
         var sellerUserId = Guid.NewGuid();
         var kioskId = Guid.NewGuid();
@@ -267,7 +270,6 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
         // Create 26 ACTIVE ARTIFICIAL products with unique ASCII prefix for deterministic ordering & isolated search
         var asciiPrefix = $"PAGE{Guid.NewGuid():N}_";
         var productIds = new List<Guid>();
-        var preorderBouquetIds = new List<Guid>();
 
         for (int i = 1; i <= 26; i++)
         {
@@ -276,9 +278,8 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
             var prodName = $"{asciiPrefix}{i:D2}";
             await SeedProductAsync(prodId, sellerId, prodName, 100000 + i * 1000);
         }
-        preorderBouquetIds.Add(await StockBouquetAsync(productIds[0], preorderSlotId, sellerUserId, $"QR-PAGE-{Guid.NewGuid():N}"[..20]));
 
-        // Also stock 1 walk-in bouquet for product 1 to verify walk-in is NOT in web catalog bouquets
+        // Stock 1 walk-in bouquet for product 1 to verify walk-in stock is NOT in web catalog bouquet selections
         var bqWalkIn = await StockBouquetAsync(productIds[0], walkInSlotId, sellerUserId, $"QR-PAGE-W-{Guid.NewGuid():N}"[..20]);
 
         using var client = factory.CreateClient();
@@ -301,9 +302,11 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
             Assert.Equal(kioskId, page1.Items[i].KioskId);
         }
 
-        // Verify PREORDER separation: Product 1 has preorder bouquet, but NOT walk-in bouquet
+        // Verify PREORDER separation: Product 1 is listed for future preorder fulfillment (Zone = PREORDER),
+        // but does NOT include walk-in stock in its bouquet selections
         var item1 = page1.Items[0];
-        Assert.Contains(preorderBouquetIds[0], item1.Bouquets);
+        Assert.Equal("PREORDER", item1.Zone);
+        Assert.Empty(item1.Bouquets);
         Assert.DoesNotContain(bqWalkIn, item1.Bouquets);
 
         // 2. Page 2: LIMIT 26 OFFSET 25 -> returns remaining 1 item, HasMore = false
@@ -379,7 +382,6 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
 
         var incProdName = $"Hoa Giay C01 {Guid.NewGuid():N}"[..20];
         await SeedProductAsync(productInc, sellerActive, incProdName, 200000);
-        await StockBouquetAsync(productInc, slotInc, sellerUserActive, $"QR-INC-{Guid.NewGuid():N}"[..20]);
 
         using var client = factory.CreateClient();
         var res = await client.GetAsync($"/api/shop/catalog?search={Uri.EscapeDataString(incProdName)}");
@@ -468,7 +470,24 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
         await SeedProductAsync(productId, sellerId, productName, 320000);
 
         var bkW = await StockBouquetAsync(productId, slotWalkIn, sellerUserId, $"QR-WK-{Guid.NewGuid():N}"[..20]);
-        var bkP = await StockBouquetAsync(productId, slotPreorder, sellerUserId, $"QR-PK-{Guid.NewGuid():N}"[..20]);
+
+        var bkP = Guid.NewGuid();
+        // Read-filter adversarial state: deliberately seed a relationally valid PREORDER/STOCKED row via SQL
+        // (no runtime flow claim) to independently exercise the read-model zone filter (sl.zone = 'WALK_IN')
+        // even under stale/adversarial inventory in a PREORDER slot, ensuring non-walk-in stock is excluded.
+        await using (var seedPreorderBouquet = DataSource.CreateCommand("""
+            INSERT INTO kiosk_ops.bouquets (id, product_id, seller_id, qr_code, price_snapshot, status, sellable_until, stocked_at)
+            VALUES (@id, @product, @seller, @qr, 320000, 'STOCKED', public.app_now() + interval '48 hours', public.app_now());
+            UPDATE kiosk_ops.slots SET bouquet_id = @id, status = 'STOCKED', updated_at = public.app_now() WHERE id = @slot;
+            """))
+        {
+            seedPreorderBouquet.Parameters.AddWithValue("id", bkP);
+            seedPreorderBouquet.Parameters.AddWithValue("product", productId);
+            seedPreorderBouquet.Parameters.AddWithValue("seller", sellerId);
+            seedPreorderBouquet.Parameters.AddWithValue("qr", $"QR-PK-ADV-{Guid.NewGuid():N}"[..20]);
+            seedPreorderBouquet.Parameters.AddWithValue("slot", slotPreorder);
+            await seedPreorderBouquet.ExecuteNonQueryAsync();
+        }
 
         using var deviceClient = factory.CreateClient();
         deviceClient.DefaultRequestHeaders.Add("X-Kiosk-Key", rawApiKey);
@@ -482,8 +501,9 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
 
         // Must contain WALK_IN bouquet
         Assert.Contains(elements, el => el.GetProperty("bouquet_id").GetGuid() == bkW);
-        // Must EXCLUDE PREORDER reserved bouquet
+        // Must EXCLUDE PREORDER inventory (both by bouquet_id and slot_code)
         Assert.DoesNotContain(elements, el => el.GetProperty("bouquet_id").GetGuid() == bkP);
+        Assert.DoesNotContain(elements, el => el.GetProperty("slot_code").GetString() == "P01");
 
         // 2. GET /api/kiosks/{kioskId}/catalog/items
         var itemsRes = await deviceClient.GetAsync($"/api/kiosks/{kioskId}/catalog/items");
@@ -498,8 +518,9 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
         Assert.Equal(320000, walkInItem.Price);
         Assert.Equal("W01", walkInItem.SlotCode);
 
-        // Excludes preorder bouquet
+        // Must EXCLUDE PREORDER inventory (both by bouquet_id and slot_code)
         Assert.DoesNotContain(catalogItems, x => x.BouquetId == bkP);
+        Assert.DoesNotContain(catalogItems, x => x.SlotCode == "P01");
     }
 
     [Fact]

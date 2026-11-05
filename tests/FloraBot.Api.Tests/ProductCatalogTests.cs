@@ -691,20 +691,25 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Stock Test Seller','SELLER',@seller,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Kiosk Test','123 Test St','Q1',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
-            VALUES(@slot,@kiosk,'S01',1);
-            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
-
-            -- Create and activate ARTIFICIAL flower product
-            INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
-            VALUES(@product,@seller,'Hoa Lan Giả','Mo ta',280000,'{"LAN"}',48,'ACTIVE','ARTIFICIAL',20,20,30);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)
+            VALUES(@slot,@kiosk,'S01',1,'WALK_IN');
             """);
         setup.Parameters.AddWithValue("kiosk", kiosk);
         setup.Parameters.AddWithValue("slot", slot);
         setup.Parameters.AddWithValue("seller", seller);
         setup.Parameters.AddWithValue("user", user);
-        setup.Parameters.AddWithValue("product", product);
         await setup.ExecuteNonQueryAsync();
+
+        await CurrentMainKioskFixture.AssignKioskWithLeaseAsync(data, kiosk, seller);
+
+        await using var setupProduct = data.CreateCommand("""
+            -- Create and activate ARTIFICIAL flower product
+            INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
+            VALUES(@product,@seller,'Hoa Lan Giả','Mo ta',280000,'{"LAN"}',48,'ACTIVE','ARTIFICIAL',20,20,30);
+            """);
+        setupProduct.Parameters.AddWithValue("seller", seller);
+        setupProduct.Parameters.AddWithValue("product", product);
+        await setupProduct.ExecuteNonQueryAsync();
 
         // Execute ORIGINAL flow.stock_bouquet signature:
         // stock_bouquet(p_batch uuid, p_product uuid, p_slot uuid, p_staff uuid, p_qr text, p_now timestamptz DEFAULT NULL)
