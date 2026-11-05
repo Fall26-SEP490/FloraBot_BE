@@ -186,15 +186,16 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private async Task SeedSlotAsync(Guid slotId, Guid kioskId, string slotCode, Guid? currentSellerId, short relayChannel = 0)
+    private async Task SeedSlotAsync(Guid slotId, Guid kioskId, string slotCode, Guid? currentSellerId, short relayChannel = 0, string? zone = null)
     {
         await using var cmd = DataSource.CreateCommand(@"
-            INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, status, current_seller_id, relay_channel, created_at, updated_at)
-            VALUES(@id, @kioskId, @slotCode, CASE WHEN @sellerId IS NULL THEN 'FREE' ELSE 'RENTED_EMPTY' END, @sellerId, @relay, public.app_now(), public.app_now())
+            INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, status, current_seller_id, relay_channel, zone, created_at, updated_at)
+            VALUES(@id, @kioskId, @slotCode, CASE WHEN @sellerId IS NULL THEN 'FREE' ELSE 'RENTED_EMPTY' END, @sellerId, @relay, @zone, public.app_now(), public.app_now())
             ON CONFLICT (id) DO UPDATE SET
                 current_seller_id = EXCLUDED.current_seller_id,
                 status = EXCLUDED.status,
                 relay_channel = EXCLUDED.relay_channel,
+                zone = COALESCE(EXCLUDED.zone, kiosk_ops.slots.zone),
                 updated_at = public.app_now();
         ");
         cmd.Parameters.AddWithValue("id", slotId);
@@ -202,6 +203,7 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         cmd.Parameters.AddWithValue("slotCode", slotCode);
         cmd.Parameters.AddWithValue("sellerId", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)currentSellerId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("relay", relayChannel);
+        cmd.Parameters.AddWithValue("zone", (object?)zone ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -587,13 +589,13 @@ public sealed class KioskLocationTests(ApiFactory factory) : IClassFixture<ApiFa
         // Incomplete kiosk (null coords)
         var incSlot = Guid.NewGuid();
         await SeedKioskAsync(incompleteKiosk, $"K-INC-{incompleteKiosk:N}", "Incomplete Kiosk", "Addr", "HCM", "ONLINE", null, null);
-        await SeedSlotAsync(incSlot, incompleteKiosk, "A01", null, 0);
+        await SeedSlotAsync(incSlot, incompleteKiosk, "A01", null, 0, zone: "PREORDER");
         await AssignKioskAsync(incompleteKiosk, seller);
 
         // Complete kiosk
         var comSlot = Guid.NewGuid();
         await SeedKioskAsync(completeKiosk, $"K-COM-{completeKiosk:N}", "Complete Kiosk", "123 Complete St", "HCM", "ONLINE", 10.771918, 106.698347);
-        await SeedSlotAsync(comSlot, completeKiosk, "B01", null, 0);
+        await SeedSlotAsync(comSlot, completeKiosk, "B01", null, 0, zone: "PREORDER");
         await AssignKioskAsync(completeKiosk, seller);
 
         using var client = factory.CreateClient();

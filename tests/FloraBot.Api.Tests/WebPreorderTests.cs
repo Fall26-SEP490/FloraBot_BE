@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using FloraBot.Api.Auth;
 using FloraBot.Api.Data.Entities;
@@ -23,11 +24,29 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
     [InlineData("STOCK", false, false, false, true)]
     public async Task WebPaymentWaitsForPhysicalPickupAndSupportsCancellation(string kind, bool cancel, bool expire, bool late, bool fault)
     {
-        using var app = factory.WithWebHostBuilder(_ => { });
+        var seller = Guid.NewGuid();
+        var secretRef = "channel-" + seller.ToString("N");
+        using var app = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("PAYOS_CLIENT_ID", "test-client");
+            builder.UseSetting("PAYOS_API_KEY", "test-api");
+            builder.UseSetting("PAYOS_CHECKSUM_KEY", "test-only-checksum-key");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:SellerId", seller.ToString());
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", "test-client");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ApiKey", "test-api");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", "test-only-checksum-key");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedBin", "970415");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedAccount", "1010099887766");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedName", "TIEM HOA TEST");
+        });
         using var scope = app.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
-        var seller = Guid.NewGuid(); var user = Guid.NewGuid(); var product = Guid.NewGuid();
-        var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid(); var customer = Guid.NewGuid(); var stranger = Guid.NewGuid();
+        var user = Guid.NewGuid(); var product = Guid.NewGuid();
+        var kiosk = Guid.NewGuid();
+        var walkSlotId = Guid.NewGuid();
+        var preorderSlotId = Guid.NewGuid();
+        var slot = kind == "CUSTOM" ? preorderSlotId : walkSlotId;
+        var customer = Guid.NewGuid(); var stranger = Guid.NewGuid();
         var key = "web-test-" + kiosk;
         await using var setup = source.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
@@ -39,10 +58,19 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
             VALUES(@product,@seller,'Test bouquet',350000,48,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash,last_heartbeat_at,latitude,longitude)
             VALUES(@kiosk,@kiosk::text,'Test kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash,CURRENT_TIMESTAMP,10.771918,106.698347);
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
-            """);
-        foreach (var (name, fixtureId) in new[] { ("seller", seller), ("user", user), ("product", product), ("kiosk", kiosk), ("slot", slot), ("customer", customer), ("stranger", stranger) }) setup.Parameters.AddWithValue(name, fixtureId);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)
+            VALUES(@walkSlot,@kiosk,'A01',0,'WALK_IN'),
+                  (@preorderSlot,@kiosk,'A02',1,'PREORDER');
+            INSERT INTO payment.payment_channel_versions (
+                id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account,
+                expected_bank_name, state, verified_at
+            ) VALUES (
+                public.uuid_v7(), @seller, 1, @secretRef, '970415', '1010099887766',
+                'TIEM HOA TEST', 'ACTIVE', public.app_now()
+            );
+            """ + "\n" + CurrentMainKioskFixture.AssignKioskWithLeaseSql);
+        foreach (var (name, fixtureId) in new[] { ("seller", seller), ("user", user), ("product", product), ("kiosk", kiosk), ("walkSlot", walkSlotId), ("preorderSlot", preorderSlotId), ("customer", customer), ("stranger", stranger) }) setup.Parameters.AddWithValue(name, fixtureId);
+        setup.Parameters.AddWithValue("secretRef", secretRef);
         setup.Parameters.AddWithValue("hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant());
         await setup.ExecuteNonQueryAsync();
 
@@ -61,6 +89,27 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         using var foreign = app.CreateClient();
         foreign.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = stranger, Role = "CUSTOMER", FullName = "Other" }));
         var id = Guid.NewGuid(); var pickup = DateTimeOffset.UtcNow.AddHours(3);
+        if (kind == "STOCK")
+        {
+            var checkoutId = (Guid)(await Sql("SELECT flow.kiosk_checkout(@kiosk, ARRAY[@bouquet]::uuid[], @customer)",
+                ("kiosk", kiosk), ("bouquet", bouquet!), ("customer", customer)))!;
+            await Sql("""
+                INSERT INTO ordering.web_requests(
+                    id, customer_id, seller_id, product_id, kiosk_id, kind, instructions,
+                    pickup_at, pickup_before, quoted_price, state, order_id, request_payload, display_snapshot
+                )
+                VALUES (
+                    @id, @customer, @seller, @product, @kiosk, 'STOCK', @instructions,
+                    @pickup, @pickup + interval '2 hours', 350000, 'ORDERED',
+                    (SELECT id FROM ordering.orders WHERE checkout_id = @checkout),
+                    jsonb_build_object('bouquet', @bouquet, 'pickup', @pickup),
+                    jsonb_build_object('product', 'Test bouquet', 'shop', 'Kiosk payment test', 'kiosk', 'Test kiosk', 'address', 'Test address')
+                );
+                """,
+                ("id", id), ("customer", customer), ("seller", seller), ("product", product),
+                ("kiosk", kiosk), ("instructions", "Pink flowers for a birthday"),
+                ("pickup", pickup.UtcDateTime), ("bouquet", bouquet!), ("checkout", checkoutId));
+        }
         var input = new { id, kind, productId = product, kioskId = kiosk, bouquetId = bouquet, pickupAt = pickup, instructions = "Pink flowers for a birthday" };
         (await client.PostAsJsonAsync("/api/member/preorders", input)).EnsureSuccessStatusCode();
         (await client.PostAsJsonAsync("/api/member/preorders", input)).EnsureSuccessStatusCode();
@@ -80,6 +129,16 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         Assert.NotNull(row.OrderId); Assert.NotNull(row.TrackingToken);
         if (late) await Sql("UPDATE ordering.orders SET created_at=public.app_now()-interval '1 hour' WHERE id=@id", ("id", row.OrderId!.Value));
         if (fault) await Sql("UPDATE kiosk_ops.slots SET status='FAULT' WHERE id=@id", ("id", slot));
+        await Sql("""
+            UPDATE payment.payments
+            SET seller_id = @seller,
+                channel_id = (SELECT id FROM payment.payment_channel_versions WHERE seller_id=@seller ORDER BY version DESC LIMIT 1),
+                channel_version = 1,
+                receiver_snapshot = '{"bin":"970415","accountNumber":"1010099887766","accountName":"TIEM HOA TEST","provider":"PAYOS"}'::jsonb,
+                funding_provenance = 'SELLER_DIRECT',
+                is_direct_receipt = true
+            WHERE checkout_id = @checkout AND funding_provenance = 'DIRECT_REQUIRED';
+            """, ("seller", seller), ("checkout", row.CheckoutId!.Value));
         await Sql("SELECT flow.checkout_paid(@checkout,@txn,true,350000)", ("checkout", row.CheckoutId!.Value), ("txn", "web-payment-" + id));
         if (late || fault)
         {
@@ -103,20 +162,56 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
             Assert.Equal(1L, await Sql("SELECT count(*) FROM payment.payments WHERE order_id=@id AND kind='REFUND'", ("id", row.OrderId.Value)));
             return;
         }
+        using var device = app.CreateClient(); device.DefaultRequestHeaders.Add("X-Kiosk-Key", key);
+        var pickupPath = $"/api/kiosks/{kiosk}/flows/request_pickup";
         if (kind == "CUSTOM")
         {
             await Sql("UPDATE ordering.web_requests SET pickup_at=public.app_now()+interval '1 hour',pickup_before=public.app_now()+interval '3 hours' WHERE id=@id", ("id", id));
             (await shop.PostAsJsonAsync(sellerPath + "/fulfill", new { slotId = slot, qrCode = "custom-" + id })).EnsureSuccessStatusCode();
             (await shop.PostAsJsonAsync(sellerPath + "/fulfill", new { slotId = slot, qrCode = "custom-" + id })).EnsureSuccessStatusCode();
+
+            // Receipt tracking token lookup must not bypass email OTP for preorders
+            Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = row.TrackingToken })).StatusCode);
+            Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId!.Value)));
+
+            // Request 8-digit pickup OTP via seller API
+            (await shop.PostAsync($"/api/me/preorders/{id}/pickup-otp", null)).EnsureSuccessStatusCode();
+            var customerEmail = customer.ToString() + "@example.invalid";
+            var sentMail = factory.EmailSender.SentEmails.Last(e => string.Equals(e.Recipient, customerEmail, StringComparison.OrdinalIgnoreCase));
+            var otpCode = Regex.Match(sentMail.Text, @"\b\d{8}\b").Value;
+            Assert.Equal(8, otpCode.Length);
+
+            // Wrong OTP rejected, no unlock token issued
+            var wrongAttempt = Guid.NewGuid();
+            var wrongCode = otpCode == "00000000" ? "11111111" : "00000000";
+            var wrongOtpResp = await device.PostAsJsonAsync($"/api/kiosks/{kiosk}/preorders/pickup-otp/open", new { code = wrongCode, attemptId = wrongAttempt });
+            Assert.Equal(HttpStatusCode.Unauthorized, wrongOtpResp.StatusCode);
+            Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId!.Value)));
+
+            // Valid OTP opens slot even before scheduled pickup window (early pickup allowed when ready)
+            var openAttempt = Guid.NewGuid();
+            var openResp = await device.PostAsJsonAsync($"/api/kiosks/{kiosk}/preorders/pickup-otp/open", new { code = otpCode, attemptId = openAttempt });
+            openResp.EnsureSuccessStatusCode();
+            var opened = await openResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            Assert.True(opened.TryGetProperty("watchToken", out _));
+
+            // Idempotent retry returns same command, single token issued
+            var replayResp = await device.PostAsJsonAsync($"/api/kiosks/{kiosk}/preorders/pickup-otp/open", new { code = otpCode, attemptId = openAttempt });
+            replayResp.EnsureSuccessStatusCode();
+            Assert.Equal(1L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId!.Value)));
+
+            // Order is still DISPENSING, not COMPLETED without physical door events
+            Assert.Equal("DISPENSING", await Sql("SELECT status FROM ordering.orders WHERE id=@id", ("id", row.OrderId!.Value)));
         }
-        using var device = app.CreateClient(); device.DefaultRequestHeaders.Add("X-Kiosk-Key", key);
-        var pickupPath = $"/api/kiosks/{kiosk}/flows/request_pickup";
-        if (kind == "CUSTOM") Assert.Equal(HttpStatusCode.Conflict, (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = row.TrackingToken })).StatusCode);
-        await Sql("UPDATE ordering.web_requests SET pickup_at=public.app_now()-interval '1 minute' WHERE id=@id", ("id", id));
-        (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = "wrong-code" })).EnsureSuccessStatusCode();
-        Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId.Value)));
-        (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = row.TrackingToken })).EnsureSuccessStatusCode();
-        Assert.Equal(1L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId.Value)));
+        else
+        {
+            // Historical legacy STOCK preorder compatibility:
+            // Current main supports historical retry, read, cancellation, and refund only.
+            // Physical delivery/pickup is not supported for legacy STOCK preorders because
+            // receipt tracking lookup rejects web orders and OTP requires CUSTOM + PREORDER zone.
+            Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = row.TrackingToken })).StatusCode);
+            Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@id", ("id", row.OrderId!.Value)));
+        }
     }
 }
 

@@ -18,7 +18,8 @@ public sealed class StaffTaskTests
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
         var adminId = Guid.NewGuid(); var staffId = Guid.NewGuid(); var seller = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid();
-        await using var setup = data.CreateCommand("""
+        var spareSlot = Guid.NewGuid();
+        await using var setup = data.CreateCommand($"""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@seller,'Delivery shop','0901112233','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,full_name,password_hash,role,seller_id) VALUES
@@ -26,10 +27,12 @@ public sealed class StaffTaskTests
               (@staff,@staff::text||'@example.invalid','Delivery staff','!unprovisioned','SELLER_STAFF',@seller);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Delivery kiosk','Delivery address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_slot(@slot,@seller,@admin);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone) VALUES
+              (@slot,@kiosk,'A01',0,'WALK_IN'),
+              (@spare,@kiosk,'A02',1,'WALK_IN');
+            {CurrentMainKioskFixture.AssignKioskWithLeaseSql}
             """);
-        foreach (var pair in new[] { ("admin", adminId), ("staff", staffId), ("seller", seller), ("kiosk", kiosk), ("slot", slot) }) setup.Parameters.AddWithValue(pair.Item1, pair.Item2);
+        foreach (var pair in new[] { ("admin", adminId), ("staff", staffId), ("seller", seller), ("kiosk", kiosk), ("slot", slot), ("spare", spareSlot) }) setup.Parameters.AddWithValue(pair.Item1, pair.Item2);
         await setup.ExecuteNonQueryAsync();
         using var admin = app.CreateClient();
         admin.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = adminId, Role = "ADMIN", FullName = "Admin", PasswordHash = "!unprovisioned" }));
@@ -39,15 +42,12 @@ public sealed class StaffTaskTests
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input with { KioskId = Guid.Parse("40000000-0000-0000-0000-000000000001") })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input with { AssigneeId = adminId })).StatusCode);
         (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input)).EnsureSuccessStatusCode();
-        var product = Guid.NewGuid(); var spareSlot = Guid.NewGuid();
+        var product = Guid.NewGuid();
         await using var inventory = data.CreateCommand("""
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
             VALUES(@product,@seller,'Staff delivery bouquet',350000,48,'ACTIVE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@spare,@kiosk,'A02',1);
-            SELECT flow.assign_slot(@spare,@seller,@admin);
             """);
         inventory.Parameters.AddWithValue("product", product); inventory.Parameters.AddWithValue("seller", seller);
-        inventory.Parameters.AddWithValue("spare", spareSlot); inventory.Parameters.AddWithValue("kiosk", kiosk); inventory.Parameters.AddWithValue("admin", adminId);
         await inventory.ExecuteNonQueryAsync();
         using var staff = app.CreateClient();
         staff.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = staffId, Role = "SELLER_STAFF", SellerId = seller, FullName = "Staff", PasswordHash = "!unprovisioned" }, "ACTIVE"));
@@ -77,12 +77,23 @@ public sealed class StaffTaskTests
         Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(stockPath, stock)).StatusCode);
         maintenance.CommandText = "UPDATE kiosk_ops.kiosks SET status='ONLINE' WHERE id=@id";
         await maintenance.ExecuteNonQueryAsync();
-        await using var package = data.CreateCommand("UPDATE identity.sellers SET package_expires_at=CURRENT_DATE-1 WHERE id=@id");
+        await using var package = data.CreateCommand("""
+            UPDATE identity.sellers SET package_expires_at=CURRENT_DATE-1 WHERE id=@id;
+            UPDATE identity.subscriptions SET period_from=CURRENT_DATE-366, period_to=CURRENT_DATE-1,
+                period_from_ts=public.app_now()-interval '366 days', period_to_ts=public.app_now()-interval '1 day'
+            WHERE seller_id=@id AND kiosk_id=@kiosk;
+            """);
         package.Parameters.AddWithValue("id", seller);
+        package.Parameters.AddWithValue("kiosk", kiosk);
         await package.ExecuteNonQueryAsync();
         Assert.Empty((await staff.GetFromJsonAsync<StaffStockOptions>(stockPath))!.Slots);
         Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(stockPath, stock)).StatusCode);
-        package.CommandText = "UPDATE identity.sellers SET package_expires_at=CURRENT_DATE+30 WHERE id=@id";
+        package.CommandText = """
+            UPDATE identity.sellers SET package_expires_at=CURRENT_DATE+30 WHERE id=@id;
+            UPDATE identity.subscriptions SET period_from=CURRENT_DATE, period_to=CURRENT_DATE+365,
+                period_from_ts=public.app_now(), period_to_ts=public.app_now()+interval '365 days'
+            WHERE seller_id=@id AND kiosk_id=@kiosk;
+            """;
         await package.ExecuteNonQueryAsync();
         var results = await Task.WhenAll(staff.PostAsJsonAsync(stockPath, stock), staff.PostAsJsonAsync(stockPath, stock));
         foreach (var response in results) response.EnsureSuccessStatusCode();

@@ -138,7 +138,9 @@ public sealed class JobTests : IAsyncLifetime
     {
         var seller = Guid.NewGuid(); var product = Guid.NewGuid();
         var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid();
-        await using var setup = data.CreateCommand("""
+        var channelId = Guid.NewGuid();
+        var secretRef = "test-chan-" + Guid.NewGuid().ToString("N")[..12];
+        await using var setup = data.CreateCommand($"""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@seller,'Expiry fixture','0900000000','ACTIVE',
               '20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
@@ -146,11 +148,19 @@ public sealed class JobTests : IAsyncLifetime
             VALUES(@product,@seller,'Expiry bouquet',350000,48,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Expiry kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone) VALUES(@slot,@kiosk,'A01',0,'WALK_IN');
+            {CurrentMainKioskFixture.AssignKioskWithLeaseSql}
+            INSERT INTO payment.payment_channel_versions (
+                id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account,
+                expected_bank_name, state, verified_at
+            ) VALUES (
+                @channelId, @seller, 1, @secretRef, '970415', '1010099887766',
+                'TIEM HOA SO 1', 'ACTIVE', public.app_now()
+            );
             """);
-        foreach (var (name, id) in new[] { ("seller", seller), ("product", product), ("kiosk", kiosk), ("slot", slot) })
+        foreach (var (name, id) in new[] { ("seller", seller), ("product", product), ("kiosk", kiosk), ("slot", slot), ("channelId", channelId) })
             setup.Parameters.AddWithValue(name, id);
+        setup.Parameters.AddWithValue("secretRef", secretRef);
         await setup.ExecuteNonQueryAsync();
         await using var checkoutCommand = data.CreateCommand("""
             SELECT flow.kiosk_checkout(@kiosk,ARRAY[flow.stock_bouquet(flow.new_batch(),@product,@slot,
@@ -161,9 +171,23 @@ public sealed class JobTests : IAsyncLifetime
         checkoutCommand.Parameters.AddWithValue("slot", slot);
         checkoutCommand.Parameters.AddWithValue("qr", product.ToString());
         var checkout = (Guid)(await checkoutCommand.ExecuteScalarAsync())!;
-        await using var paid = data.CreateCommand("SELECT flow.checkout_paid(@id,@txn,true,350000)");
-        paid.Parameters.AddWithValue("id", checkout); paid.Parameters.AddWithValue("txn", checkout.ToString());
-        await paid.ExecuteNonQueryAsync();
+
+        await using var pinPayment = data.CreateCommand("""
+            UPDATE payment.payments
+            SET seller_id = @seller,
+                channel_id = @channelId,
+                channel_version = 1,
+                receiver_snapshot = jsonb_build_object('bin','970415','accountNumber','1010099887766','accountName','TIEM HOA SO 1','provider','PAYOS'),
+                funding_provenance = 'SELLER_DIRECT',
+                is_direct_receipt = true
+            WHERE checkout_id = @id;
+            SELECT flow.checkout_paid(@id,@txn,true,350000);
+            """);
+        pinPayment.Parameters.AddWithValue("seller", seller);
+        pinPayment.Parameters.AddWithValue("channelId", channelId);
+        pinPayment.Parameters.AddWithValue("id", checkout);
+        pinPayment.Parameters.AddWithValue("txn", checkout.ToString());
+        await pinPayment.ExecuteNonQueryAsync();
         await using var age = data.CreateCommand("UPDATE kiosk_ops.slots SET hold_until=CURRENT_TIMESTAMP-interval '1 minute' WHERE id=@id RETURNING hold_order_id");
         age.Parameters.AddWithValue("id", slot);
         var order = (Guid)(await age.ExecuteScalarAsync())!;

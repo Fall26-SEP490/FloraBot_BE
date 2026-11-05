@@ -64,7 +64,20 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
         Assert.True(view.IsFresh);
         Assert.Equal(new bool?[] { true, false, null, true }, view.Slots.Select(s => s.HasFlowers));
         using var foreign = factory.CreateClient();
-        foreign.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", sellerId: Guid.NewGuid()));
+        var foreignSeller = Guid.NewGuid();
+        var foreignUser = Guid.NewGuid();
+        await using (var foreignSetup = Data.CreateCommand("""
+            INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
+            VALUES(@seller,'Foreign Telemetry Seller','0909999888','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
+            VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Foreign Telemetry User','SELLER',@seller,'ACTIVE');
+            """))
+        {
+            foreignSetup.Parameters.AddWithValue("seller", foreignSeller);
+            foreignSetup.Parameters.AddWithValue("user", foreignUser);
+            await foreignSetup.ExecuteNonQueryAsync();
+        }
+        foreign.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("SELLER", userId: foreignUser, sellerId: foreignSeller));
         Assert.Equal(HttpStatusCode.NotFound, (await foreign.GetAsync(route)).StatusCode);
         using var anonymous = factory.CreateClient();
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(route)).StatusCode);

@@ -159,7 +159,7 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
         var product = Guid.NewGuid();
         var taskId = Guid.Empty;
 
-        await using var setup = data.CreateCommand("""
+        await using var setup = data.CreateCommand($"""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at) VALUES
               (@seller,'Delivery Seller 1','0901111111','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30),
               (@otherSeller,'Delivery Seller 2','0902222222','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
@@ -170,9 +170,9 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
               (@staff2,@staff2::text||'@example.invalid','Shop Staff 2','!unprovisioned','SELLER_STAFF',@seller);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Delivery Kiosk','Address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
-            VALUES(@slot,@kiosk,'D01',0);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001'::uuid);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)
+            VALUES(@slot,@kiosk,'D01',0,'WALK_IN');
+            {CurrentMainKioskFixture.AssignKioskWithLeaseSql}
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
             VALUES(@product,@seller,'Delivery Rose',250000,48,'ACTIVE');
             """);
