@@ -50,9 +50,8 @@ public sealed class AdvisorTests(ApiFactory factory) : IClassFixture<ApiFactory>
             VALUES(@product,@seller,'Test bouquet',250000,48,'ACTIVE','Hoa tang me',ARRAY['MOTHER']);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash)
             VALUES(@kiosk,@kiosk::text,'Advisor kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash);
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel) VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_slot(@slot,@seller,'10000000-0000-0000-0000-000000000001');
-            """);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone) VALUES(@slot,@kiosk,'A01',0,'WALK_IN');
+            """ + "\n" + CurrentMainKioskFixture.AssignKioskWithLeaseSql);
         foreach (var (name, id) in new[] { ("seller", seller), ("user", user), ("product", product), ("kiosk", kiosk), ("slot", slot), ("customer", customer), ("stranger", stranger) }) setup.Parameters.AddWithValue(name, id);
         setup.Parameters.AddWithValue("hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant());
         await setup.ExecuteNonQueryAsync();
@@ -61,7 +60,7 @@ public sealed class AdvisorTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var bouquet = (Guid)(await stock.ExecuteScalarAsync())!;
         transport.Expire = async () =>
         {
-            await using var expire = source.CreateCommand("UPDATE kiosk_ops.bouquets SET sellable_until=now()-interval '1 second' WHERE id=@id");
+            await using var expire = source.CreateCommand("UPDATE kiosk_ops.bouquets SET stocked_at=now()-interval '1 day', sellable_until=now()-interval '1 second' WHERE id=@id");
             expire.Parameters.AddWithValue("id", bouquet); await expire.ExecuteNonQueryAsync();
         };
         using var client = app.CreateClient();
@@ -71,7 +70,8 @@ public sealed class AdvisorTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var input = new AiSuggestRequest(Guid.NewGuid().ToString(), "MOTHER", "41_60", "BIRTHDAY", "WARM", 300000);
         var route = $"/api/kiosks/{kiosk}/flows/ai_suggest";
         var response = await client.PostAsJsonAsync(route, input);
-        response.EnsureSuccessStatusCode();
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, $"HTTP {(int)response.StatusCode}: {responseBody}");
         var survey = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetGuid();
         var path = $"/api/kiosks/{kiosk}/surveys/{survey}";
         var read = await client.GetAsync(path);
