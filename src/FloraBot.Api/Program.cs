@@ -129,6 +129,8 @@ builder.Services.AddHttpClient<AdvisorClient>(client => client.Timeout = TimeSpa
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AiAdvisor>();
 builder.Services.AddScoped<AdvisorCache>();
+builder.Services.AddHttpClient<SeasonalForecastClient>(client => client.Timeout = TimeSpan.FromSeconds(12))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddSignalR(options => { options.MaximumReceiveMessageSize = 4096; options.EnableDetailedErrors = false; });
 builder.Services.AddSingleton<IUserIdProvider, JwtSubjectUserIdProvider>();
 builder.Services.AddSingleton<PortalConnections>();
@@ -346,6 +348,7 @@ app.MapPreorderCapacity();
 app.MapPaymentLinks();
 app.MapKioskPaymentLinks();
 AiAdvisor.MapReads(app);
+app.MapSeasonalSales();
 app.MapIdentity(); app.MapCatalog(); app.MapKioskOps(); app.MapOrdering(); app.MapPayment(); app.MapNotify(); app.MapAi();
 if (exportFile is not null)
 {

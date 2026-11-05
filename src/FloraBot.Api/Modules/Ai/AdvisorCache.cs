@@ -17,6 +17,7 @@ public sealed class AdvisorCache(IConnectionMultiplexer redis, IConfiguration co
             model,
             version = config["AI_CACHE_VERSION"] ?? "1",
             endpoint = config["AI_SERVICE_URL"],
+            calendarDate = SeasonalCalendar.TodayVn(),
             input.p_recipient,
             input.p_age,
             input.p_occasion,
@@ -24,7 +25,7 @@ public sealed class AdvisorCache(IConnectionMultiplexer redis, IConfiguration co
             input.p_budget,
             candidates = candidates.OrderBy(c => c.BouquetId)
         });
-        return "advisor:v1:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+        return "advisor:v2:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
     public async Task<AdvisorAnswer?> ReadAsync(string? key, AdvisorCandidate[] candidates, CancellationToken ct)

@@ -34,6 +34,10 @@ public sealed class ModuleBoundaryTests
     public void ModulesReferenceOnlyTheirOwnEntitiesAndSqlTables() => AssertModuleBoundaries();
 
     [Fact]
+    public void SeasonalSalesContractsKeepSchemaOwnership() => AssertModuleBoundaries(type =>
+        type.FullName?.StartsWith("FloraBot.Api.Modules.Ai.Seasonal", StringComparison.Ordinal) == true);
+
+    [Fact]
     public void BusinessV2ContractsKeepSchemaOwnership()
     {
         string[] owners =
