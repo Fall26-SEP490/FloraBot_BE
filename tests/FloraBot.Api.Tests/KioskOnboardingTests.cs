@@ -1441,7 +1441,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         await freeSlotW.ExecuteNonQueryAsync();
 
         // Fulfilling custom preorder on WALK_IN slot (slotW) FAILS with zone guard
-        await using var fulfillWalkIn = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-W')");
+        await using var fulfillWalkIn = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-W-' || @id::text)");
         fulfillWalkIn.Parameters.AddWithValue("id", customReqId);
         fulfillWalkIn.Parameters.AddWithValue("sid", sellerId);
         fulfillWalkIn.Parameters.AddWithValue("actor", customerId);
@@ -1450,7 +1450,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         Assert.Contains("PREORDER", exFulfill.MessageText);
 
         // Fulfilling custom preorder on PREORDER slot (slotP) SUCCEEDS
-        await using var fulfillPreorder = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-P')");
+        await using var fulfillPreorder = source.CreateCommand("SELECT flow.web_fulfill(@id, @sid, @actor, @slot, 'QR-CUSTOM-P-' || @id::text)");
         fulfillPreorder.Parameters.AddWithValue("id", customReqId);
         fulfillPreorder.Parameters.AddWithValue("sid", sellerId);
         fulfillPreorder.Parameters.AddWithValue("actor", customerId);
