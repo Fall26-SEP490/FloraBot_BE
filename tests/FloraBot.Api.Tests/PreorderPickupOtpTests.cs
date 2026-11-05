@@ -17,7 +17,7 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
         public string Key => $"test-only-device-{Kiosk}";
     }
     private PreorderPickupOtp Service => factory.Services.GetRequiredService<PreorderPickupOtp>();
-    private async Task<Fixture> Setup()
+    private async Task<Fixture> Setup(string zone = "PREORDER")
     {
         var f = new Fixture(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         await Sql(f, """
@@ -39,16 +39,18 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
             INSERT INTO kiosk_ops.bouquets(id,product_id,seller_id,qr_code,price_snapshot,status,stocked_at,sellable_until)
             VALUES(@bouquet,@product,@seller,@bouquet::text,350000,'SOLD',public.app_now(),public.app_now()+interval '48 hours');
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,status,current_seller_id,bouquet_id,zone,hold_order_id,hold_until)
-            VALUES(@slot,@kiosk,'A01',0,'HELD',@seller,@bouquet,'PREORDER',@order,public.app_now()+interval '2 hours');
+            VALUES(@slot,@kiosk,'A01',0,'HELD',@seller,@bouquet,@zone,@order,public.app_now()+interval '2 hours');
             INSERT INTO ordering.order_items(order_id,item_type,bouquet_id,slot_id,name_snapshot,quantity,unit_price,line_total)
             VALUES(@order,'BOUQUET',@bouquet,@slot,'OTP flower',1,350000,350000);
-            """);
+            """, ("zone", zone));
         return f;
     }
-    private async Task<object?> Sql(Fixture f, string sql)
+    private async Task<object?> Sql(Fixture f, string sql, params (string Key, object Value)[] extra)
     {
         await using var cmd = factory.Services.GetRequiredService<NpgsqlDataSource>().CreateCommand(sql);
         foreach (var (key, value) in new[] { ("seller", f.Seller), ("actor", f.Actor), ("customer", f.Customer), ("kiosk", f.Kiosk), ("slot", f.Slot), ("product", f.Product), ("bouquet", f.Bouquet), ("order", f.Order), ("request", f.Request) })
+            cmd.Parameters.AddWithValue(key, value);
+        foreach (var (key, value) in extra)
             cmd.Parameters.AddWithValue(key, value);
         cmd.Parameters.AddWithValue("email", f.Email);
         cmd.Parameters.AddWithValue("keyhash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(f.Key))).ToLowerInvariant());
@@ -125,12 +127,14 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
     }
     [Theory]
     [InlineData("DELETE FROM payment.payments WHERE checkout_id=@order")]
-    [InlineData("UPDATE kiosk_ops.slots SET zone='WALK_IN' WHERE id=@slot")]
+    [InlineData("ZONE_WALK_IN")]
     [InlineData("UPDATE kiosk_ops.slots SET status='RENTED_EMPTY',bouquet_id=NULL,hold_order_id=NULL,hold_until=NULL WHERE id=@slot")]
     [InlineData("UPDATE ordering.web_requests SET state='CANCELLED' WHERE id=@request")]
     public async Task CannotSendForUnpaidUnstockedOrIneligibleOrder(string mutation)
     {
-        var f = await Setup(); await Sql(f, mutation);
+        var isWalkIn = mutation == "ZONE_WALK_IN";
+        var f = await Setup(isWalkIn ? "WALK_IN" : "PREORDER");
+        if (!isWalkIn) await Sql(f, mutation);
         await AssertFailure(409, () => Service.Send(f.Request, f.Actor, default));
         Assert.Equal(0L, await Sql(f, "SELECT count(*) FROM ordering.preorder_pickup_otps WHERE request_id=@request"));
     }
@@ -209,8 +213,9 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
         var f = await Setup();
         await Assert.ThrowsAsync<PostgresException>(() => Sql(f, "SELECT flow.request_pickup(@order,@order::text,@kiosk)"));
         Assert.Equal(0L, await Sql(f, "SELECT count(*) FROM kiosk_ops.unlock_tokens WHERE order_id=@order"));
-        await Sql(f, "DELETE FROM ordering.web_requests WHERE id=@request; UPDATE kiosk_ops.slots SET zone='WALK_IN' WHERE id=@slot");
-        Assert.IsType<Guid>(await Sql(f, "SELECT flow.request_pickup(@order,@order::text,@kiosk)"));
+        var walkIn = await Setup(zone: "WALK_IN");
+        await Sql(walkIn, "DELETE FROM ordering.web_requests WHERE id=@request");
+        Assert.IsType<Guid>(await Sql(walkIn, "SELECT flow.request_pickup(@order,@order::text,@kiosk)"));
     }
     [Fact]
     public async Task SendLimitIsPersistedAndCommandNeverOutlivesPickupWindow()
