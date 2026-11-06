@@ -3,9 +3,13 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
+using System.Text.Json;
 using FloraBot.Api.Auth;
 using FloraBot.Api.Data.Entities;
 using FloraBot.Api.Modules.Ordering;
+using FloraBot.Api.Modules.Payment;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
@@ -26,18 +30,23 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
     {
         var seller = Guid.NewGuid();
         var secretRef = "channel-" + seller.ToString("N");
+        using var gateway = new KioskPaymentTests.SellerGateway();
         using var app = factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("PAYOS_CLIENT_ID", "test-client");
             builder.UseSetting("PAYOS_API_KEY", "test-api");
             builder.UseSetting("PAYOS_CHECKSUM_KEY", "test-only-checksum-key");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:SellerId", seller.ToString());
-            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", "test-client");
+            builder.UseSetting("PAYOS_RETURN_URL", "https://example.invalid/return");
+            builder.UseSetting("PAYOS_CANCEL_URL", "https://example.invalid/cancel");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", KioskPaymentTests.SellerGateway.ClientId);
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ApiKey", "test-api");
-            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", "test-only-checksum-key");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", KioskPaymentTests.SellerGateway.ChecksumKey);
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedBin", "970415");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedAccount", "1010099887766");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedName", "TIEM HOA TEST");
+            builder.ConfigureServices(services => services.AddSingleton<IPayOsClientResolver>(sp =>
+                PayOsClientResolver.ForTest(new HttpClient(gateway, disposeHandler: false), sp.GetRequiredService<IConfiguration>())));
         });
         using var scope = app.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
@@ -127,19 +136,22 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         var list = await client.GetFromJsonAsync<WebRequestPage>("/api/member/preorders");
         var row = Assert.Single(list!.Items);
         Assert.NotNull(row.OrderId); Assert.NotNull(row.TrackingToken);
+        Assert.Equal(HttpStatusCode.NotFound, (await foreign.PostAsync(path + "/payment-link", null)).StatusCode);
+        using var linkResponse = await client.PostAsync(path + "/payment-link", null);
+        linkResponse.EnsureSuccessStatusCode();
+        var link = await linkResponse.Content.ReadFromJsonAsync<PaymentLinkResponse>();
+        Assert.Equal("TIEM HOA TEST", link!.RecipientName);
+        Assert.Equal(350000, link.Amount);
+        Assert.Equal("SELLER_DIRECT", await Sql("SELECT funding_provenance::text FROM payment.payments WHERE checkout_id=@checkout AND kind='CHARGE' AND seller_id=@seller",
+            ("checkout", row.CheckoutId!.Value), ("seller", seller)));
         if (late) await Sql("UPDATE ordering.orders SET created_at=public.app_now()-interval '1 hour' WHERE id=@id", ("id", row.OrderId!.Value));
         if (fault) await Sql("UPDATE kiosk_ops.slots SET status='FAULT' WHERE id=@id", ("id", slot));
-        await Sql("""
-            UPDATE payment.payments
-            SET seller_id = @seller,
-                channel_id = (SELECT id FROM payment.payment_channel_versions WHERE seller_id=@seller ORDER BY version DESC LIMIT 1),
-                channel_version = 1,
-                receiver_snapshot = '{"bin":"970415","accountNumber":"1010099887766","accountName":"TIEM HOA TEST","provider":"PAYOS"}'::jsonb,
-                funding_provenance = 'SELLER_DIRECT',
-                is_direct_receipt = true
-            WHERE checkout_id = @checkout AND funding_provenance = 'DIRECT_REQUIRED';
-            """, ("seller", seller), ("checkout", row.CheckoutId!.Value));
-        await Sql("SELECT flow.checkout_paid(@checkout,@txn,true,350000)", ("checkout", row.CheckoutId!.Value), ("txn", "web-payment-" + id));
+        var callback = JsonSerializer.SerializeToElement(new { orderCode = link.OrderCode, amount = link.Amount,
+            reference = "web-payment-" + id, code = "00", accountNumber = "1010099887766" });
+        using var confirmed = await client.PostAsJsonAsync("/api/payments/webhook",
+            new { data = callback, signature = PayOsChecksum.Sign(callback, KioskPaymentTests.SellerGateway.ChecksumKey) });
+        confirmed.EnsureSuccessStatusCode();
+        Assert.Equal(0L, await Sql("SELECT count(*) FROM payment.ledger_entries WHERE ref_type='ORDER' AND ref_id=@order", ("order", row.OrderId!.Value)));
         if (late || fault)
         {
             Assert.Equal(late ? "EXPIRED" : "DISPENSE_FAILED", await Sql("SELECT status FROM ordering.orders WHERE id=@id", ("id", row.OrderId!.Value)));
