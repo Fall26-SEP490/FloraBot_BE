@@ -4,7 +4,8 @@ using System.Text.RegularExpressions;
 
 namespace FloraBot.Api.Modules.Payment;
 
-public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null);
+public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null,
+    string? RecipientName = null, string? RecipientAccountMasked = null);
 public sealed record PayOsConfirmWebhookResponse(string WebhookUrl, string AccountNumber, string AccountName, string? Name = null, string? ShortName = null);
 public sealed class PaymentGatewayException(string failureCode) : Exception
 {

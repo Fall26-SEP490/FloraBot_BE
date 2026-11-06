@@ -30,7 +30,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
     {
         var seller = Guid.NewGuid();
         var secretRef = "channel-" + seller.ToString("N");
-        var gateway = new Gateway();
+        var gateway = new SellerGateway();
         using var app = factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("PAYOS_CLIENT_ID", "test-client");
@@ -39,9 +39,9 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             builder.UseSetting("PAYOS_RETURN_URL", "https://example.invalid/return");
             builder.UseSetting("PAYOS_CANCEL_URL", "https://example.invalid/cancel");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:SellerId", seller.ToString());
-            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", "test-client");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ClientId", SellerGateway.ClientId);
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ApiKey", "test-api");
-            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", "test-only-checksum-key");
+            builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ChecksumKey", SellerGateway.ChecksumKey);
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedBin", "970415");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedAccount", "1010099887766");
             builder.UseSetting($"PAYOS_CHANNELS:{secretRef}:ExpectedName", "TIEM HOA TEST");
@@ -109,14 +109,76 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         otherCustomer.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User { Id = stranger, Role = "CUSTOMER", FullName = "Other" }, kioskId: kiosk.ToString()));
         Assert.Equal(HttpStatusCode.NotFound, (await otherCustomer.GetAsync(path)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await otherCustomer.PostAsync(path + "/payment-link", null)).StatusCode);
+        if (!failDoor && !reportFault && !viaInbox && !recoverAfterOffline)
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, (await foreign.PostAsync(path + "/cancel", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await otherCustomer.PostAsync(path + "/cancel", null)).StatusCode);
+            if (signedIn)
+                Assert.Equal(HttpStatusCode.NotFound, (await device.PostAsync(path + "/cancel", null)).StatusCode);
+
+            await using var legacy = source.CreateCommand("UPDATE payment.payments SET funding_provenance='PLATFORM_LEGACY' WHERE checkout_id=@id AND kind='CHARGE'");
+            legacy.Parameters.AddWithValue("id", checkout);
+            await legacy.ExecuteNonQueryAsync();
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(path + "/payment-link", null)).StatusCode);
+            Assert.Equal(0, gateway.Calls);
+
+            Assert.Equal(HttpStatusCode.NoContent, (await client.PostAsync(path + "/cancel", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await client.PostAsync(path + "/cancel", null)).StatusCode);
+            var cancelled = await client.GetFromJsonAsync<CheckoutResponse>(path);
+            Assert.Equal("CANCELLED", cancelled!.PaymentStatus);
+            Assert.Equal("CANCELLED", Assert.Single(cancelled.Orders).Status);
+            var restocked = await client.GetFromJsonAsync<List<FloraBot.Api.Infrastructure.KioskCatalogResponse>>($"/api/kiosks/{kiosk}/catalog/items");
+            Assert.Equal(bouquet, Assert.Single(restocked!).BouquetId);
+
+            using var next = await client.PostAsJsonAsync($"/api/kiosks/{kiosk}/flows/kiosk_checkout", new { p_bouquets = new[] { bouquet } });
+            next.EnsureSuccessStatusCode();
+            checkout = (await next.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetGuid();
+            path = $"/api/kiosks/{kiosk}/checkouts/{checkout}";
+            pending = await client.GetFromJsonAsync<CheckoutResponse>(path);
+        }
         var linkResponse = await client.PostAsync(path + "/payment-link", null);
         var linkBody = await linkResponse.Content.ReadAsStringAsync();
         Assert.True(linkResponse.IsSuccessStatusCode, $"HTTP {(int)linkResponse.StatusCode}: {linkBody}");
         var link = await linkResponse.Content.ReadFromJsonAsync<PaymentLinkResponse>();
         Assert.Equal(350000, link!.Amount);
-        Assert.Equal(new DateTimeOffset(pending.PayBefore).ToUnixTimeSeconds(), gateway.Deadline);
+        Assert.Equal("TIEM HOA TEST", link.RecipientName);
+        Assert.Equal("*********7766", link.RecipientAccountMasked);
+        Assert.DoesNotContain("1010099887766", linkBody);
+        using var repeatedLink = await client.PostAsync(path + "/payment-link", null);
+        repeatedLink.EnsureSuccessStatusCode();
+        Assert.Equal(link, await repeatedLink.Content.ReadFromJsonAsync<PaymentLinkResponse>());
+        Assert.Equal(1, gateway.Calls);
+        if (!signedIn && !failDoor && !reportFault && !viaInbox && !recoverAfterOffline)
+        {
+            await using var mark = source.CreateCommand("""
+                UPDATE payment.gateway_orders g
+                SET verified_seller_channel_id=CASE WHEN @verified THEN p.channel_id ELSE NULL END
+                FROM payment.payments p WHERE p.id=g.payment_id AND g.order_code=@code
+                """);
+            mark.Parameters.AddWithValue("verified", false);
+            mark.Parameters.AddWithValue("code", link.OrderCode);
+            await mark.ExecuteNonQueryAsync();
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(path + "/payment-link", null)).StatusCode);
+            Assert.Equal(1, gateway.Calls);
+            mark.Parameters["verified"].Value = true;
+            await mark.ExecuteNonQueryAsync();
+        }
+        Assert.Equal(new DateTimeOffset(pending!.PayBefore).ToUnixTimeSeconds(), gateway.Deadline);
         var data = JsonSerializer.SerializeToElement(new { orderCode = link.OrderCode, amount = 350000, reference = "test-" + checkout, code = "00", accountNumber = "1010099887766" });
-        var envelope = new { data, signature = PayOsChecksum.Sign(data, "test-only-checksum-key"), code = "00", desc = "success", success = true };
+        var envelope = new { data, signature = PayOsChecksum.Sign(data, SellerGateway.ChecksumKey), code = "00", desc = "success", success = true };
+        var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+        var accountSetting = $"PAYOS_CHANNELS:{secretRef}:ExpectedAccount";
+        config[accountSetting] = "888877776666";
+        try
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync(path + "/payment-link", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsJsonAsync("/api/payments/webhook",
+                new { data, signature = PayOsChecksum.Sign(data, "test-only-checksum-key") })).StatusCode);
+        }
+        finally
+        {
+            config[accountSetting] = "1010099887766";
+        }
         if (recoverAfterOffline)
         {
             await using var offline = source.CreateCommand("UPDATE kiosk_ops.kiosks SET status='OFFLINE' WHERE id=@id");
@@ -125,6 +187,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         var responses = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => client.PostAsJsonAsync("/api/payments/webhook", envelope)));
         foreach (var response in responses) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var paid = await client.GetFromJsonAsync<CheckoutResponse>(path);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(path + "/cancel", null)).StatusCode);
         if (recoverAfterOffline)
         {
             Assert.Equal("SUCCEEDED", paid!.PaymentStatus); Assert.Equal("PAID", paid.Orders[0].Status);
@@ -393,21 +456,21 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         var nextResponse = await client.PostAsJsonAsync($"/api/kiosks/{kiosk}/flows/kiosk_checkout", new { p_bouquets = new[] { nextBouquet } });
         nextResponse.EnsureSuccessStatusCode();
         var expiredCheckout = (await nextResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetGuid();
+        using var lateLinkResponse = await client.PostAsync($"/api/kiosks/{kiosk}/checkouts/{expiredCheckout}/payment-link", null);
+        lateLinkResponse.EnsureSuccessStatusCode();
+        var lateLink = await lateLinkResponse.Content.ReadFromJsonAsync<PaymentLinkResponse>();
         await using var age = source.CreateCommand("UPDATE ordering.orders SET created_at=now()-interval '8 minutes' WHERE checkout_id=@id");
         age.Parameters.AddWithValue("id", expiredCheckout); await age.ExecuteNonQueryAsync();
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync($"/api/kiosks/{kiosk}/checkouts/{expiredCheckout}/payment-link", null)).StatusCode);
-        Assert.Equal(1, gateway.Calls);
-        await using var reserveLate = source.CreateCommand("SELECT flow.reserve_gateway_order(id) FROM payment.payments WHERE checkout_id=@id AND kind='CHARGE'");
-        reserveLate.Parameters.AddWithValue("id", expiredCheckout);
-        var lateCode = (long)(await reserveLate.ExecuteScalarAsync())!;
+        Assert.Equal(2, gateway.Calls);
         await using var expire = source.CreateCommand("""
             UPDATE payment.payments SET status='EXPIRED' WHERE checkout_id=@id AND kind='CHARGE';
             SELECT flow.release_checkout(@id,'EXPIRED');
             """);
         expire.Parameters.AddWithValue("id", expiredCheckout);
         await expire.ExecuteNonQueryAsync();
-        var lateData = JsonSerializer.SerializeToElement(new { orderCode = lateCode, amount = 350000, reference = "late-" + expiredCheckout, code = "00", accountNumber = "1010099887766" });
-        (await client.PostAsJsonAsync("/api/payments/webhook", new { data = lateData, signature = PayOsChecksum.Sign(lateData, "test-only-checksum-key") })).EnsureSuccessStatusCode();
+        var lateData = JsonSerializer.SerializeToElement(new { orderCode = lateLink!.OrderCode, amount = 350000, reference = "late-" + expiredCheckout, code = "00", accountNumber = "1010099887766" });
+        (await client.PostAsJsonAsync("/api/payments/webhook", new { data = lateData, signature = PayOsChecksum.Sign(lateData, SellerGateway.ChecksumKey) })).EnsureSuccessStatusCode();
         events.Parameters["id"].Value = expiredCheckout.ToString();
         Assert.Null(await events.ExecuteScalarAsync());
         events.Parameters["name"].Value = PaymentEvents.Succeeded;
@@ -441,19 +504,22 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         return events;
     }
 
-    private sealed class Gateway : HttpMessageHandler
+    internal sealed class SellerGateway : HttpMessageHandler
     {
+        internal const string ClientId = "test-seller-client";
+        internal const string ChecksumKey = "test-seller-checksum-key";
         public long Deadline { get; private set; }
         public int Calls { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Calls++;
+            Assert.Equal(ClientId, Assert.Single(request.Headers.GetValues("x-client-id")));
             var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
             Assert.Equal(350000, body.GetProperty("amount").GetInt64());
             Deadline = body.GetProperty("expiredAt").GetInt64();
             Assert.InRange(Deadline, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), DateTimeOffset.UtcNow.AddMinutes(8).ToUnixTimeSeconds());
-            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = 350000, status = "PENDING", bin = "970415", accountNumber = "1010099887766", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07" });
-            return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { code = "00", data, signature = PayOsChecksum.Sign(data, "test-only-checksum-key") }) };
+            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = 350000, status = "PENDING", bin = "970415", accountNumber = "1010099887766", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07", qrCode = "000201-signed-test-payload" });
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { code = "00", data, signature = PayOsChecksum.Sign(data, ChecksumKey) }) };
         }
     }
 }
