@@ -53,11 +53,6 @@ public sealed class PayOsChannelConfig
         Options = options;
     }
 
-    internal bool MatchesReceiver(Guid sellerId, string bankBin, string accountNumber) =>
-        SellerId == sellerId &&
-        string.Equals(Options.ExpectedBin, bankBin, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(Options.ExpectedAccount, accountNumber, StringComparison.OrdinalIgnoreCase);
-
     public override string ToString() =>
         $"PayOsChannelConfig(SellerId={SellerId}, SecretRef={SecretRef})";
 }

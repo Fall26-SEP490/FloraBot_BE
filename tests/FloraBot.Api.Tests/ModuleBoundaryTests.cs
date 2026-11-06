@@ -45,7 +45,6 @@ public sealed class ModuleBoundaryTests
             "FloraBot.Api.Modules.Payment.SellerPaymentChannels",
             "FloraBot.Api.Modules.Payment.SellerPaymentsEndpoints",
             "FloraBot.Api.Modules.Payment.SellerRefunds",
-            "FloraBot.Api.Modules.Payment.SellerCheckoutPaymentLinks",
             "FloraBot.Api.Modules.Payment.KioskPaymentLinks",
             "FloraBot.Api.Modules.Payment.WebPaymentLinks",
             "FloraBot.Api.Modules.Payment.PayOsWebhookProcessor",
