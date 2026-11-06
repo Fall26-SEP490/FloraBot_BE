@@ -37,9 +37,6 @@ services:
         condition: service_started
       mosquitto:
         condition: service_started
-    env_file:
-      - path: ./infra/secrets/payos-channels.env
-        required: false
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       DATABASE_URL: Host=postgres;Database=florabot;Username=florabot;Password=${POSTGRES_PASSWORD:-local-florabot-only}

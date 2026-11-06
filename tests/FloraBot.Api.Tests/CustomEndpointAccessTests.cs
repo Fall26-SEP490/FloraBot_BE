@@ -287,8 +287,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["KIOSK", "CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/catalog", "/api/kiosks/{kioskId:guid}/catalog/items",
             "/api/kiosks/{kioskId:guid}/catalog/accessories", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}",
             "/api/kiosks/{kioskId:guid}/surveys/{surveyId:guid}");
-        Add(["KIOSK", "CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link",
-            "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/cancel");
+        Add(["KIOSK", "CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/checkouts/{checkoutId:guid}/payment-link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/customer/history", "/api/kiosks/{kioskId:guid}/customer/points");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/kiosks/{kioskId:guid}/pickup/orders", "/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}/open");

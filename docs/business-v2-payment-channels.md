@@ -8,15 +8,13 @@ The requested-layout/pricing change in ADR0060 remains authoritative. Walk-in an
 
 Apply additive SQL migrations in filename order after backing up the target database. `20261104_payment_channel_versions.sql` must precede `20261104_seller_direct_payments.sql`; the requested-layout/pricing migration must remain installed before the later capacity migration. Do not run database initialization against an existing application database. This work does not change FE contracts by hand; regenerate them with the repository OpenAPI export workflow after the backend is configured and migrated.
 
-Apply `20261106_verified_seller_payment_links.sql` before starting this API version. A seller checkout can reuse a saved link only when its bank receiver was checked against the pinned channel. Links saved before this migration keep their webhook mapping. A customer with an unpaid old link can cancel the order and start a new checkout.
-
 ## Incoming payment flow
 
 1. Operator stores a distinct server-side configuration reference for each seller. Admin binds that reference with `PUT /api/sellers/{sellerId}/payment-channel` and `{ "secretRef": "seller_demo" }`. No API accepts bank login passwords or OTPs.
 2. The channel starts unverified. `POST /api/sellers/{sellerId}/payment-channel/verify` registers the version-bound webhook using payOS confirm-webhook. Activation requires the authenticated receiver response and a correctly signed provider sample tied to the verification attempt. A sample never marks an order paid.
 3. A new flower order requires the seller's active verified channel. Missing/unverified/paused channels do not fall back to the platform account.
 4. The payment stores seller, channel version, receiver and explicit funding provenance. Signed creation/callback responses must match the expected amount and receiver. Reconciliation uses the pinned channel, not a client claim of success.
-5. Seller-direct receipts do not increase platform-held seller wallet balances. Subscription/rental payments use the existing platform configuration. Already issued legacy links retain their original webhook and accounting. A pending legacy checkout must be restarted to receive a new seller-direct link.
+5. Seller-direct receipts do not increase platform-held seller wallet balances. Subscription/rental payments use the existing platform configuration. Historical pending platform payments retain their legacy processing and accounting.
 
 Keep old channel configuration references and credentials available until their pending payments have been reconciled. Do not overwrite a reference with another shop's keys or a different receiver; bind a new version/reference instead. Pausing blocks new payment creation and preserves handling for existing payments.
 
@@ -38,8 +36,6 @@ PAYOS_PUBLIC_BASE_URL=<public backend HTTPS origin>
 ```
 
 Use a backend origin reachable by payOS for `PAYOS_PUBLIC_BASE_URL`, not the FE origin. Local fake-provider tests do not prove that a real webhook or payment can reach a VPS. Read APIs return masked channel bank details and no raw keys.
-
-For Docker Compose, put the seller variables and `PAYOS_PUBLIC_BASE_URL` in the optional `infra/secrets/payos-channels.env`. Compose passes this file to the API container. Keep the platform payment variables in the platform environment.
 
 ## API groups
 

@@ -357,9 +357,7 @@ public static class SellerPaymentsEndpoints
                     expectedAccount = reader.IsDBNull(8) ? null : reader.GetString(8);
                 }
 
-                if (string.IsNullOrWhiteSpace(secretRef) || expectedBin is null || expectedAccount is null ||
-                    !resolver.TryResolveChannelConfig(secretRef, out var channelConfig) || channelConfig is null ||
-                    !channelConfig.MatchesReceiver(sellerId, expectedBin, expectedAccount))
+                if (string.IsNullOrWhiteSpace(secretRef) || !resolver.TryResolveChannelConfig(secretRef, out var channelConfig) || channelConfig is null)
                 {
                     return Results.Problem(statusCode: 503, title: "Kênh thanh toán đã gắn vào giao dịch không khả dụng trên máy chủ.");
                 }

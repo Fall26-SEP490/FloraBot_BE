@@ -1,5 +1,4 @@
 using Npgsql;
-using NpgsqlTypes;
 
 namespace FloraBot.Api.Modules.Ordering;
 
@@ -11,23 +10,6 @@ public sealed record CheckoutSnapshot(DateTime PayBefore, List<CheckoutOrderSnap
 
 public static class CheckoutAccess
 {
-    public static async Task<bool?> CanCancelWalkInAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        Guid checkout, Guid kiosk, Guid? customer, CancellationToken ct)
-    {
-        await using var command = new NpgsqlCommand("""
-            SELECT bool_and(o.kiosk_id=@kiosk AND o.customer_id IS NOT DISTINCT FROM @customer
-                AND NOT EXISTS (SELECT 1 FROM ordering.web_requests w WHERE w.order_id=o.id)),
-                bool_and(o.status='AWAITING_PAYMENT')
-            FROM ordering.orders o WHERE o.checkout_id=@checkout
-            """, connection, transaction);
-        command.Parameters.AddWithValue("checkout", checkout);
-        command.Parameters.AddWithValue("kiosk", kiosk);
-        command.Parameters.Add("customer", NpgsqlDbType.Uuid).Value = (object?)customer ?? DBNull.Value;
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct) || reader.IsDBNull(0) || !reader.GetBoolean(0)) return null;
-        return reader.GetBoolean(1);
-    }
-
     public static async Task<CheckoutSnapshot?> ReadAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid checkout, Guid kiosk, Guid? customer, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
