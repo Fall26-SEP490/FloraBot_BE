@@ -33,7 +33,8 @@ public static class PayOsWebhookProcessor
             await using var chConn = await source.OpenConnectionAsync(ct);
             await using var chFind = chConn.CreateCommand();
             chFind.CommandText = """
-                SELECT p.is_direct_receipt, p.channel_id, cv.secret_ref, cv.expected_bank_account
+                SELECT (p.is_direct_receipt OR p.funding_provenance='SELLER_DIRECT'), p.channel_id,
+                       cv.secret_ref, cv.expected_bank_account, cv.expected_bank_bin, p.seller_id
                 FROM payment.payments p
                 JOIN payment.gateway_orders g ON g.payment_id=p.id
                 LEFT JOIN payment.payment_channel_versions cv ON cv.id=p.channel_id
@@ -48,15 +49,22 @@ public static class PayOsWebhookProcessor
                 var sRef = chReader.IsDBNull(2) ? null : chReader.GetString(2);
                 expectedAccount = chReader.IsDBNull(3) ? null : chReader.GetString(3);
 
-                if (isDirect && !string.IsNullOrWhiteSpace(sRef) &&
-                    resolver.TryResolveChannelConfig(sRef, out var chConfig) && chConfig is not null)
+                if (isDirect)
                 {
+                    if (pinnedChannelId is null || string.IsNullOrWhiteSpace(sRef) || expectedAccount is null ||
+                        chReader.IsDBNull(4) || chReader.IsDBNull(5) ||
+                        !resolver.TryResolveChannelConfig(sRef, out var chConfig) || chConfig is null ||
+                        !chConfig.MatchesReceiver(chReader.GetGuid(5), chReader.GetString(4), expectedAccount))
+                    {
+                        logger.LogWarning("Cannot verify seller payOS callback for order {OrderCode}: pinned channel configuration unavailable", orderCodeForLookup);
+                        return Results.Problem(statusCode: 503, title: "Kênh thanh toán của người bán tạm thời không khả dụng.");
+                    }
                     checksumKey = chConfig.Options.ChecksumKey;
                 }
             }
         }
 
-        // 2. Verify checksum with resolved key (or platform key fallback)
+        // 2. Seller receipts use their pinned key. Platform and historical charges use the platform key.
         if (!PayOsChecksum.Verify(body.Data, body.Signature, checksumKey))
         {
             logger.LogWarning("Rejected payOS webhook: checksum verification failed");
