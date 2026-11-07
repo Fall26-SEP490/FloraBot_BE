@@ -41,7 +41,7 @@ public static partial class Registration
             if (errors.Count > 0) return Results.ValidationProblem(errors);
             await using var connection = await data.OpenConnectionAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            await using var package = new NpgsqlCommand("SELECT EXISTS(SELECT 1 FROM identity.subscription_packages WHERE id=@id AND status='ACTIVE')", connection, transaction);
+            await using var package = new NpgsqlCommand("SELECT EXISTS(SELECT 1 FROM identity.subscription_packages WHERE id=@id AND status='ACTIVE' AND billing_cycle='ANNUAL')", connection, transaction);
             package.Parameters.AddWithValue("id", request.PackageId);
             if (await package.ExecuteScalarAsync(ct) is not true) return Results.ValidationProblem(new Dictionary<string, string[]> { ["packageId"] = ["Chọn một gói đang được cung cấp."] });
             await using var command = new NpgsqlCommand("SELECT flow.register_seller(@shop,@phone,@area,@shop,NULL)", connection, transaction);

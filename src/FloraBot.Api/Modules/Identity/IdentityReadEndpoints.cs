@@ -9,8 +9,6 @@ public static class IdentityReadEndpoints
 {
     public static void MapIdentityReads(this WebApplication app)
     {
-        app.MapGet("/api/packages", async (FloraDbContext db) => await db.SubscriptionPackages.AsNoTracking()
-            .Where(x => x.Status == "ACTIVE" && x.BillingCycle == "MONTHLY").OrderBy(x => x.MonthlyFee).Select(x => new PackageResponse(x.Id, x.Name, x.MonthlyFee, x.MaxSlots)).ToListAsync()).AllowAnonymous().Produces<List<PackageResponse>>();
         app.MapGet("/api/sellers/{sellerId:guid}", async (Guid sellerId, FloraDbContext db, HttpContext http) =>
         {
             if (!SameSeller(http, sellerId)) return Results.NotFound();
@@ -22,9 +20,9 @@ public static class IdentityReadEndpoints
             if (!SameSeller(http, sellerId)) return Results.NotFound();
             var seller = await db.Sellers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == sellerId);
             if (seller is null) return Results.NotFound();
-            var package = await db.SubscriptionPackages.AsNoTracking().Where(x => x.Id == seller.PackageId)
-                .Select(x => new SellerPackageResponse(x.Name, x.MonthlyFee, x.MaxSlots, x.Status)).SingleOrDefaultAsync();
-            var subscriptions = await db.Subscriptions.AsNoTracking().Where(x => x.SellerId == sellerId)
+            var package = await db.SubscriptionPackages.AsNoTracking().Where(x => x.Id == seller.PackageId && x.BillingCycle == "ANNUAL")
+                .Select(x => new SellerPackageResponse(x.Name, x.AnnualFee, x.MaxSlots, x.Status)).SingleOrDefaultAsync();
+            var subscriptions = await db.Subscriptions.AsNoTracking().Where(x => x.SellerId == sellerId && x.KioskId != null)
                 .OrderByDescending(x => x.CreatedAt).Take(100)
                 .Select(x => new SubscriptionResponse(x.Id, x.Package.Name, x.PeriodFrom, x.PeriodTo, x.Price, x.Status, x.KioskId)).ToListAsync();
             return Results.Ok(new SubscriptionOverviewResponse(package, subscriptions));
