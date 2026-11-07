@@ -3,7 +3,7 @@ const migrationDir = new URL('../db/migrations/', import.meta.url);
 const source = readFileSync(new URL('../db/FloraBot_DB_v3/03_flows.sql', import.meta.url), 'utf8') + '\n' +
   readdirSync(migrationDir).filter(name => name.endsWith('.sql')).sort().map(name => readFileSync(new URL(name, migrationDir), 'utf8')).join('\n');
 const groups = {
-  Identity: { seller: ['set_seller_bank', 'set_seller_tone', 'subscribe'], admin: ['approve_seller', 'set_seller_status'], customer: ['forget_customer'] },
+  Identity: { seller: ['set_seller_bank', 'set_seller_tone'], admin: ['approve_seller', 'set_seller_status'], customer: ['forget_customer'] },
   Catalog: { sellerMe: ['set_product_status'], seller: ['update_product_price', 'add_product_photo', 'restock_accessory'] },
   KioskOps: { seller: ['release_slot', 'stock_bouquet', 'return_to_seller', 'report_device_fault'], admin: ['assign_kiosk', 'admin_dispose_slot', 'resolve_device_fault', 'set_kiosk_status', 'admin_close_door', 'set_cfg'], kiosk: ['kiosk_heartbeat', 'device_event'] },
   Ordering: { shopping: ['kiosk_checkout', 'request_pickup'], receipt: ['open_dispute', 'submit_refund_info'], admin: ['resolve_dispute'] },

@@ -13,10 +13,6 @@ public sealed record SetSellerBankRequest(
 public sealed record SetSellerToneRequest(
     string p_tone);
 
-public sealed record SubscribeRequest(
-    int p_months,
-    DateOnly? p_from = null);
-
 public sealed record ApproveSellerRequest(
     Guid p_seller,
     Guid p_package,
@@ -39,9 +35,6 @@ public static class IdentityEndpoints
         app.MapPost("/api/sellers/{sellerId:guid}/flows/set_seller_tone", async (Guid sellerId, SetSellerToneRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_seller_tone", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("set_seller_tone").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
-        app.MapPost("/api/sellers/{sellerId:guid}/flows/subscribe", async (Guid sellerId, SubscribeRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
-            await executor.ExecuteAsync("subscribe", "seller", JsonSerializer.SerializeToElement(input), http, ct))
-            .WithName("subscribe").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/admin/flows/approve_seller", async (ApproveSellerRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("approve_seller", "admin", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("approve_seller").WithTags("Identity").Produces<FlowResult>().RequireAuthorization("Admin");

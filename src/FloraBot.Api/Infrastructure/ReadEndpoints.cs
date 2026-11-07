@@ -2,6 +2,7 @@ using FloraBot.Api.Modules.Identity;
 using FloraBot.Api.Modules.Catalog;
 using FloraBot.Api.Modules.KioskOps;
 using FloraBot.Api.ReadModels;
+using System.Text.Json.Serialization;
 
 namespace FloraBot.Api.Infrastructure;
 
@@ -18,11 +19,17 @@ public sealed record ProductResponse(
     decimal? WidthCm = null,
     decimal? HeightCm = null);
 public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId);
-public sealed record SellerPackageResponse(string Name, long MonthlyFee, int MaxSlots, string Status);
+public sealed record SellerPackageResponse(string Name, long AnnualFee, int MaxSlots, string Status)
+{
+    // Source compatibility for old tests/tools; never expose the retired monthly field in JSON.
+    [JsonIgnore]
+    public long MonthlyFee => AnnualFee;
+}
 public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions);
 public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName, string? ImageUrl = null);
-public sealed record PackageResponse(Guid Id, string Name, long MonthlyFee, int MaxSlots);
 public sealed record AdminSellerResponse(Guid Id, string ShopName, string Status, Guid? PackageId, DateOnly? PackageExpiresAt, string Phone, string? Address);
+// Legacy type retained for source compatibility. The monthly /api/packages route is retired.
+public sealed record PackageResponse(Guid Id, string Name, long MonthlyFee, int MaxSlots);
 public sealed record AdminSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? CurrentSellerId, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, string KioskStatus);
 public sealed record SellerSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, Guid? ProductId, string? QrCode, long? PriceSnapshot, DateTime? SellableUntil,
     string? BouquetStatus = null, Guid? OrderId = null, string? OrderCode = null,

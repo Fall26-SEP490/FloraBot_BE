@@ -56,39 +56,6 @@
     "setReturning": false
   },
   {
-    "name": "subscribe",
-    "module": "Identity",
-    "scope": "seller",
-    "params": [
-      {
-        "name": "p_seller",
-        "type": "uuid",
-        "optional": false
-      },
-      {
-        "name": "p_user",
-        "type": "uuid",
-        "optional": false
-      },
-      {
-        "name": "p_months",
-        "type": "int",
-        "optional": false
-      },
-      {
-        "name": "p_from",
-        "type": "date",
-        "optional": true
-      },
-      {
-        "name": "p_now",
-        "type": "timestamptz",
-        "optional": true
-      }
-    ],
-    "setReturning": false
-  },
-  {
     "name": "approve_seller",
     "module": "Identity",
     "scope": "admin",

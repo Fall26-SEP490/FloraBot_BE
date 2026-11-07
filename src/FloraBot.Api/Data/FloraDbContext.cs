@@ -771,7 +771,7 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.AnnualFee).HasColumnName("annual_fee");
             entity.Property(e => e.WalkInSlots).HasColumnName("walk_in_slots");
             entity.Property(e => e.PreorderSlots).HasColumnName("preorder_slots");
-            entity.Property(e => e.BillingCycle).HasDefaultValue("MONTHLY").HasColumnName("billing_cycle");
+            entity.Property(e => e.BillingCycle).HasDefaultValue("ANNUAL").HasColumnName("billing_cycle");
             entity.Property(e => e.Name).HasColumnName("name");
             entity.Property(e => e.Status)
                 .HasDefaultValueSql("'ACTIVE'::text")
