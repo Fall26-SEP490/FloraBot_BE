@@ -208,8 +208,53 @@ public sealed class PayOsClient
     {
         using var response = await client.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
-            throw new PaymentGatewayException("provider_http_" + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture));
+        {
+            var status = ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture);
+            var diagnostic = await ReadSafeProviderDiagnosticAsync(response, ct);
+            throw new PaymentGatewayException($"provider_http_{status}{diagnostic}");
+        }
         return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+    }
+
+    private static async Task<string> ReadSafeProviderDiagnosticAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return "";
+
+            var code = ReadString(document.RootElement, "code");
+            var description = ReadString(document.RootElement, "desc") ?? ReadString(document.RootElement, "message");
+            var safeCode = SafeDiagnosticPart(code, 12);
+            var safeDescription = SafeDiagnosticPart(description, 48);
+
+            if (safeCode.Length == 0 && safeDescription.Length == 0)
+                return "";
+
+            var parts = new List<string>(2);
+            if (safeCode.Length > 0) parts.Add("code_" + safeCode);
+            if (safeDescription.Length > 0) parts.Add("desc_" + safeDescription);
+            return "_" + string.Join("_", parts);
+        }
+        catch
+        {
+            // Provider diagnostics are best-effort; never replace the original HTTP failure.
+            return "";
+        }
+    }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static string SafeDiagnosticPart(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var safe = Regex.Replace(value.ToLowerInvariant(), "[^a-z0-9]+", "_").Trim('_');
+        return safe.Length <= maxLength ? safe : safe[..maxLength].TrimEnd('_');
     }
 
     private JsonElement VerifiedData(JsonElement envelope)
