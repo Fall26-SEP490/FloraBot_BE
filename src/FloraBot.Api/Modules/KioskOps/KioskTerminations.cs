@@ -10,6 +10,7 @@ using NpgsqlTypes;
 namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record CreateKioskTerminationRequest(string Reason);
+public sealed record WithdrawKioskTerminationRequest(int Version, string Reason);
 
 public sealed record ReviewKioskTerminationRequest(string Action, string Reason);
 
@@ -182,6 +183,67 @@ public static class KioskTerminations
                 return Results.Problem(statusCode: 403, detail: "Kiosk không thuộc quyền sở hữu của Seller này.");
 
             return Results.NotFound();
+        }).RequireAuthorization("Seller", "SameSeller").WithTags("KioskTermination").Produces<KioskTerminationResponse>();
+
+        // Seller may withdraw an unreviewed request. Accepted requests need the manager's completion process.
+        app.MapPost("/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/termination-requests/{id:guid}/withdraw", async (
+            Guid sellerId, Guid kioskId, Guid id, WithdrawKioskTerminationRequest input,
+            HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
+        {
+            var actor = Actor(http);
+            if (actor == Guid.Empty) return Results.Unauthorized();
+            if (input.Version < 1 || string.IsNullOrWhiteSpace(input.Reason) || input.Reason.Trim().Length is < 10 or > 2000 ||
+                input.Reason.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t')))
+                return Results.Problem(statusCode: 400, detail: "Lý do rút yêu cầu phải từ 10 đến 2000 ký tự.");
+
+            await using var conn = await data.OpenConnectionAsync(ct);
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            var (valid, actorSeller, role) = await ValidateActiveUserAsync(conn, tx, actor, ct);
+            if (!valid || role != "SELLER" || actorSeller != sellerId) return Results.Forbid();
+
+            await using (var kiosk = new NpgsqlCommand("SELECT seller_id FROM kiosk_ops.kiosks WHERE id=@id FOR UPDATE", conn, tx))
+            {
+                kiosk.Parameters.AddWithValue("id", kioskId);
+                var owner = await kiosk.ExecuteScalarAsync(ct);
+                if (owner is null or DBNull) return Results.NotFound();
+                if ((Guid)owner != sellerId) return Results.Forbid();
+            }
+            await using (var seller = new NpgsqlCommand("SELECT kiosk_ops.v2_term_lock_seller(@id)", conn, tx))
+            {
+                seller.Parameters.AddWithValue("id", sellerId);
+                await seller.ExecuteNonQueryAsync(ct);
+            }
+            await using (var row = new NpgsqlCommand("SELECT status,version FROM kiosk_ops.kiosk_terminations WHERE id=@id AND kiosk_id=@kiosk AND seller_id=@seller FOR UPDATE", conn, tx))
+            {
+                row.Parameters.AddWithValue("id", id);
+                row.Parameters.AddWithValue("kiosk", kioskId);
+                row.Parameters.AddWithValue("seller", sellerId);
+                await using var reader = await row.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct)) return Results.NotFound();
+                var status = reader.GetString(0);
+                var version = reader.GetInt32(1);
+                if (status != "REQUESTED" || version != input.Version)
+                    return Results.Problem(statusCode: 409, detail: "Yêu cầu đã được xử lý hoặc phiên bản đã thay đổi. Tải lại hồ sơ trước khi rút.");
+            }
+            await using (var update = new NpgsqlCommand("""
+                UPDATE kiosk_ops.kiosk_terminations
+                SET status='CANCELLED', version=version+1, updated_at=public.app_now()
+                WHERE id=@id
+                """, conn, tx))
+            {
+                update.Parameters.AddWithValue("id", id);
+                await update.ExecuteNonQueryAsync(ct);
+            }
+            await using (var audit = new NpgsqlCommand("SELECT flow.audit(@actor,'KIOSK_TERMINATION_WITHDRAWN','kiosk_terminations',@id,jsonb_build_object('reason',@reason))", conn, tx))
+            {
+                audit.Parameters.AddWithValue("actor", actor);
+                audit.Parameters.AddWithValue("id", id);
+                audit.Parameters.AddWithValue("reason", input.Reason.Trim());
+                await audit.ExecuteNonQueryAsync(ct);
+            }
+            var record = await LoadTerminationAsync(conn, tx, id, ct);
+            await tx.CommitAsync(ct);
+            return record is null ? Results.NotFound() : Results.Ok(record);
         }).RequireAuthorization("Seller", "SameSeller").WithTags("KioskTermination").Produces<KioskTerminationResponse>();
 
         // 3. Operations Manager: List termination requests (paginated, with active actor DB check)

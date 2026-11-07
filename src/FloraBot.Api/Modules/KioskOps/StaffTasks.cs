@@ -11,6 +11,7 @@ public sealed record AssignStaffTask(Guid Id, Guid AssigneeId, string Kind, Guid
 public sealed record CreateSellerDeliveryTask(Guid AssigneeId, Guid KioskId, string Instructions);
 public sealed record TransitionStaffTask(int Version, string Status, string Report);
 public sealed record ReassignStaffTask(int Version, Guid AssigneeId, string Reason);
+public sealed record EditStaffTaskInstructions(int Version, string Instructions);
 public sealed record StaffTaskResult(Guid Id, int? Version = null);
 public sealed record StaffDeliveryScope(Guid SellerId, string ShopName, Guid KioskId, string KioskName, string Address);
 public sealed record StaffTaskRow(Guid Id, string Kind, string Status, int Version, Guid AssigneeId, string AssigneeName,
@@ -127,6 +128,13 @@ public static class StaffTasks
 
         app.MapPost("/api/sellers/{sellerId:guid}/staff-tasks/{taskId:guid}/reassign", (Guid taskId, ReassignStaffTask input, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
             Reassign(taskId, input, data, http, ct)).RequireAuthorization("Merchant", "SameSeller").Produces<StaffTaskResult>();
+
+        app.MapPatch("/api/me/staff-tasks/{taskId:guid}", EditInstructions)
+            .RequireAuthorization("Seller").WithTags("KioskOps").Produces<StaffTaskResult>();
+        app.MapPatch("/api/operations/staff-tasks/{taskId:guid}", EditInstructions)
+            .RequireAuthorization("OperationsManager").WithTags("KioskOps").Produces<StaffTaskResult>();
+        app.MapPatch("/api/admin/staff-tasks/{taskId:guid}", EditInstructions)
+            .RequireAuthorization("Admin").WithTags("KioskOps").Produces<StaffTaskResult>();
     }
 
     private static Guid Actor(HttpContext http) => Guid.Parse(http.User.FindFirstValue("sub")!);
@@ -168,6 +176,18 @@ public static class StaffTasks
         command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("actor", Actor(http));
         command.Parameters.AddWithValue("staff", input.AssigneeId); command.Parameters.AddWithValue("version", input.Version);
         command.Parameters.AddWithValue("reason", input.Reason.Trim());
+        try { var version = (int)(await command.ExecuteScalarAsync(ct))!; return Results.Ok(new StaffTaskResult(taskId, version)); }
+        catch (PostgresException ex) when (Handled(ex)) { return Problem(ex); }
+    }
+
+    private static async Task<IResult> EditInstructions(Guid taskId, EditStaffTaskInstructions input, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
+    {
+        if (input.Version < 1 || !ValidReport(input.Instructions)) return Results.BadRequest();
+        await using var command = data.CreateCommand("SELECT flow.edit_staff_task_instructions(@id,@actor,@version,@instructions)");
+        command.Parameters.AddWithValue("id", taskId);
+        command.Parameters.AddWithValue("actor", Actor(http));
+        command.Parameters.AddWithValue("version", input.Version);
+        command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
         try { var version = (int)(await command.ExecuteScalarAsync(ct))!; return Results.Ok(new StaffTaskResult(taskId, version)); }
         catch (PostgresException ex) when (Handled(ex)) { return Problem(ex); }
     }

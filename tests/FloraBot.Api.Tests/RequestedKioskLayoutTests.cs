@@ -36,10 +36,12 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var createSchema = schemas.EnumerateObject().Single(x => x.Name.EndsWith("CreateKioskApplicationRequest")).Value;
         Assert.True(createSchema.GetProperty("properties").TryGetProperty("pricingVersion", out _));
         var pricingSchema = schemas.EnumerateObject().Single(x => x.Name.EndsWith("KioskSlotPricingResponse")).Value;
-        foreach (var name in new[] { "walkInAnnualPrice", "preorderAnnualPrice", "version", "configured", "termMonths" })
+        foreach (var name in new[] { "annualSlotPrice", "version", "configured", "termMonths" })
             Assert.True(pricingSchema.GetProperty("properties").TryGetProperty(name, out _));
         Assert.DoesNotContain(schemas.EnumerateObject(), x => x.Name.EndsWith("AcceptKioskQuoteRequest"));
         Assert.True(openApi.GetProperty("paths").GetProperty(Pricing).TryGetProperty("put", out _));
+        Assert.True(openApi.GetProperty("paths").GetProperty("/api/me/kiosks/{kioskId}/layout-requests").TryGetProperty("post", out _));
+        Assert.True(openApi.GetProperty("paths").GetProperty("/api/operations/kiosk-layout-requests/{requestId}/review").TryGetProperty("post", out _));
         Assert.DoesNotContain(openApi.GetProperty("paths").EnumerateObject(),
             x => x.Name.Contains("/slots/") && x.Name.EndsWith("/zone"));
 
@@ -47,20 +49,17 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var originalVersion = originalPricing.GetProperty("version").GetInt32();
         await Status(HttpStatusCode.Forbidden, customer.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 100000,
-            preorderAnnualPrice = 200000,
+            annualSlotPrice = 100000,
             expectedVersion = originalVersion
         }));
         await Status(HttpStatusCode.BadRequest, manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = -1,
-            preorderAnnualPrice = 200000,
+            annualSlotPrice = -1,
             expectedVersion = originalVersion
         }));
         var firstPricing = await Json(manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 100000,
-            preorderAnnualPrice = 200000,
+            annualSlotPrice = 100000,
             expectedVersion = originalVersion
         }));
         var firstVersion = firstPricing.GetProperty("version").GetInt32();
@@ -68,8 +67,8 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var advertised = await Get(customer, "/api/kiosk-packages");
         Assert.True(advertised.GetProperty("configured").GetBoolean());
         Assert.Equal(12, advertised.GetProperty("termMonths").GetInt32());
-        Assert.Equal(100000, advertised.GetProperty("walkInAnnualPrice").GetInt64());
-        Assert.Equal(200000, advertised.GetProperty("preorderAnnualPrice").GetInt64());
+        Assert.Equal(100000, advertised.GetProperty("annualSlotPrice").GetInt64());
+
 
         // Money comes from the versioned server configuration. Unknown money fields
         // are rejected by the strict JSON contract; the known legacy package is ignored.
@@ -83,27 +82,25 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var applicationId = application.GetProperty("id").GetGuid();
         var paymentId = application.GetProperty("paymentId").GetGuid();
         Assert.Equal("AWAITING_PAYMENT", application.GetProperty("status").GetString());
-        AssertPrices(application, firstVersion, 100000, 200000, 2, 2, 600000);
-        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 200000, 600000, "PENDING");
+        AssertPrices(application, firstVersion, 100000, 100000, 2, 2, 400000);
+        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 100000, 400000, "PENDING");
 
         var secondPricing = await Json(manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 120000,
-            preorderAnnualPrice = 250000,
+            annualSlotPrice = 120000,
             expectedVersion = firstVersion
         }));
         var secondVersion = secondPricing.GetProperty("version").GetInt32();
         Assert.True(secondVersion > firstVersion);
         await Status(HttpStatusCode.Conflict, manager.PutAsJsonAsync(Pricing, new
         {
-            walkInAnnualPrice = 1,
-            preorderAnnualPrice = 1,
+            annualSlotPrice = 1,
             expectedVersion = firstVersion
         }));
         await Status(HttpStatusCode.Conflict, otherCustomer.PostAsJsonAsync(Applications,
             ApplicationBody(secondCustomerId, firstVersion)));
-        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 200000, 2, 2, 600000);
-        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 200000, 600000, "PENDING");
+        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 100000, 2, 2, 400000);
+        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 100000, 400000, "PENDING");
 
         var preorderOnly = ApplicationBody(secondCustomerId, secondVersion);
         preorderOnly.Remove("packageId");
@@ -111,7 +108,7 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         preorderOnly["preorderSlots"] = 4;
         var otherApplication = await Json(otherCustomer.PostAsJsonAsync(Applications, preorderOnly));
         var otherApplicationId = otherApplication.GetProperty("id").GetGuid();
-        AssertPrices(otherApplication, secondVersion, 120000, 250000, 0, 4, 1000000);
+        AssertPrices(otherApplication, secondVersion, 120000, 120000, 0, 4, 480000);
 
         // A physical kiosk cannot be provisioned before the payment and Manager review.
         await Status(HttpStatusCode.Conflict, manager.PostAsJsonAsync("/api/operations/kiosks/enroll", Enroll(applicationId)));
@@ -139,7 +136,7 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
 
         var walkSlot = slots.First(x => x.Zone == "WALK_IN").Id;
         await AssertImmutableLayout(data, manager, kioskId, walkSlot, applicationId);
-        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 200000, 2, 2, 600000);
+        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 100000, 2, 2, 400000);
 
         await Json(manager.PostAsJsonAsync($"{Operations}/{applicationId}/schedule", Schedule(technicianId, kioskId)));
         await Json(technician.PostAsJsonAsync($"/api/staff/kiosk-installations/{applicationId}/start", new { }));
@@ -155,13 +152,13 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         var handedOver = await Json(manager.PostAsJsonAsync($"{Operations}/{applicationId}/handover", new { }));
         Assert.Equal("ACTIVE", handedOver.GetProperty("status").GetString());
         var sellerId = handedOver.GetProperty("sellerId").GetGuid();
-        AssertPrices(handedOver, firstVersion, 100000, 200000, 2, 2, 600000);
+        AssertPrices(handedOver, firstVersion, 100000, 100000, 2, 2, 400000);
         Assert.All(await Slots(data, kioskId), x => Assert.Equal("RENTED_EMPTY", x.Status));
         await using (var lease = data.CreateCommand("SELECT price FROM identity.subscriptions WHERE kiosk_id=@kiosk AND seller_id=@seller AND status='ACTIVE'"))
         {
             lease.Parameters.AddWithValue("kiosk", kioskId);
             lease.Parameters.AddWithValue("seller", sellerId);
-            Assert.Equal(600000L, (long)(await lease.ExecuteScalarAsync())!);
+            Assert.Equal(400000L, (long)(await lease.ExecuteScalarAsync())!);
         }
 
         using var seller = Client("SELLER", customerId, sellerId);
@@ -179,8 +176,61 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         }
         await AssertImmutableLayout(data, manager, kioskId, walkSlot, applicationId);
         Assert.Equal(2, (await Slots(data, kioskId)).Count(x => x.Zone == "PREORDER"));
-        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 200000, 2, 2, 600000);
-        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 200000, 600000, "SUCCEEDED");
+        await Status(HttpStatusCode.Forbidden, manager.PostAsJsonAsync($"/api/me/kiosks/{kioskId}/layout-requests",
+            new { walkInSlots = 3, preorderSlots = 1, reason = "Manager cannot request" }));
+        var request = await Json(seller.PostAsJsonAsync($"/api/me/kiosks/{kioskId}/layout-requests",
+            new { walkInSlots = 3, preorderSlots = 1, reason = "Need more walk-in capacity" }));
+        var layoutRequestId = request.GetProperty("id").GetGuid();
+        await Status(HttpStatusCode.Forbidden, seller.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{layoutRequestId}/review",
+            new { preorderSlotIds = Array.Empty<Guid>(), note = "Seller cannot approve" }));
+        await Status(HttpStatusCode.Conflict, seller.PostAsJsonAsync($"/api/me/kiosks/{kioskId}/layout-requests",
+            new { walkInSlots = 3, preorderSlots = 1, reason = "Duplicate" }));
+        var sellerRequests = await Get(seller, $"/api/me/kiosks/{kioskId}/layout-requests");
+        Assert.Contains(sellerRequests.EnumerateArray(), x => x.GetProperty("id").GetGuid() == layoutRequestId);
+        var pending = await Get(manager, "/api/operations/kiosk-layout-requests?status=PENDING");
+        Assert.Contains(pending.EnumerateArray(), x => x.GetProperty("id").GetGuid() == layoutRequestId);
+        var preorderSlot = slots.First(x => x.Zone == "PREORDER").Id;
+        await Status(HttpStatusCode.BadRequest, manager.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{layoutRequestId}/review",
+            new { preorderSlotIds = new[] { preorderSlot, slots.Last().Id }, note = "Wrong count" }));
+        var approved = await Json(manager.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{layoutRequestId}/review",
+            new { preorderSlotIds = new[] { preorderSlot }, note = "Empty slot checked" }));
+        Assert.Equal("APPROVED", approved.GetProperty("status").GetString());
+        Assert.Equal(3, (await Slots(data, kioskId)).Count(x => x.Zone == "WALK_IN"));
+        Assert.Equal(1, (await Slots(data, kioskId)).Count(x => x.Zone == "PREORDER"));
+        await Status(HttpStatusCode.Conflict, manager.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{layoutRequestId}/review",
+            new { preorderSlotIds = new[] { preorderSlot }, note = "Duplicate approval" }));
+        await using (var unchangedLease = data.CreateCommand("SELECT price FROM identity.subscriptions WHERE kiosk_id=@kiosk AND status='ACTIVE'"))
+        {
+            unchangedLease.Parameters.AddWithValue("kiosk", kioskId);
+            Assert.Equal(400000L, (long)(await unchangedLease.ExecuteScalarAsync())!);
+        }
+        var changedSlot = slots.Single(x => x.Zone == "PREORDER" && x.Id != preorderSlot).Id;
+        await using (var fault = data.CreateCommand("UPDATE kiosk_ops.slots SET status='FAULT' WHERE id=@slot"))
+        {
+            fault.Parameters.AddWithValue("slot", changedSlot);
+            await fault.ExecuteNonQueryAsync();
+        }
+        var blockedRequest = await Json(seller.PostAsJsonAsync($"/api/me/kiosks/{kioskId}/layout-requests",
+            new { walkInSlots = 2, preorderSlots = 2, reason = "Restore original layout" }));
+        var blockedId = blockedRequest.GetProperty("id").GetGuid();
+        await Status(HttpStatusCode.Conflict, manager.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{blockedId}/review",
+            new { preorderSlotIds = new[] { preorderSlot, changedSlot }, note = "Faulted slot" }));
+        var rejected = await Json(manager.PostAsJsonAsync(
+            $"/api/operations/kiosk-layout-requests/{blockedId}/review",
+            new { preorderSlotIds = (Guid[]?)null, note = "Slot must be empty and operational" }));
+        Assert.Equal("REJECTED", rejected.GetProperty("status").GetString());
+        await using (var reset = data.CreateCommand("UPDATE kiosk_ops.slots SET status='RENTED_EMPTY' WHERE id=@slot"))
+        {
+            reset.Parameters.AddWithValue("slot", changedSlot);
+            await reset.ExecuteNonQueryAsync();
+        }
+        AssertPrices(await Get(manager, $"{Operations}/{applicationId}"), firstVersion, 100000, 100000, 2, 2, 400000);
+        await AssertFinancialSnapshot(data, applicationId, firstVersion, 100000, 100000, 400000, "SUCCEEDED");
 
         // The next kiosk uses current prices, retaining the existing shop and bank.
         var additional = await Json(seller.PostAsJsonAsync("/api/me/kiosk-applications", new
@@ -194,7 +244,7 @@ public sealed class RequestedKioskLayoutTests(ApiFactory factory) : IClassFixtur
         }));
         Assert.Equal(sellerId, additional.GetProperty("sellerId").GetGuid());
         Assert.Equal("AWAITING_PAYMENT", additional.GetProperty("status").GetString());
-        AssertPrices(additional, secondVersion, 120000, 250000, 1, 1, 370000);
+        AssertPrices(additional, secondVersion, 120000, 120000, 1, 1, 240000);
         foreach (var name in new[] { "shopName", "phone", "contactEmail", "bankName", "bankHolder", "bankAccountSuffix" })
             Assert.Equal(handedOver.GetProperty(name).GetString(), additional.GetProperty(name).GetString());
         await using var profiles = data.CreateCommand("""

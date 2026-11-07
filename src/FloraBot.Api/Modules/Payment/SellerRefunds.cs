@@ -38,7 +38,9 @@ public sealed record SellerRefundSubmissionDetail(
     string? Note,
     DateTime CreatedAt,
     Guid? ReviewedBy,
-    DateTime? ReviewedAt);
+    DateTime? ReviewedAt,
+    int AttemptCount,
+    string? ReviewReason);
 
 public sealed record SellerRefundDetailResponse(
     Guid Id,
@@ -54,6 +56,7 @@ public sealed record SellerRefundDetailResponse(
     SellerRefundSubmissionDetail? Submission);
 
 public sealed record SellerBankAccessRequest(string Reason);
+public sealed record RejectSellerRefundEvidenceRequest(string Reason);
 
 public sealed record SellerSubmitTransferRequest(
     long Amount,
@@ -221,11 +224,12 @@ public static class SellerRefunds
                             reader.IsDBNull(13) ? null : reader.GetString(13),
                             reader.GetDateTime(14),
                             reader.IsDBNull(15) ? null : reader.GetGuid(15),
-                            reader.IsDBNull(16) ? null : reader.GetDateTime(16));
+                            reader.IsDBNull(16) ? null : reader.GetDateTime(16),
+                            1,
+                            null);
                     }
 
                     var canAccessBank = isApproved && pStatus == "PENDING" && hasBank;
-                    // Only permit submission when no previous submission exists (resubmission not supported)
                     var canSubmit = isApproved && pStatus == "PENDING" && hasBank && sub is null;
 
                     detail = new SellerRefundDetailResponse(
@@ -245,6 +249,23 @@ public static class SellerRefunds
 
             if (detail is null)
                 return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Khoản hoàn tiền không tồn tại hoặc không thuộc shop này.");
+
+            if (detail.Submission is { } submission)
+            {
+                await using var attempt = new NpgsqlCommand("SELECT attempt_count,review_reason FROM payment.seller_refund_transfers WHERE id=@id", conn);
+                attempt.Parameters.AddWithValue("id", submission.Id);
+                await using var attemptReader = await attempt.ExecuteReaderAsync(ct);
+                if (await attemptReader.ReadAsync(ct))
+                {
+                    var count = attemptReader.GetInt32(0);
+                    var reason = attemptReader.IsDBNull(1) ? null : attemptReader.GetString(1);
+                    detail = detail with {
+                        CanSubmitTransfer = detail.IsApproved && detail.Status == "PENDING" && detail.CanAccessBank &&
+                                            submission.Status == "REJECTED" && count < 4,
+                        Submission = submission with { AttemptCount = count, ReviewReason = reason }
+                    };
+                }
+            }
 
             return Results.Ok(detail);
         })
@@ -563,10 +584,12 @@ public static class SellerRefunds
             }
 
             var providerRef = request.ProviderReference.Trim();
+            Guid? rejectedTransferId = null;
+            int nextAttempt = 1;
 
             // Check if submission already exists for this refund (idempotency or conflict)
             await using (var existCmd = new NpgsqlCommand("""
-                SELECT id, provider_reference, amount, status, transferred_at, created_at
+                SELECT id, provider_reference, amount, status, transferred_at, created_at, attempt_count, evidence_url
                 FROM payment.seller_refund_transfers
                 WHERE refund_id = @refundId
                 FOR UPDATE
@@ -582,27 +605,38 @@ public static class SellerRefunds
                     var existingStatus = reader.GetString(3);
                     var existingTransferred = reader.GetDateTime(4);
                     var existingCreated = reader.GetDateTime(5);
+                    var existingAttempt = reader.GetInt32(6);
+                    var existingEvidence = reader.GetString(7);
                     await reader.CloseAsync();
 
-                    if (string.Equals(existingRef, providerRef, StringComparison.OrdinalIgnoreCase) && existingAmt == request.Amount)
+                    if (existingStatus != "REJECTED" &&
+                        string.Equals(existingRef, providerRef, StringComparison.OrdinalIgnoreCase) &&
+                        existingAmt == request.Amount && existingEvidence == verifiedMedia.Url)
                     {
                         await tx.CommitAsync(ct);
                         return Results.Ok(new SellerRefundTransferSubmissionResponse(
                             existingId, refundId, existingRef, existingStatus, existingTransferred, existingCreated));
                     }
 
-                    await tx.RollbackAsync(ct);
-                    return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Khoản hoàn này đã có chuyển khoản được gửi với mã tham chiếu khác.");
+                    if (existingStatus != "REJECTED" || existingAttempt >= 4)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+                            detail: existingAttempt >= 4 ? "Đã hết 3 lần gửi lại chứng từ." : "Khoản hoàn đã có chứng từ đang chờ duyệt hoặc đã xác nhận.");
+                    }
+                    rejectedTransferId = existingId;
+                    nextAttempt = existingAttempt + 1;
                 }
             }
 
             // Check provider reference uniqueness across all refunds
             await using (var uniqueRefCmd = new NpgsqlCommand("""
                 SELECT 1 FROM payment.seller_refund_transfers
-                WHERE lower(provider_reference) = lower(@ref)
+                WHERE lower(provider_reference) = lower(@ref) AND refund_id<>@refundId
                 """, conn, tx))
             {
                 uniqueRefCmd.Parameters.AddWithValue("ref", providerRef);
+                uniqueRefCmd.Parameters.AddWithValue("refundId", refundId);
                 var refUsed = await uniqueRefCmd.ExecuteScalarAsync(ct);
                 if (refUsed is not null)
                 {
@@ -638,6 +672,62 @@ public static class SellerRefunds
             {
                 getAttachCmd.Parameters.AddWithValue("url", verifiedMedia.Url);
                 attachmentId = (Guid?)await getAttachCmd.ExecuteScalarAsync(ct);
+            }
+
+            if (rejectedTransferId is Guid previousId)
+            {
+                await using (var history = new NpgsqlCommand("""
+                    INSERT INTO payment.seller_refund_transfer_attempts
+                    (transfer_id,attempt_no,provider_reference,transferred_at,evidence_url,
+                     evidence_attachment_id,note,review_reason,submitted_by,reviewed_by,reviewed_at,created_at)
+                    SELECT id,attempt_count,provider_reference,transferred_at,evidence_url,
+                           evidence_attachment_id,note,coalesce(review_reason,'Rejected'),submitted_by,
+                           reviewed_by,reviewed_at,created_at
+                    FROM payment.seller_refund_transfers
+                    WHERE id=@id AND status='REJECTED' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL
+                    """, conn, tx))
+                {
+                    history.Parameters.AddWithValue("id", previousId);
+                    if (await history.ExecuteNonQueryAsync(ct) != 1)
+                        return Results.Problem(statusCode: 409, detail: "Chứng từ trước chưa được từ chối hợp lệ.");
+                }
+                await using (var replace = new NpgsqlCommand("""
+                    UPDATE payment.seller_refund_transfers
+                    SET submitted_by=@actor,provider_reference=@ref,transferred_at=@transferredAt,
+                        evidence_attachment_id=@attachId,evidence_url=@url,note=@note,
+                        status='PENDING_REVIEW',attempt_count=@attempt,review_reason=NULL,
+                        reviewed_by=NULL,reviewed_at=NULL,updated_at=public.app_now()
+                    WHERE id=@id AND status='REJECTED' AND attempt_count=@previousAttempt
+                    """, conn, tx))
+                {
+                    replace.Parameters.AddWithValue("id", previousId);
+                    replace.Parameters.AddWithValue("actor", actorId);
+                    replace.Parameters.AddWithValue("ref", providerRef);
+                    replace.Parameters.AddWithValue("transferredAt", request.TransferredAt.UtcDateTime);
+                    replace.Parameters.AddWithValue("attachId", (object?)attachmentId ?? DBNull.Value);
+                    replace.Parameters.AddWithValue("url", verifiedMedia.Url);
+                    replace.Parameters.Add(new NpgsqlParameter("note", NpgsqlTypes.NpgsqlDbType.Text)
+                    { Value = string.IsNullOrWhiteSpace(request.Note) ? DBNull.Value : request.Note.Trim() });
+                    replace.Parameters.AddWithValue("attempt", nextAttempt);
+                    replace.Parameters.AddWithValue("previousAttempt", nextAttempt - 1);
+                    if (await replace.ExecuteNonQueryAsync(ct) != 1)
+                        return Results.Problem(statusCode: 409, detail: "Trạng thái chứng từ đã thay đổi.");
+                }
+                await using (var audit = new NpgsqlCommand("""
+                    SELECT flow.audit(@actor,'SELLER_REFUND_TRANSFER_RESUBMITTED','payments',@refundId,
+                        jsonb_build_object('transfer_id',@id,'attempt',@attempt,'seller_id',@sellerId))
+                    """, conn, tx))
+                {
+                    audit.Parameters.AddWithValue("actor", actorId);
+                    audit.Parameters.AddWithValue("refundId", refundId);
+                    audit.Parameters.AddWithValue("id", previousId);
+                    audit.Parameters.AddWithValue("attempt", nextAttempt);
+                    audit.Parameters.AddWithValue("sellerId", sellerId);
+                    await audit.ExecuteNonQueryAsync(ct);
+                }
+                await tx.CommitAsync(ct);
+                return Results.Ok(new SellerRefundTransferSubmissionResponse(previousId, refundId, providerRef,
+                    "PENDING_REVIEW", request.TransferredAt.UtcDateTime, DateTime.UtcNow));
             }
 
             // Insert seller refund transfer with PENDING_REVIEW
@@ -726,6 +816,12 @@ public static class SellerRefunds
             http.Response.Headers.CacheControl = "no-store";
 
             await using var conn = await data.OpenConnectionAsync(ct);
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Unauthorized();
+            await using (var active = new NpgsqlCommand("SELECT 1 FROM identity.users WHERE id=@actor AND role='ADMIN' AND status='ACTIVE'", conn))
+            {
+                active.Parameters.AddWithValue("actor", actor);
+                if (await active.ExecuteScalarAsync(ct) is null) return Results.Forbid();
+            }
             await using var cmd = new NpgsqlCommand("""
                 SELECT id,
                        refund_id,
@@ -780,6 +876,74 @@ public static class SellerRefunds
         .RequireAuthorization("Admin")
         .WithTags("Payment")
         .WithSummary("Admin xem chi tiết chuyển khoản hoàn tiền trực tiếp của người bán gửi duyệt");
+
+        app.MapPost("/api/admin/refunds/{refundId:guid}/seller-submission/reject", async (
+            Guid refundId, RejectSellerRefundEvidenceRequest input, NpgsqlDataSource data,
+            HttpContext http, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Unauthorized();
+            var reason = input.Reason?.Trim();
+            if (reason is null || reason.Length is < 5 or > 1000 || reason.Any(char.IsControl))
+                return Results.Problem(statusCode: 400, detail: "Lý do từ chối phải có 5–1000 ký tự.");
+            await using var conn = await data.OpenConnectionAsync(ct);
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            await using (var active = new NpgsqlCommand("SELECT 1 FROM identity.users WHERE id=@actor AND role='ADMIN' AND status='ACTIVE' FOR SHARE", conn, tx))
+            {
+                active.Parameters.AddWithValue("actor", actor);
+                if (await active.ExecuteScalarAsync(ct) is null) return Results.Forbid();
+            }
+            await using (var refund = new NpgsqlCommand("""
+                SELECT 1 FROM payment.payments
+                WHERE id=@id AND kind='REFUND' AND status='PENDING' AND approved_by IS NOT NULL
+                  AND (funding_provenance='SELLER_DIRECT' OR is_direct_receipt=true)
+                FOR UPDATE
+                """, conn, tx))
+            {
+                refund.Parameters.AddWithValue("id", refundId);
+                if (await refund.ExecuteScalarAsync(ct) is null)
+                    return Results.Problem(statusCode: 409, detail: "Khoản hoàn chưa đủ điều kiện hoặc không còn chờ duyệt chứng từ.");
+            }
+            Guid submissionId;
+            await using (var submission = new NpgsqlCommand("""
+                SELECT id FROM payment.seller_refund_transfers
+                WHERE refund_id=@id AND status='PENDING_REVIEW' AND submitted_by<>@actor
+                FOR UPDATE
+                """, conn, tx))
+            {
+                submission.Parameters.AddWithValue("id", refundId);
+                submission.Parameters.AddWithValue("actor", actor);
+                if (await submission.ExecuteScalarAsync(ct) is not Guid id)
+                    return Results.Problem(statusCode: 409, detail: "Không có chứng từ đang chờ duyệt.");
+                submissionId = id;
+            }
+            await using (var reject = new NpgsqlCommand("""
+                UPDATE payment.seller_refund_transfers
+                SET status='REJECTED',review_reason=@reason,reviewed_by=@actor,
+                    reviewed_at=public.app_now(),updated_at=public.app_now()
+                WHERE id=@id AND status='PENDING_REVIEW'
+                """, conn, tx))
+            {
+                reject.Parameters.AddWithValue("id", submissionId);
+                reject.Parameters.AddWithValue("reason", reason);
+                reject.Parameters.AddWithValue("actor", actor);
+                if (await reject.ExecuteNonQueryAsync(ct) != 1) return Results.Conflict();
+            }
+            await using (var audit = new NpgsqlCommand("""
+                SELECT flow.audit(@actor,'SELLER_REFUND_TRANSFER_REJECTED','payments',@refundId,
+                    jsonb_build_object('transfer_id',@id,'reason',@reason))
+                """, conn, tx))
+            {
+                audit.Parameters.AddWithValue("actor", actor);
+                audit.Parameters.AddWithValue("refundId", refundId);
+                audit.Parameters.AddWithValue("id", submissionId);
+                audit.Parameters.AddWithValue("reason", reason);
+                await audit.ExecuteNonQueryAsync(ct);
+            }
+            await tx.CommitAsync(ct);
+            return Results.Ok(new { refundId, submissionId, status = "REJECTED", reason });
+        }).RequireAuthorization("Admin").WithTags("Payment")
+          .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(409);
     }
 
     private static async Task<bool> VerifyActiveSellerOwnerAsync(

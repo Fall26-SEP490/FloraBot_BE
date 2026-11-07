@@ -4,8 +4,7 @@ using Npgsql;
 namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record KioskSlotPricingResponse(
-    long? WalkInAnnualPrice,
-    long? PreorderAnnualPrice,
+    long? AnnualSlotPrice,
     int Version,
     bool Configured,
     DateTime? UpdatedAt,
@@ -14,8 +13,7 @@ public sealed record KioskSlotPricingResponse(
     int MaxSlots = 50);
 
 public sealed record UpdateKioskSlotPricingRequest(
-    long WalkInAnnualPrice,
-    long PreorderAnnualPrice,
+    long AnnualSlotPrice,
     int ExpectedVersion);
 
 public static class KioskSlotPricing
@@ -32,7 +30,7 @@ public static class KioskSlotPricing
         })
         .AllowAnonymous()
         .WithTags("Identity")
-        .WithSummary("Xem đơn giá thuê một năm cho từng loại ô kiosk")
+        .WithSummary("Xem đơn giá thuê một năm cho mỗi ô kiosk")
         .Produces<KioskSlotPricingResponse>();
 
         app.MapPut("/api/operations/kiosk-pricing", async (
@@ -42,12 +40,11 @@ public static class KioskSlotPricing
             CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
-            if (input.WalkInAnnualPrice is <= 0 or > MaximumPrice ||
-                input.PreorderAnnualPrice is <= 0 or > MaximumPrice ||
+            if (input.AnnualSlotPrice is <= 0 or > MaximumPrice ||
                 input.ExpectedVersion < 0)
             {
                 return Results.Problem(statusCode: 400,
-                    detail: "Đơn giá từng loại ô phải là số nguyên dương hợp lệ; phiên bản không được âm.");
+                    detail: "Đơn giá mỗi ô phải là số nguyên dương hợp lệ; phiên bản không được âm.");
             }
 
             if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor))
@@ -60,8 +57,8 @@ public static class KioskSlotPricing
                 await using var command = new NpgsqlCommand(
                     "SELECT flow.set_kiosk_slot_pricing(@actor,@walk,@pre,@version)", connection, transaction);
                 command.Parameters.AddWithValue("actor", actor);
-                command.Parameters.AddWithValue("walk", input.WalkInAnnualPrice);
-                command.Parameters.AddWithValue("pre", input.PreorderAnnualPrice);
+                command.Parameters.AddWithValue("walk", input.AnnualSlotPrice);
+                command.Parameters.AddWithValue("pre", input.AnnualSlotPrice);
                 command.Parameters.AddWithValue("version", input.ExpectedVersion);
                 await command.ExecuteNonQueryAsync(ct);
 
@@ -82,7 +79,7 @@ public static class KioskSlotPricing
         })
         .RequireAuthorization("OperationsManager")
         .WithTags("KioskOps")
-        .WithSummary("Operations Manager cập nhật đơn giá thuê một năm cho từng loại ô")
+        .WithSummary("Operations Manager cập nhật đơn giá thuê một năm chung cho mọi ô")
         .Produces<KioskSlotPricingResponse>()
         .ProducesProblem(400)
         .Produces(403)
@@ -93,12 +90,12 @@ public static class KioskSlotPricing
         NpgsqlConnection connection, NpgsqlTransaction? transaction, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT walk_in_annual_price, preorder_annual_price, version, updated_at
+            SELECT annual_slot_price, version, updated_at
             FROM kiosk_ops.kiosk_slot_pricing WHERE singleton
             """, connection, transaction);
         await using var reader = await command.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct)
-            ? new KioskSlotPricingResponse(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), true, reader.GetDateTime(3))
-            : new KioskSlotPricingResponse(null, null, 0, false, null);
+            ? new KioskSlotPricingResponse(reader.IsDBNull(0) ? null : reader.GetInt64(0), reader.GetInt32(1), !reader.IsDBNull(0), reader.GetDateTime(2))
+            : new KioskSlotPricingResponse(null, 0, false, null);
     }
 }
