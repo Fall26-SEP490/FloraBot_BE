@@ -1,5 +1,7 @@
 # Thuê kiosk theo số ô và bảng giá từng loại
 
+**Tài liệu lịch sử cho bản ngày 04/11/2026.** Quy tắc mới dùng một giá chung/ô và hỗ trợ Seller gửi yêu cầu đổi cơ cấu ô; xem [hợp đồng mới](kiosk-uniform-price-layout-change-for-fe.md).
+
 Quyết định nghiệp vụ ngày 04/11/2026. Áp dụng cho Customer thuê lần đầu và Seller thuê thêm kiosk. Tất cả số tiền là VND, đơn giá tính cho một năm; kỳ thuê bắt đầu khi bàn giao.
 
 ## 1. Manager cấu hình bảng giá

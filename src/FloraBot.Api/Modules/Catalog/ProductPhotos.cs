@@ -7,8 +7,10 @@ using Npgsql;
 
 namespace FloraBot.Api.Modules.Catalog;
 
-public sealed record ProductPhotoResponse(Guid Id, string Url, string MimeType, int SizeBytes, string Sha256);
+public sealed record ProductPhotoResponse(Guid Id, string Url, string MimeType, int SizeBytes, string Sha256,
+    bool IsCover = false, int SortOrder = 0);
 public sealed record ProductPhotoPage(List<ProductPhotoResponse> Items, bool HasMore);
+public sealed record ReorderProductPhotosRequest(List<Guid> PhotoIds);
 
 public static class ProductPhotos
 {
@@ -24,8 +26,98 @@ public static class ProductPhotos
             if (!await CheckOwnerAsync(connection, transaction, productId, Guid.Parse(http.User.FindFirstValue("sub")!), ct, editing: false)) return Results.NotFound();
             var rows = await VerifiedAttachments.ProductPhotosAsync(connection, transaction, productId, current, ct);
             await transaction.CommitAsync(ct);
-            return Results.Ok(new ProductPhotoPage(rows.Take(20).Select(x => new ProductPhotoResponse(x.Id, x.Url, x.MimeType, x.SizeBytes, x.Sha256)).ToList(), rows.Count > 20));
+            return Results.Ok(new ProductPhotoPage(rows.Take(20).Select(x => new ProductPhotoResponse(x.Id, x.Url, x.MimeType, x.SizeBytes, x.Sha256, x.IsCover, x.SortOrder)).ToList(), rows.Count > 20));
         }).RequireAuthorization("Merchant").WithTags("Catalog").Produces<ProductPhotoPage>();
+
+        app.MapPut("/api/me/products/{productId:guid}/photos/order", async (
+            Guid productId, ReorderProductPhotosRequest input, HttpContext http,
+            NpgsqlDataSource source, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            if (input.PhotoIds is null || input.PhotoIds.Count is < 1 or > 100 ||
+                input.PhotoIds.Distinct().Count() != input.PhotoIds.Count)
+                return Results.Problem(statusCode: 400, detail: "Danh sách ảnh không hợp lệ.");
+            await using var connection = await source.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            if (!await CheckOwnerAsync(connection, transaction, productId,
+                Guid.Parse(http.User.FindFirstValue("sub")!), ct)) return Results.NotFound();
+            await using (var check = new NpgsqlCommand("""
+                SELECT array_agg(id ORDER BY id) FROM notify.attachments
+                WHERE owner_service='catalog' AND owner_type='flower_product'
+                  AND owner_id=@product AND phase='PRODUCT' AND NOT is_hidden
+                """, connection, transaction))
+            {
+                check.Parameters.AddWithValue("product", productId);
+                var existing = await check.ExecuteScalarAsync(ct) as Guid[] ?? [];
+                if (existing.Length != input.PhotoIds.Count || existing.Except(input.PhotoIds).Any())
+                    return Results.Problem(statusCode: 409, detail: "Danh sách ảnh đã thay đổi. Tải lại trước khi sắp xếp.");
+            }
+            await using (var clear = new NpgsqlCommand("""
+                UPDATE notify.attachments SET is_cover=false
+                WHERE owner_service='catalog' AND owner_type='flower_product'
+                  AND owner_id=@product AND phase='PRODUCT' AND NOT is_hidden
+                """, connection, transaction))
+            {
+                clear.Parameters.AddWithValue("product", productId);
+                await clear.ExecuteNonQueryAsync(ct);
+            }
+            for (var position = 0; position < input.PhotoIds.Count; position++)
+            {
+                await using var order = new NpgsqlCommand("""
+                    UPDATE notify.attachments SET sort_order=@position,is_cover=@cover
+                    WHERE id=@id AND owner_id=@product AND owner_service='catalog'
+                      AND owner_type='flower_product' AND phase='PRODUCT' AND NOT is_hidden
+                    """, connection, transaction);
+                order.Parameters.AddWithValue("position", position + 1);
+                order.Parameters.AddWithValue("cover", position == 0);
+                order.Parameters.AddWithValue("id", input.PhotoIds[position]);
+                order.Parameters.AddWithValue("product", productId);
+                await order.ExecuteNonQueryAsync(ct);
+            }
+            await AuditAsync(connection, transaction, Guid.Parse(http.User.FindFirstValue("sub")!),
+                "PRODUCT_PHOTOS_REORDERED", productId, ct);
+            await transaction.CommitAsync(ct);
+            return Results.NoContent();
+        }).RequireAuthorization("Merchant").WithTags("Catalog")
+          .Produces(204).ProducesProblem(400).ProducesProblem(409);
+
+        app.MapDelete("/api/me/products/{productId:guid}/photos/{photoId:guid}", async (
+            Guid productId, Guid photoId, HttpContext http, NpgsqlDataSource source, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            var actor = Guid.Parse(http.User.FindFirstValue("sub")!);
+            await using var connection = await source.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            if (!await CheckOwnerAsync(connection, transaction, productId, actor, ct)) return Results.NotFound();
+            await using (var hide = new NpgsqlCommand("""
+                UPDATE notify.attachments SET is_hidden=true,is_cover=false
+                WHERE id=@id AND owner_id=@product AND owner_service='catalog'
+                  AND owner_type='flower_product' AND phase='PRODUCT' AND NOT is_hidden
+                """, connection, transaction))
+            {
+                hide.Parameters.AddWithValue("id", photoId);
+                hide.Parameters.AddWithValue("product", productId);
+                if (await hide.ExecuteNonQueryAsync(ct) != 1) return Results.NotFound();
+            }
+            await using (var cover = new NpgsqlCommand("""
+                UPDATE notify.attachments SET is_cover=true WHERE id=(
+                  SELECT id FROM notify.attachments WHERE owner_service='catalog'
+                    AND owner_type='flower_product' AND owner_id=@product
+                    AND phase='PRODUCT' AND NOT is_hidden
+                  ORDER BY is_cover DESC,sort_order,created_at,id LIMIT 1)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM notify.attachments WHERE owner_service='catalog'
+                      AND owner_type='flower_product' AND owner_id=@product
+                      AND phase='PRODUCT' AND NOT is_hidden AND is_cover)
+                """, connection, transaction))
+            {
+                cover.Parameters.AddWithValue("product", productId);
+                await cover.ExecuteNonQueryAsync(ct);
+            }
+            await AuditAsync(connection, transaction, actor, "PRODUCT_PHOTO_HIDDEN", photoId, ct);
+            await transaction.CommitAsync(ct);
+            return Results.NoContent();
+        }).RequireAuthorization("Merchant").WithTags("Catalog").Produces(204).Produces(404);
 
         app.MapPost("/api/me/products/{productId:guid}/photos", UploadAsync)
             .RequireAuthorization("Merchant").WithTags("Catalog")
@@ -83,8 +175,29 @@ public static class ProductPhotos
         attach.Parameters.AddWithValue("url", uploaded.Url);
         var id = (Guid)(await attach.ExecuteScalarAsync(ct))!;
         await VerifiedAttachments.SetMetadataAsync(connection, transaction, id, uploaded, ct);
+        bool isCover;
+        int sortOrder;
+        await using (var layout = new NpgsqlCommand("""
+            UPDATE notify.attachments SET
+              sort_order=coalesce((SELECT max(sort_order)+1 FROM notify.attachments
+                WHERE owner_service='catalog' AND owner_type='flower_product'
+                  AND owner_id=@product AND phase='PRODUCT' AND NOT is_hidden AND id<>@id),1),
+              is_cover=NOT EXISTS (SELECT 1 FROM notify.attachments
+                WHERE owner_service='catalog' AND owner_type='flower_product'
+                  AND owner_id=@product AND phase='PRODUCT' AND NOT is_hidden
+                  AND is_cover AND id<>@id)
+            WHERE id=@id RETURNING is_cover,sort_order
+            """, connection, transaction))
+        {
+            layout.Parameters.AddWithValue("id", id);
+            layout.Parameters.AddWithValue("product", productId);
+            await using var reader = await layout.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) throw new InvalidOperationException("Uploaded photo not found.");
+            isCover = reader.GetBoolean(0);
+            sortOrder = reader.GetInt32(1);
+        }
         await transaction.CommitAsync(ct);
-        return Results.Ok(new ProductPhotoResponse(id, uploaded.Url, uploaded.MimeType, uploaded.SizeBytes, uploaded.Sha256));
+        return Results.Ok(new ProductPhotoResponse(id, uploaded.Url, uploaded.MimeType, uploaded.SizeBytes, uploaded.Sha256, isCover, sortOrder));
     }
 
     private static async Task<bool> CheckOwnerAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid product, Guid actor, CancellationToken ct, bool editing = true)
@@ -104,5 +217,15 @@ public static class ProductPhotos
         access.Parameters.AddWithValue(editing ? "product" : "seller", editing ? product : owner);
         await access.ExecuteNonQueryAsync(ct);
         return true;
+    }
+
+    private static async Task AuditAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid actor, string action, Guid entityId, CancellationToken ct)
+    {
+        await using var audit = new NpgsqlCommand("SELECT flow.audit(@actor,@action,'attachments',@id)", connection, transaction);
+        audit.Parameters.AddWithValue("actor", actor);
+        audit.Parameters.AddWithValue("action", action);
+        audit.Parameters.AddWithValue("id", entityId);
+        await audit.ExecuteNonQueryAsync(ct);
     }
 }

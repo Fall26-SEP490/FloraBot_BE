@@ -40,7 +40,8 @@ public sealed record SellerKioskDto(
 public sealed record UpdateKioskLocationRequest(
     string? Address,
     double? Latitude,
-    double? Longitude);
+    double? Longitude,
+    string? Reason = null);
 
 public static class KioskLocations
 {
@@ -211,129 +212,13 @@ public static class KioskLocations
         .WithSummary("Tương thích cũ: danh sách kiosk thuộc seller; dùng GET /api/me/kiosks cho route tự nhận seller từ token")
         .Produces<List<SellerKioskDto>>();
 
-        // Seller self-only: Update location for wholly owned kiosk with row locking and audit
-        app.MapPut("/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location", async (
-            Guid sellerId,
-            Guid kioskId,
-            UpdateKioskLocationRequest input,
-            NpgsqlDataSource source,
-            HttpContext http,
-            CancellationToken ct) =>
-        {
-            if (!IsAuthorizedSeller(http, sellerId)) return Results.NotFound();
-
-            if (string.IsNullOrWhiteSpace(input.Address) || input.Address.Trim().Length > 300)
-            {
-                return Results.Problem(statusCode: 400, title: "Dữ liệu không hợp lệ", detail: "Địa chỉ kiosk là bắt buộc và tối đa 300 ký tự.");
-            }
-
-            if (!input.Latitude.HasValue || !input.Longitude.HasValue)
-            {
-                return Results.Problem(statusCode: 400, title: "Dữ liệu không hợp lệ", detail: "Vĩ độ (latitude) và kinh độ (longitude) là bắt buộc và phải được cung cấp cùng nhau.");
-            }
-
-            if (!double.IsFinite(input.Latitude.Value) || !double.IsFinite(input.Longitude.Value))
-            {
-                return Results.Problem(statusCode: 400, title: "Dữ liệu không hợp lệ", detail: "Tọa độ phải là số thực hữu hạn.");
-            }
-
-            if (input.Latitude.Value is < -90.0 or > 90.0 || input.Longitude.Value is < -180.0 or > 180.0)
-            {
-                return Results.Problem(statusCode: 400, title: "Dữ liệu không hợp lệ", detail: "Tọa độ nằm ngoài phạm vi hợp lệ (-90 đến 90 cho vĩ độ, -180 đến 180 cho kinh độ).");
-            }
-
-            await using var connection = await source.OpenConnectionAsync(ct);
-            await using var transaction = await connection.BeginTransactionAsync(ct);
-
-            await using var lockCmd = new NpgsqlCommand(
-                "SELECT id, code, name, status, region, seller_id FROM kiosk_ops.kiosks WHERE id = @id FOR UPDATE",
-                connection, transaction);
-            lockCmd.Parameters.AddWithValue("id", kioskId);
-            await using var reader = await lockCmd.ExecuteReaderAsync(ct);
-            if (!await reader.ReadAsync(ct))
-            {
-                await transaction.RollbackAsync(ct);
-                return Results.NotFound(new ProblemDetails { Title = "Không tìm thấy", Detail = "Kiosk không tồn tại." });
-            }
-
-            var code = reader.GetString(1);
-            var name = reader.GetString(2);
-            var status = reader.GetString(3);
-            var region = reader.GetString(4);
-            var kioskSellerId = reader.IsDBNull(5) ? (Guid?)null : reader.GetGuid(5);
-            await reader.CloseAsync();
-
-            if (status == "DISABLED")
-            {
-                await transaction.RollbackAsync(ct);
-                return Results.Problem(statusCode: 400, title: "Kiosk bị vô hiệu hóa", detail: "Không thể chỉnh sửa vị trí cho kiosk đang bị vô hiệu hóa.");
-            }
-
-            if (kioskSellerId != sellerId)
-            {
-                await transaction.RollbackAsync(ct);
-                return Results.Problem(statusCode: 403, title: "Không có quyền chỉnh sửa",
-                    detail: "Seller chỉ được chỉnh sửa vị trí của kiosk đã được admin gán cho mình.");
-            }
-
-            var trimmedAddress = input.Address.Trim();
-            await using var updateCmd = new NpgsqlCommand(
-                @"UPDATE kiosk_ops.kiosks
-                  SET address = @address,
-                      latitude = @latitude,
-                      longitude = @longitude,
-                      updated_at = public.app_now()
-                  WHERE id = @id",
-                connection, transaction);
-            updateCmd.Parameters.AddWithValue("id", kioskId);
-            updateCmd.Parameters.AddWithValue("address", trimmedAddress);
-            updateCmd.Parameters.AddWithValue("latitude", input.Latitude.Value);
-            updateCmd.Parameters.AddWithValue("longitude", input.Longitude.Value);
-            await updateCmd.ExecuteNonQueryAsync(ct);
-
-            var actorId = GetActorId(http.User);
-            var auditPayload = JsonSerializer.Serialize(new
-            {
-                address = trimmedAddress,
-                latitude = input.Latitude.Value,
-                longitude = input.Longitude.Value,
-                seller_id = sellerId
-            });
-
-            await using var auditCmd = new NpgsqlCommand(
-                "SELECT flow.audit(@actor, 'KIOSK_LOCATION_UPDATED', 'kiosks', @id, @payload::jsonb)",
-                connection, transaction);
-            auditCmd.Parameters.AddWithValue("actor", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)actorId ?? DBNull.Value);
-            auditCmd.Parameters.AddWithValue("id", kioskId);
-            auditCmd.Parameters.AddWithValue("payload", auditPayload);
-            await auditCmd.ExecuteNonQueryAsync(ct);
-
-            await transaction.CommitAsync(ct);
-
-            var coords = new KioskCoordinates(input.Latitude.Value, input.Longitude.Value);
-            var response = new SellerKioskDto(
-                kioskId,
-                code,
-                name,
-                trimmedAddress,
-                region,
-                status,
-                input.Latitude.Value,
-                input.Longitude.Value,
-                coords,
-                true,
-                true);
-
-            return Results.Ok(response);
-        })
-        .RequireAuthorization("Seller", "SameSeller")
-        .WithTags("KioskOps")
-        .WithSummary("Cập nhật địa chỉ và tọa độ ghim bản đồ cho kiosk do shop quản lý toàn quyền")
-        .Produces<SellerKioskDto>()
-        .ProducesProblem(400)
-        .ProducesProblem(401)
-        .ProducesProblem(403)
-        .ProducesProblem(404);
+        // Seller submits a location change request; only the assigned Operations Manager applies it.
+        app.MapPut("/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location", KioskLocationChange.SubmitAsync)
+            .RequireAuthorization("Seller", "SameSeller")
+            .WithTags("KioskOps")
+            .WithSummary("Gửi yêu cầu đổi địa chỉ và tọa độ kiosk tới Operations Manager")
+            .Produces<KioskLocationChangeResponse>()
+            .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404).ProducesProblem(409);
     }
 
     public static async Task<bool> IsPreorderReadyAsync(FloraDbContext db, Guid kioskId, CancellationToken ct)
@@ -391,7 +276,7 @@ public static class KioskLocations
 
         var result = kiosks.Select(k =>
         {
-            var canEditLocation = k.SellerId == sellerId && k.Status != "DISABLED";
+            var canEditLocation = false;
             var isComplete = !string.IsNullOrWhiteSpace(k.Address) && k.Latitude.HasValue && k.Longitude.HasValue;
             var coords = k.Latitude.HasValue && k.Longitude.HasValue
                 ? new KioskCoordinates(k.Latitude.Value, k.Longitude.Value)

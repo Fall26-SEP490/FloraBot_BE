@@ -2,23 +2,25 @@ using Npgsql;
 
 namespace FloraBot.Api.Modules.Notify;
 
-public sealed record AttachmentMetadata(Guid Id, string Url, string MimeType, int SizeBytes, string Sha256);
+public sealed record AttachmentMetadata(Guid Id, string Url, string MimeType, int SizeBytes, string Sha256,
+    bool IsCover, int SortOrder);
 
 public static class VerifiedAttachments
 {
     public static async Task<List<AttachmentMetadata>> ProductPhotosAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid product, int page, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT id,file_url,mime_type,size_bytes,sha256 FROM notify.attachments
+            SELECT id,file_url,mime_type,size_bytes,sha256,is_cover,sort_order FROM notify.attachments
             WHERE owner_service='catalog' AND owner_type='flower_product' AND owner_id=@product AND phase='PRODUCT'
-            ORDER BY created_at DESC,id DESC LIMIT 21 OFFSET @offset
+              AND NOT is_hidden
+            ORDER BY is_cover DESC,sort_order,created_at,id LIMIT 21 OFFSET @offset
             """, connection, transaction);
         command.Parameters.AddWithValue("product", product);
         command.Parameters.AddWithValue("offset", (page - 1) * 20);
         var rows = new List<AttachmentMetadata>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
-            rows.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), checked((int)reader.GetInt64(3)), reader.GetString(4)));
+            rows.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), checked((int)reader.GetInt64(3)), reader.GetString(4), reader.GetBoolean(5), reader.GetInt32(6)));
         return rows;
     }
 

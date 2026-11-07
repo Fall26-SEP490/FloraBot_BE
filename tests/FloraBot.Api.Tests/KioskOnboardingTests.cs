@@ -53,7 +53,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         Assert.True(res.IsSuccessStatusCode, $"HTTP {(int)res.StatusCode}: {body}");
         var pricing = JsonSerializer.Deserialize<KioskSlotPricingResponse>(body, JsonOptions);
         Assert.NotNull(pricing);
-        if (pricing.Configured && pricing.WalkInAnnualPrice is > 0 && pricing.PreorderAnnualPrice is > 0)
+        if (pricing.Configured && pricing.AnnualSlotPrice is > 0)
         {
             return pricing;
         }
@@ -72,7 +72,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         using var mgrClient = CreateClientForRole("OPERATIONS_MANAGER", userId: managerId);
         var putRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
-            5000, 5000, pricing.Version));
+            5000, pricing.Version));
         var putBody = await putRes.Content.ReadAsStringAsync();
         Assert.True(putRes.IsSuccessStatusCode, $"HTTP {(int)putRes.StatusCode}: {putBody}");
         var configured = JsonSerializer.Deserialize<KioskSlotPricingResponse>(putBody, JsonOptions);
@@ -101,10 +101,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         var result = JsonSerializer.Deserialize<KioskSlotPricingResponse>(body, JsonOptions);
         Assert.NotNull(result);
         Assert.True(result.Configured);
-        Assert.NotNull(result.WalkInAnnualPrice);
-        Assert.NotNull(result.PreorderAnnualPrice);
-        Assert.True(result.WalkInAnnualPrice > 0);
-        Assert.True(result.PreorderAnnualPrice > 0);
+        Assert.NotNull(result.AnnualSlotPrice);
+        Assert.True(result.AnnualSlotPrice > 0);
         Assert.True(result.Version > 0);
         Assert.Equal(12, result.TermMonths);
         Assert.Equal(1, result.MinSlots);
@@ -190,7 +188,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         Assert.Equal(1, created.WalkInSlots);
         Assert.Equal(1, created.PreorderSlots);
         Assert.Equal(2, created.TotalSlots);
-        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        var expectedFee = pricing.AnnualSlotPrice!.Value + pricing.AnnualSlotPrice!.Value;
         Assert.Equal(expectedFee, created.AnnualFee);
 
         // Second creation for same customer should fail with 409 Conflict
@@ -411,7 +409,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         );
         var createRes = await custClient.PostAsJsonAsync("/api/member/kiosk-applications", appRequest);
         var created = await ReadApplicationAsync(createRes);
-        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        var expectedFee = pricing.AnnualSlotPrice!.Value + pricing.AnnualSlotPrice!.Value;
 
         // 2. Settle payment -> PAID_REVIEW
         await using var pay = source.CreateCommand("SELECT flow.kiosk_application_paid(@pid, @txn)");
@@ -714,8 +712,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertUsers.Parameters.AddWithValue("me", $"snap-m-{managerId:N}@example.invalid");
         await insertUsers.ExecuteNonQueryAsync();
 
-        var originalWalk = pricing.WalkInAnnualPrice!.Value;
-        var originalPre = pricing.PreorderAnnualPrice!.Value;
+        var originalWalk = pricing.AnnualSlotPrice!.Value;
+        var originalPre = pricing.AnnualSlotPrice!.Value;
         var originalVersion = pricing.Version;
 
         var appRequest = new CreateKioskApplicationRequest(
@@ -734,15 +732,15 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
 
         // Mutate authoritative per-slot pricing via OperationsManager PUT kiosk-pricing using pricing version
         var mutatedWalk = originalWalk + 20000;
-        var mutatedPre = originalPre + 30000;
+        var mutatedPre = mutatedWalk;
         var updatePricingRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
-            mutatedWalk, mutatedPre, originalVersion));
+            mutatedWalk, originalVersion));
         var updateBody = await updatePricingRes.Content.ReadAsStringAsync();
         Assert.True(updatePricingRes.IsSuccessStatusCode, $"HTTP {(int)updatePricingRes.StatusCode}: {updateBody}");
         var mutatedPricing = JsonSerializer.Deserialize<KioskSlotPricingResponse>(updateBody, JsonOptions);
         Assert.NotNull(mutatedPricing);
-        Assert.Equal(mutatedWalk, mutatedPricing.WalkInAnnualPrice);
-        Assert.Equal(mutatedPre, mutatedPricing.PreorderAnnualPrice);
+        Assert.Equal(mutatedWalk, mutatedPricing.AnnualSlotPrice);
+        Assert.Equal(mutatedPre, mutatedPricing.AnnualSlotPrice);
         Assert.True(mutatedPricing.Version > originalVersion);
 
         // Assert new pricing calculation differs from snapshot fee
@@ -777,7 +775,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         {
             // Restore original prices via API using new version
             var restoreRes = await mgrClient.PutAsJsonAsync("/api/operations/kiosk-pricing", new UpdateKioskSlotPricingRequest(
-                originalWalk, originalPre, mutatedPricing.Version));
+                originalWalk, mutatedPricing.Version));
             var restoreBody = await restoreRes.Content.ReadAsStringAsync();
             Assert.True(restoreRes.IsSuccessStatusCode, $"HTTP {(int)restoreRes.StatusCode}: {restoreBody}");
         }
@@ -1114,7 +1112,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
         var app = await ReadApplicationAsync(appRes);
-        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        var expectedFee = pricing.AnnualSlotPrice!.Value + pricing.AnnualSlotPrice!.Value;
 
         // Reserve gateway order code
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
@@ -1690,7 +1688,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
         var app = await ReadApplicationAsync(appRes);
-        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        var expectedFee = pricing.AnnualSlotPrice!.Value + pricing.AnnualSlotPrice!.Value;
 
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
         reserve.Parameters.AddWithValue("pid", app.PaymentId!.Value);
@@ -1853,7 +1851,7 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
             WalkInSlots: 1, PreorderSlots: 1, PricingVersion: pricing.Version
         ));
         var app = await ReadApplicationAsync(appRes);
-        var expectedFee = pricing.WalkInAnnualPrice!.Value + pricing.PreorderAnnualPrice!.Value;
+        var expectedFee = pricing.AnnualSlotPrice!.Value + pricing.AnnualSlotPrice!.Value;
 
         await using var reserve = source.CreateCommand("SELECT flow.reserve_gateway_order(@pid)");
         reserve.Parameters.AddWithValue("pid", app.PaymentId!.Value);

@@ -1,6 +1,6 @@
 # 0060: Requested kiosk layout and annual pricing per slot type
 
-Status: Accepted — 2026-11-04, direct product-owner instructions.
+Status: Superseded by `20261106_uniform_slot_price_zone_requests.sql` and `docs/kiosk-uniform-price-layout-change-for-fe.md` for new pricing and post-handover layout changes. Historical rental snapshots remain valid.
 
 ## Context
 
