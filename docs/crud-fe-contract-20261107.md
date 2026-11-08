@@ -26,6 +26,7 @@ These endpoints are in the BE working tree. Publish `FloraBot.Api` and apply the
 
 - Seller bank changes use `POST /api/sellers/{sellerId}/flows/set_seller_bank`; do not put account numbers in shop profile updates.
 - Seller contact email must first be verified with the account contact-email flow, then used in `PATCH /api/me/shop`.
+- Shop profile access also supports `PAST_DUE` sellers with an active matching account; see [the focused FE guide](seller-past-due-profile-for-fe.md) for profile/bank examples and the API-only rollout.
 - Staff task cancellation uses `POST /api/sellers/{sellerId}/staff-tasks/{taskId}/transition` (or the Manager/Admin equivalent), body `{ "version": 1, "status": "CANCELLED", "report": "Reason with at least 10 characters" }`. `IN_PROGRESS` is allowed.
 - Seller cannot directly change kiosk address or slot zone. Manager approval controls a kiosk address change. Slot layout follows the separately documented request/review flow.
 - A product photo DELETE hides the image from catalog views and keeps metadata for historical records. It does not immediately remove the Cloudinary object.
