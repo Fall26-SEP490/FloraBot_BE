@@ -146,8 +146,14 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
             ("checkout", row.CheckoutId!.Value), ("seller", seller)));
         if (late) await Sql("UPDATE ordering.orders SET created_at=public.app_now()-interval '1 hour' WHERE id=@id", ("id", row.OrderId!.Value));
         if (fault) await Sql("UPDATE kiosk_ops.slots SET status='FAULT' WHERE id=@id", ("id", slot));
-        var callback = JsonSerializer.SerializeToElement(new { orderCode = link.OrderCode, amount = link.Amount,
-            reference = "web-payment-" + id, code = "00", accountNumber = "1010099887766" });
+        var callback = JsonSerializer.SerializeToElement(new
+        {
+            orderCode = link.OrderCode,
+            amount = link.Amount,
+            reference = "web-payment-" + id,
+            code = "00",
+            accountNumber = "1010099887766"
+        });
         using var confirmed = await client.PostAsJsonAsync("/api/payments/webhook",
             new { data = callback, signature = PayOsChecksum.Sign(callback, KioskPaymentTests.SellerGateway.ChecksumKey) });
         confirmed.EnsureSuccessStatusCode();

@@ -62,7 +62,7 @@ public static class SlotLayoutRequests
                 WHERE (@status IS NULL OR status=@status) AND status<>'APPLYING'
                 ORDER BY created_at DESC LIMIT 100
                 """);
-                command.Parameters.Add("status", NpgsqlDbType.Text).Value = (object?)status ?? DBNull.Value;
+            command.Parameters.Add("status", NpgsqlDbType.Text).Value = (object?)status ?? DBNull.Value;
             return Results.Ok(await Read(command, ct));
         }).RequireAuthorization("OperationsManager").WithTags("KioskOps").Produces<List<SlotLayoutRequestView>>();
 

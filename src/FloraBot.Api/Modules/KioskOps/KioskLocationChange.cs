@@ -260,9 +260,9 @@ public static class KioskLocationChange
     }
 
     private static KioskLocationChangeResponse Map(NpgsqlDataReader reader) => new(
-        reader.GetGuid(0),reader.GetGuid(1),reader.GetGuid(2),reader.GetString(3),
-        reader.GetDouble(4),reader.GetDouble(5),reader.GetString(6),reader.GetString(7),
-        reader.GetDateTime(8),reader.IsDBNull(9) ? null : reader.GetGuid(9),
+        reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetString(3),
+        reader.GetDouble(4), reader.GetDouble(5), reader.GetString(6), reader.GetString(7),
+        reader.GetDateTime(8), reader.IsDBNull(9) ? null : reader.GetGuid(9),
         reader.IsDBNull(10) ? null : reader.GetDateTime(10),
         reader.IsDBNull(11) ? null : reader.GetString(11));
 }
