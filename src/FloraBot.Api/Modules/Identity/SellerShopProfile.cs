@@ -20,9 +20,11 @@ public static class SellerShopProfile
             http.Response.Headers.CacheControl = "no-store";
             if (!Claims(http, out var actor, out var sellerId)) return Results.Forbid();
             await using var conn = await data.OpenConnectionAsync(ct);
-            if (!await ActiveSeller(conn, null, actor, sellerId, ct)) return Results.Forbid();
+            if (!await CanManageShopProfile(conn, null, actor, sellerId, ct)) return Results.Forbid();
             return Results.Ok(await Read(conn, null, sellerId, ct));
         }).RequireAuthorization("Seller").WithTags("Identity")
+          .WithSummary("Seller xem hồ sơ shop, kể cả khi kỳ thuê đã hết hạn")
+          .WithDescription("Chỉ chủ shop có tài khoản ACTIVE và Seller ACTIVE hoặc PAST_DUE. Hiệu lực thuê kiosk được kiểm tra riêng ở các thao tác bán hàng.")
           .Produces<SellerShopProfileResponse>();
 
         app.MapPatch("/api/me/shop", async (UpdateSellerShopProfileRequest input,
@@ -42,7 +44,7 @@ public static class SellerShopProfile
 
             await using var conn = await data.OpenConnectionAsync(ct);
             await using var tx = await conn.BeginTransactionAsync(ct);
-            if (!await ActiveSeller(conn, tx, actor, sellerId, ct)) return Results.Forbid();
+            if (!await CanManageShopProfile(conn, tx, actor, sellerId, ct)) return Results.Forbid();
             if (email is not null)
             {
                 await using var verified = new NpgsqlCommand("""
@@ -84,6 +86,8 @@ public static class SellerShopProfile
             await tx.CommitAsync(ct);
             return Results.Ok(result);
         }).RequireAuthorization("Seller").WithTags("Identity")
+          .WithSummary("Seller cập nhật thông tin chung của shop, kể cả khi kỳ thuê đã hết hạn")
+          .WithDescription("Chỉ chủ shop có tài khoản ACTIVE và Seller ACTIVE hoặc PAST_DUE. Email liên hệ mới vẫn cần được xác minh; ngân hàng shop cập nhật qua API set_seller_bank hiện có.")
           .Produces<SellerShopProfileResponse>().ProducesProblem(400)
           .ProducesProblem(409);
     }
@@ -95,13 +99,15 @@ public static class SellerShopProfile
         return hasActor && hasSeller;
     }
 
-    private static async Task<bool> ActiveSeller(NpgsqlConnection conn, NpgsqlTransaction? tx,
+    private static async Task<bool> CanManageShopProfile(NpgsqlConnection conn, NpgsqlTransaction? tx,
         Guid actor, Guid sellerId, CancellationToken ct)
     {
+        // An expired lease must not prevent its owner from maintaining the shared shop
+        // profile before renting or renewing. Commerce still checks the kiosk's lease.
         await using var cmd = new NpgsqlCommand("""
             SELECT 1 FROM identity.users u JOIN identity.sellers s ON s.id=u.seller_id
             WHERE u.id=@actor AND u.role='SELLER' AND u.status='ACTIVE'
-              AND s.id=@seller AND s.status='ACTIVE' FOR SHARE OF u,s
+              AND s.id=@seller AND s.status IN ('ACTIVE','PAST_DUE') FOR SHARE OF u,s
             """, conn, tx);
         cmd.Parameters.AddWithValue("actor", actor);
         cmd.Parameters.AddWithValue("seller", sellerId);
