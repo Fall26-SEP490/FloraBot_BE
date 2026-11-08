@@ -28,6 +28,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
     [InlineData(true, false, false, true, true)]
     public async Task CheckoutPaymentDispensesOnceAndProtectsKioskAndCustomer(bool signedIn, bool failDoor, bool reportFault, bool viaInbox, bool recoverAfterOffline)
     {
+        var annualPackage = Guid.Parse("20000000-0000-0000-0000-00000000000d");
         var seller = Guid.NewGuid();
         var secretRef = "channel-" + seller.ToString("N");
         var gateway = new SellerGateway();
@@ -64,7 +65,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         var key = "kiosk-test-" + kiosk;
         await using var setup = source.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Kiosk payment test','0901112233','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Kiosk payment test','0901112233','ACTIVE',@package,CURRENT_DATE+365);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','Test shop','SELLER',@seller);
             INSERT INTO identity.users(id,email,full_name,role) VALUES(@customer,@customer::text || '@example.invalid','Customer','CUSTOMER'),(@stranger,@stranger::text || '@example.invalid','Other customer','CUSTOMER');
@@ -80,11 +81,13 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
                 public.uuid_v7(), @seller, 1, @secretRef, '970415', '1010099887766',
                 'TIEM HOA TEST', 'ACTIVE', public.app_now()
             );
-            """ + "\n" + CurrentMainKioskFixture.AssignKioskWithLeaseSql);
+            """);
         foreach (var (name, id) in new[] { ("seller", seller), ("user", user), ("product", product), ("kiosk", kiosk), ("slot", slot), ("customer", customer), ("stranger", stranger) }) setup.Parameters.AddWithValue(name, id);
+        setup.Parameters.AddWithValue("package", annualPackage);
         setup.Parameters.AddWithValue("secretRef", secretRef);
         setup.Parameters.AddWithValue("hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant());
         await setup.ExecuteNonQueryAsync();
+        await CurrentMainKioskFixture.AssignKioskWithLeaseAsync(source, kiosk, seller, annualPackage);
         await using var stock = source.CreateCommand("SELECT flow.stock_bouquet(flow.new_batch(),@product,@slot,@user,@qr)");
         stock.Parameters.AddWithValue("product", product); stock.Parameters.AddWithValue("slot", slot); stock.Parameters.AddWithValue("user", user); stock.Parameters.AddWithValue("qr", "test-" + product);
         var bouquet = (Guid)(await stock.ExecuteScalarAsync())!;

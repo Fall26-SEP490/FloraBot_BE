@@ -21,15 +21,34 @@ public static class StaffStock
         app.MapPost("/api/staff/tasks/{taskId:guid}/stock", async (Guid taskId, StaffStockInput input, NpgsqlDataSource data, ICapPublisher publisher, HttpContext http, CancellationToken ct) =>
         {
             if (input.Id == Guid.Empty || input.ProductId == Guid.Empty || input.SlotId == Guid.Empty || string.IsNullOrWhiteSpace(input.QrCode) || input.QrCode.Trim().Length > 120 || input.QrCode.Any(char.IsControl)) return Results.BadRequest();
+            var actor = Guid.Parse(http.User.FindFirstValue("sub")!);
             await using var connection = await data.OpenConnectionAsync(ct);
             using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
             try
             {
+                await using (var authCheck = new NpgsqlCommand("SELECT 1 WHERE flow.verify_staff_delivery_task(@task, @actor) IS NOT NULL", connection, transaction))
+                {
+                    authCheck.Parameters.AddWithValue("task", taskId);
+                    authCheck.Parameters.AddWithValue("actor", actor);
+                    if (await authCheck.ExecuteScalarAsync(ct) is null)
+                    {
+                        await using var existsCmd = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.staff_tasks WHERE id = @task", connection, transaction);
+                        existsCmd.Parameters.AddWithValue("task", taskId);
+                        return await existsCmd.ExecuteScalarAsync(ct) is null ? Results.NotFound() : Results.Forbid();
+                    }
+                }
+
+                await using (var checkCap = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.slot_sensor_capabilities WHERE slot_id = @slot AND enabled = true", connection, transaction))
+                {
+                    checkCap.Parameters.AddWithValue("slot", input.SlotId);
+                    if (await checkCap.ExecuteScalarAsync(ct) is not null)
+                        return Results.Problem(statusCode: 409, detail: "Ô đã kích hoạt cảm biến giám sát. Hãy thực hiện quy trình nạp có giám sát cảm biến.");
+                }
                 var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
                 await using var command = new NpgsqlCommand("SELECT flow.staff_stock_bouquet(@id,@task,@actor,@product,@slot,@qr)", connection, transaction);
                 command.Parameters.AddWithValue("id", input.Id); command.Parameters.AddWithValue("task", taskId);
-                command.Parameters.AddWithValue("actor", Guid.Parse(http.User.FindFirstValue("sub")!));
+                command.Parameters.AddWithValue("actor", actor);
                 command.Parameters.AddWithValue("product", input.ProductId); command.Parameters.AddWithValue("slot", input.SlotId); command.Parameters.AddWithValue("qr", input.QrCode.Trim());
                 var bouquet = (Guid)(await command.ExecuteScalarAsync(ct))!;
                 await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, ct);

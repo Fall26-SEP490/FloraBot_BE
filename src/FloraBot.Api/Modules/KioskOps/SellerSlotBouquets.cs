@@ -28,6 +28,16 @@ public static class SellerSlotBouquets
             await using var connection = await data.OpenConnectionAsync(ct);
             using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
+
+            await using (var checkCap = new NpgsqlCommand("SELECT 1 WHERE flow.check_seller_slot_sensor_monitored(@kiosk, @slot, @actor) IS NOT NULL", connection, transaction))
+            {
+                checkCap.Parameters.AddWithValue("actor", actor);
+                checkCap.Parameters.AddWithValue("slot", slotId);
+                checkCap.Parameters.AddWithValue("kiosk", kioskId);
+                if (await checkCap.ExecuteScalarAsync(ct) is not null)
+                    return Results.Problem(statusCode: 409, detail: "Ô đã kích hoạt cảm biến giám sát. Vui lòng sử dụng quy trình bảo trì ô để thu hồi hoa.");
+            }
+
             var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
             try
             {

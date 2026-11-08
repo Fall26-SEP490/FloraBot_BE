@@ -33,6 +33,15 @@ public sealed class DeviceKeyRing
     public bool Verify(UnlockCommand message, DateTimeOffset now) =>
         keys.TryGetValue(message.HardwareId, out var key) && DeviceProtocol.Verify(message, message.HardwareId, key, now);
 
+    public bool Verify(UnlockRetryCommand message, DateTimeOffset now) =>
+        keys.TryGetValue(message.HardwareId, out var key) && DeviceRetryProtocol.Verify(message, message.HardwareId, key, now);
+
+    public bool Verify(UnlockRetryCommand message, string hardware, DateTimeOffset now) =>
+        keys.TryGetValue(hardware, out var key) && DeviceRetryProtocol.Verify(message, hardware, key, now);
+
     public UnlockCommand Sign(UnlockCommand command) => keys.TryGetValue(command.HardwareId, out var key)
         ? DeviceProtocol.Sign(command, key) : throw new InvalidOperationException("Device has no signing key.");
+
+    public UnlockRetryCommand Sign(UnlockRetryCommand command) => keys.TryGetValue(command.HardwareId, out var key)
+        ? DeviceRetryProtocol.Sign(command, key) : throw new InvalidOperationException("Device has no signing key.");
 }

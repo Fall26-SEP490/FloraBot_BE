@@ -46,7 +46,11 @@ public static class FlowerPresenceProtocol
 }
 
 // Observations only: no stock, unlock-token, order or payment transitions.
-public sealed class FlowerPresenceReceiver(NpgsqlDataSource data, DeviceKeyRing keys)
+public sealed class FlowerPresenceReceiver(
+    NpgsqlDataSource data,
+    DeviceKeyRing keys,
+    IServiceProvider? provider = null,
+    ILogger<FlowerPresenceReceiver>? logger = null)
 {
     public async Task<bool> ReceiveAsync(string hardware, SignedFlowerPresence message, CancellationToken ct)
     {
@@ -58,12 +62,30 @@ public sealed class FlowerPresenceReceiver(NpgsqlDataSource data, DeviceKeyRing 
             ON CONFLICT(kiosk_id) DO UPDATE SET event_id=excluded.event_id,observed_at=excluded.observed_at,
               states=excluded.states,received_at=excluded.received_at
             WHERE kiosk_ops.flower_presence.observed_at<excluded.observed_at
+            RETURNING kiosk_id;
             """);
         command.Parameters.AddWithValue("event", message.EventId);
         command.Parameters.AddWithValue("at", message.OccurredAt);
         command.Parameters.AddWithValue("states", NpgsqlDbType.Array | NpgsqlDbType.Integer, message.States);
         command.Parameters.AddWithValue("hardware", hardware);
-        await command.ExecuteNonQueryAsync(ct);
+        var res = await command.ExecuteScalarAsync(ct);
+        if (res is Guid kioskId && provider is not null)
+        {
+            try
+            {
+                using var scope = provider.CreateScope();
+                if (scope.ServiceProvider.GetService<SlotMaintenanceService>() is { } maintenance)
+                    await maintenance.SyncActiveSessionsForKioskAsync(kioskId, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Failed to synchronize maintenance sessions for kiosk {KioskId}", kioskId);
+            }
+        }
         return true;
     }
 }
