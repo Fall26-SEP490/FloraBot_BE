@@ -3,6 +3,8 @@ using System.Security.Claims;
 using FloraBot.Api.Data;
 using FloraBot.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 
 namespace FloraBot.Api.Modules.KioskOps;
 
@@ -40,6 +42,27 @@ public static class KioskOpsReadEndpoints
             var slots = await db.Slots.IgnoreQueryFilters().AsNoTracking().Where(x => x.KioskId == kioskId)
                 .OrderBy(x => x.SlotCode).ThenBy(x => x.Id)
                 .Select(x => new { x.Id, x.KioskId, x.SlotCode, x.Status, x.Zone, x.BouquetId, x.HoldOrderId }).ToListAsync(ct);
+            var sensorCapabilities = new Dictionary<Guid, (bool Enabled, bool Ready, bool ManualRetry)>();
+            await using (var sensorCmd = new NpgsqlCommand("""
+                SELECT c.slot_id, c.enabled, c.door_verified, c.presence_verified,
+                       c.supports_manual_retry, c.relay_channel = s.relay_channel
+                FROM kiosk_ops.slot_sensor_capabilities c
+                JOIN kiosk_ops.slots s ON s.id = c.slot_id AND s.kiosk_id = c.kiosk_id
+                WHERE c.kiosk_id = @kiosk
+                """, (NpgsqlConnection)db.Database.GetDbConnection(),
+                (NpgsqlTransaction)db.Database.CurrentTransaction!.GetDbTransaction()))
+            {
+                sensorCmd.Parameters.AddWithValue("kiosk", kioskId);
+                await using var sensorRows = await sensorCmd.ExecuteReaderAsync(ct);
+                while (await sensorRows.ReadAsync(ct))
+                {
+                    var enabled = sensorRows.GetBoolean(1);
+                    sensorCapabilities[sensorRows.GetGuid(0)] =
+                        (enabled, enabled && sensorRows.GetBoolean(2) && sensorRows.GetBoolean(3)
+                            && sensorRows.GetBoolean(5),
+                            enabled && sensorRows.GetBoolean(4));
+                }
+            }
             var bouquetIds = slots.Where(x => x.BouquetId.HasValue).Select(x => x.BouquetId!.Value).ToArray();
             var bouquets = await db.Bouquets.AsNoTracking().Where(x => bouquetIds.Contains(x.Id))
                 .Select(x => new { x.Id, x.ProductId, x.QrCode, x.PriceSnapshot, x.SellableUntil, x.Status })
@@ -83,11 +106,13 @@ public static class KioskOpsReadEndpoints
                 var slot = x.Slot;
                 var bouquet = x.Bouquet;
                 var order = x.Order;
+                var sensor = sensorCapabilities.GetValueOrDefault(slot.Id);
                 return new SellerSlotResponse(slot.Id, slot.KioskId, slot.SlotCode, slot.Status, slot.Zone, slot.BouquetId,
                     kiosk.Code, kiosk.Name, kiosk.Address, bouquet?.ProductId, bouquet?.QrCode,
                     bouquet?.PriceSnapshot, bouquet?.SellableUntil, bouquet?.Status,
                     order?.OrderId, order?.OrderCode, order?.Status,
-                    order is null ? null : charges.GetValueOrDefault(order.CheckoutId));
+                    order is null ? null : charges.GetValueOrDefault(order.CheckoutId),
+                    sensor.Enabled, sensor.Ready, sensor.ManualRetry);
             }).ToList();
             await snapshot.CommitAsync(ct);
             return Results.Ok(response);

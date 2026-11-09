@@ -44,6 +44,8 @@ Content-Type: application/json
 GET /api/me/kiosks/{kioskId}/slots/{slotId}/maintenance-sessions/{sessionId}
 ```
 
+FE có thể gọi `GET /api/me/kiosks/{kioskId}/slots/{slotId}/maintenance-sessions/active` để tìm lại phiên chưa hoàn tất sau khi tải lại trang hoặc đổi thiết bị. API trả phiên của seller hiện tại, hoặc `204 No Content` nếu ô không có phiên đang mở.
+
 ### 2.3 Đồng bộ và kiểm tra tiến trình
 ```http
 POST /api/me/kiosks/{kioskId}/slots/{slotId}/maintenance-sessions/{sessionId}/check

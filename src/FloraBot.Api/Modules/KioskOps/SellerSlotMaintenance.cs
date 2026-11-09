@@ -614,6 +614,24 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         return Results.Ok(ToResponse(row, canOpenForCheck));
     }
 
+    public async Task<IResult> GetActiveSessionAsync(
+        Guid kioskId, Guid slotId, Guid sellerId, CancellationToken ct)
+    {
+        await using var connection = await data.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT id FROM kiosk_ops.slot_maintenance_sessions
+            WHERE kiosk_id = @kiosk AND slot_id = @slot AND seller_id = @seller AND stage <> 'Completed'
+            ORDER BY phase_started_at DESC LIMIT 1
+            """, connection);
+        cmd.Parameters.AddWithValue("kiosk", kioskId);
+        cmd.Parameters.AddWithValue("slot", slotId);
+        cmd.Parameters.AddWithValue("seller", sellerId);
+        var id = await cmd.ExecuteScalarAsync(ct);
+        return id is Guid sessionId
+            ? await GetSessionAsync(kioskId, slotId, sessionId, sellerId, ct)
+            : Results.NoContent();
+    }
+
     public async Task<IResult> CheckSessionAsync(
         Guid kioskId, Guid slotId, Guid sessionId, Guid sellerId, CancellationToken ct)
     {
@@ -1003,6 +1021,29 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         {
             return Results.Problem(statusCode: 409, detail: "Ô đang được xử lý đồng thời. Hãy tải lại trạng thái trước khi thử lại.");
         }
+    }
+
+    public async Task<IResult> GetSensorCapabilityAsync(
+        Guid kioskId, Guid slotId, CancellationToken ct)
+    {
+        await using var connection = await data.OpenConnectionAsync(ct);
+        await using var command = new NpgsqlCommand("""
+            SELECT c.relay_channel, c.enabled, c.door_verified, c.presence_verified,
+                   c.supports_manual_retry, c.enrolled_by, c.updated_at
+            FROM kiosk_ops.slots s
+            LEFT JOIN kiosk_ops.slot_sensor_capabilities c ON c.slot_id = s.id AND c.kiosk_id = s.kiosk_id
+            WHERE s.id = @slot AND s.kiosk_id = @kiosk
+            """, connection);
+        command.Parameters.AddWithValue("slot", slotId);
+        command.Parameters.AddWithValue("kiosk", kioskId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return Results.NotFound();
+        if (reader.IsDBNull(0)) return Results.NoContent();
+
+        return Results.Ok(new SlotSensorCapabilityResponse(
+            slotId, kioskId, reader.GetInt32(0), reader.GetBoolean(1), reader.GetBoolean(2),
+            reader.GetBoolean(3), reader.GetBoolean(4),
+            reader.IsDBNull(5) ? null : reader.GetGuid(5), reader.GetDateTime(6)));
     }
 
     public async Task<IResult> UpdateSensorCapabilityAsync(
@@ -1589,6 +1630,21 @@ public static class SellerSlotMaintenanceEndpoints
         .Produces<SlotMaintenanceSessionResponse>()
         .Produces(401).Produces(403).Produces(404);
 
+        app.MapGet("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/active", async (
+            Guid kioskId, Guid slotId, HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
+                return Results.Unauthorized();
+            return await service.GetActiveSessionAsync(kioskId, slotId, sellerId, ct);
+        })
+        .RequireAuthorization("Seller")
+        .WithTags("KioskOps")
+        .WithSummary("Tìm phiên bảo trì chưa hoàn tất của ô để tiếp tục sau khi tải lại trang")
+        .Produces<SlotMaintenanceSessionResponse>()
+        .Produces(204)
+        .Produces(401).Produces(403);
+
         app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/check", async (
             Guid kioskId, Guid slotId, Guid sessionId,
             HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
@@ -1654,6 +1710,18 @@ public static class SellerSlotMaintenanceEndpoints
         .Produces<SlotMaintenanceSessionResponse>()
         .ProducesProblem(400).ProducesProblem(409)
         .Produces(401).Produces(403).Produces(404);
+
+        app.MapGet("/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities", (
+            Guid kioskId, Guid slotId, HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            return service.GetSensorCapabilityAsync(kioskId, slotId, ct);
+        })
+        .RequireAuthorization("Admin")
+        .WithTags("KioskOps")
+        .WithSummary("Đọc cấu hình cảm biến hiện tại của ô tủ (Admin)")
+        .Produces<SlotSensorCapabilityResponse>()
+        .Produces(204).Produces(401).Produces(403).Produces(404);
 
         app.MapPut("/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities", async (
             Guid kioskId, Guid slotId, [FromBody] UpdateSensorCapabilityRequest input,
