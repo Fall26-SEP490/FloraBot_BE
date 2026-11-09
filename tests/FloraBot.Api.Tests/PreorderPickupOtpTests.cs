@@ -28,8 +28,8 @@ public sealed class PreorderPickupOtpTests(ApiFactory factory) : IClassFixture<A
               (@customer,@email,'!test','Customer','CUSTOMER',NULL);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id,api_key_hash,last_heartbeat_at)
             VALUES(@kiosk,@kiosk::text,'OTP kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@seller,@keyhash,public.app_now());
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'OTP flower',350000,48,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'OTP flower',350000,48,'ACTIVE',1);
             INSERT INTO ordering.orders(id,order_code,checkout_id,customer_id,seller_id,kiosk_id,status,subtotal,total_amount,tracking_token)
             VALUES(@order,@order::text,@order,@customer,@seller,@kiosk,'PAID',350000,350000,@order::text);
             INSERT INTO ordering.web_requests(id,customer_id,seller_id,product_id,kiosk_id,kind,instructions,pickup_at,pickup_before,state,order_id)

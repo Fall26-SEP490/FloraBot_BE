@@ -240,6 +240,7 @@ public partial class FloraDbContext : DbContext
             entity.Property(e => e.Price).HasColumnName("price");
             entity.Property(e => e.SellerId).HasColumnName("seller_id");
             entity.Property(e => e.ShelfLifeHours).HasColumnName("shelf_life_hours");
+            entity.Property(e => e.Quantity).HasDefaultValue(0).HasColumnName("quantity");
             entity.Property(e => e.InventoryKind)
                 .HasDefaultValueSql("'LEGACY_FRESH'::text")
                 .HasColumnName("inventory_kind");

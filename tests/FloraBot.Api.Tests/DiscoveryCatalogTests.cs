@@ -115,7 +115,7 @@ public sealed class DiscoveryCatalogTests(ApiFactory factory) : IClassFixture<Ap
                 @id, @sellerId,
                 (SELECT id FROM identity.users WHERE seller_id=@sellerId AND role='SELLER' AND status='ACTIVE' ORDER BY id LIMIT 1),
                 @name, 'Artificial handcrafted flowers', @price, ARRAY['ARTIFICIAL','DECORATION'], 10, 10, 10);
-            UPDATE catalog.flower_products SET status=@status WHERE id=@id;
+            UPDATE catalog.flower_products SET status=@status, quantity=1 WHERE id=@id;
         ");
         cmd.Parameters.AddWithValue("id", productId);
         cmd.Parameters.AddWithValue("sellerId", sellerId);

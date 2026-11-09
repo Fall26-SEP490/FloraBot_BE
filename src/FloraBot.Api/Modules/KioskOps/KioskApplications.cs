@@ -56,7 +56,7 @@ public sealed record AttachKioskEvidenceRequest(Guid Id, string Reference);
 public sealed record ConfirmKioskRefundRequest(string Reference, string EvidenceReference);
 public sealed record ProvisionKioskKeyResponse(Guid KioskId, string ApiKey);
 public sealed record EnrollKioskResponse(Guid Id, string Code, string Name, int SlotCount, string Status, string ApiKey,
-    int WalkInSlots = 0, int PreorderSlots = 0, Guid? ApplicationId = null);
+    int WalkInSlots = 0, int PreorderSlots = 0, Guid? ApplicationId = null, Esp32ProvisioningStatus? Provisioning = null);
 public sealed record KioskRefundBankResponse(string BankName, string Holder, string AccountNumber);
 
 public sealed record KioskApplicationResponse(
@@ -879,6 +879,7 @@ public static partial class KioskApplications
             HttpContext http,
             NpgsqlDataSource data,
             FloraDbContext db,
+            Esp32ProvisioningStore provisioning,
             CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
@@ -889,6 +890,17 @@ public static partial class KioskApplications
                 return Results.Problem(statusCode: 400, detail: "Tên kiosk từ 2 đến 120 ký tự.");
             if (string.IsNullOrWhiteSpace(input.HardwareId) || input.HardwareId.Trim().Length < 2)
                 return Results.Problem(statusCode: 400, detail: "HardwareId không được để trống.");
+            var hardware = input.HardwareId.Trim();
+            var mqttClient = input.MqttClientId?.Trim();
+            if (provisioning.Enabled)
+            {
+                if (!DeviceProtocol.ValidHardwareId(hardware))
+                    return Results.Problem(statusCode: 400, detail: "HardwareId chỉ gồm chữ, số, dấu gạch ngang hoặc gạch dưới, dài 2–64 ký tự.");
+                var firmwareClient = "esp32-" + hardware;
+                if (!string.IsNullOrEmpty(mqttClient) && mqttClient != firmwareClient)
+                    return Results.Problem(statusCode: 400, detail: "MQTT client ID phải là esp32-<HardwareId>; có thể bỏ trống để hệ thống tự điền.");
+                mqttClient = firmwareClient;
+            }
             if (!input.ApplicationId.HasValue || input.ApplicationId == Guid.Empty)
                 return Results.Problem(statusCode: 400, detail: "Cần applicationId của hồ sơ thuê để tạo kiosk đúng nhu cầu.");
             var application = await db.KioskApplications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == input.ApplicationId.Value, ct);
@@ -899,11 +911,13 @@ public static partial class KioskApplications
             var rawApiKey = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
             var keyHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(rawApiKey)));
 
-            await using var command = data.CreateCommand("SELECT flow.enroll_requested_kiosk(@application, @code, @name, @hw, @mqtt, @region, @keyHash, @actor)");
+            await using var connection = await data.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            await using var command = new NpgsqlCommand("SELECT flow.enroll_requested_kiosk(@application, @code, @name, @hw, @mqtt, @region, @keyHash, @actor)", connection, transaction);
             command.Parameters.AddWithValue("code", input.Code.Trim());
             command.Parameters.AddWithValue("name", input.Name.Trim());
-            command.Parameters.AddWithValue("hw", input.HardwareId.Trim());
-            command.Parameters.AddWithValue("mqtt", (object?)input.MqttClientId?.Trim() ?? DBNull.Value);
+            command.Parameters.AddWithValue("hw", hardware);
+            command.Parameters.AddWithValue("mqtt", (object?)mqttClient ?? DBNull.Value);
             command.Parameters.AddWithValue("region", (object?)input.Region?.Trim() ?? "HCM");
             command.Parameters.AddWithValue("application", application.Id);
             command.Parameters.AddWithValue("keyHash", keyHash);
@@ -913,6 +927,18 @@ public static partial class KioskApplications
             try
             {
                 kioskId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+                if (provisioning.Enabled)
+                {
+                    await using var assignment = new NpgsqlCommand("""
+                        INSERT INTO kiosk_ops.manager_kiosks(manager_id,kiosk_id) VALUES(@actor,@kiosk);
+                        SELECT flow.audit(@actor,'KIOSK_MANAGER_AUTO_ASSIGNED','kiosks',@kiosk,'{}'::jsonb);
+                        """, connection, transaction);
+                    assignment.Parameters.AddWithValue("actor", actor);
+                    assignment.Parameters.AddWithValue("kiosk", kioskId);
+                    await assignment.ExecuteNonQueryAsync(ct);
+                    await provisioning.EnqueueAsync(connection, transaction, kioskId, actor, ct);
+                }
+                await transaction.CommitAsync(ct);
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
             {
@@ -925,23 +951,53 @@ public static partial class KioskApplications
 
             application = await db.KioskApplications.AsNoTracking().SingleAsync(x => x.Id == application.Id, ct);
             return Results.Created($"/api/kiosks/{kioskId}", new EnrollKioskResponse(kioskId, input.Code.Trim(), input.Name.Trim(),
-                application.TotalSlots!.Value, "OFFLINE", rawApiKey, application.WalkInSlots!.Value, application.PreorderSlots!.Value, application.Id));
-        }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<EnrollKioskResponse>(201);
+                application.TotalSlots!.Value, "OFFLINE", rawApiKey, application.WalkInSlots!.Value, application.PreorderSlots!.Value, application.Id,
+                provisioning.Enabled ? new Esp32ProvisioningStatus("PENDING", null, 0, null) : null));
+        }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<EnrollKioskResponse>(201)
+          .WithDescription("Kiosk được tạo OFFLINE. Khi bật tự cấp ESP32, yêu cầu cấp MQTT/HMAC được lưu cùng transaction; provisioning PENDING/PROVISIONING/READY/FAILED tách biệt trạng thái ONLINE. Không trả bí mật ESP32 trong response đăng ký.");
 
         // Operations Manager: remove a kiosk that was enrolled by mistake and has never been used.
         app.MapDelete("/api/operations/kiosks/{id:guid}", async (
             Guid id,
             HttpContext http,
             NpgsqlDataSource data,
+            IMqttDeviceProvisioner mqttProvisioner,
+            IServiceProvider services,
             CancellationToken ct) =>
         {
-            await using var command = data.CreateCommand("SELECT flow.delete_unassigned_kiosk(@id, @actor)");
+            await using var connection = await data.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            await using var command = new NpgsqlCommand("SELECT flow.delete_unassigned_kiosk(@id, @actor)", connection, transaction);
             command.Parameters.AddWithValue("id", id);
             command.Parameters.AddWithValue("actor", Actor(http));
 
             try
             {
+                // Serialize against retries/creation. NOWAIT on the job prevents a lock cycle
+                // against a worker claiming that job while it resolves the kiosk identity.
+                await using (var kioskLock = new NpgsqlCommand("SELECT id FROM kiosk_ops.kiosks WHERE id=@id FOR UPDATE", connection, transaction))
+                {
+                    kioskLock.Parameters.AddWithValue("id", id);
+                    await kioskLock.ExecuteScalarAsync(ct);
+                }
+                string? provisionedHardware = null;
+                await using (var job = new NpgsqlCommand("SELECT hardware_id,state FROM kiosk_ops.esp32_provisioning_jobs WHERE kiosk_id=@id FOR UPDATE NOWAIT", connection, transaction))
+                {
+                    job.Parameters.AddWithValue("id", id);
+                    await using var reader = await job.ExecuteReaderAsync(ct);
+                    if (await reader.ReadAsync(ct))
+                    {
+                        if (reader.GetString(1) == "PROVISIONING")
+                            return Results.Problem(statusCode: 409, detail: "Thiết bị đang được cấp cấu hình. Hãy chờ hoàn tất rồi thử xóa lại.");
+                        provisionedHardware = reader.GetString(0);
+                    }
+                }
                 var deleted = (bool)(await command.ExecuteScalarAsync(ct))!;
+                if (deleted && provisionedHardware is not null)
+                    await mqttProvisioner.DisableAsync(id, provisionedHardware, ct);
+                await transaction.CommitAsync(ct);
+                if (deleted && provisionedHardware is not null)
+                    services.GetService<DeviceKeyRing>()?.RemoveDynamic(provisionedHardware);
                 return deleted
                     ? Results.NoContent()
                     : Results.NotFound(new ProblemDetails { Title = "Không tìm thấy", Detail = "Kiosk không tồn tại." });
@@ -952,6 +1008,15 @@ public static partial class KioskApplications
                     statusCode: 409,
                     title: "Không thể xóa kiosk",
                     detail: ex.MessageText);
+            }
+            catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
+            {
+                return Results.Problem(statusCode: 409, detail: "Kiosk đang được xử lý. Hãy tải lại rồi thử xóa lại.");
+            }
+            catch (Esp32ProvisioningException ex)
+            {
+                return Results.Problem(statusCode: 409, title: "Chưa thu hồi được tài khoản MQTT của kiosk",
+                    extensions: new Dictionary<string, object?> { ["code"] = ex.Code });
             }
         })
         .RequireAuthorization("OperationsManager")

@@ -173,8 +173,8 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)
             VALUES(@slot,@kiosk,'D01',0,'WALK_IN');
             {CurrentMainKioskFixture.AssignKioskWithLeaseSql}
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'Delivery Rose',250000,48,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'Delivery Rose',250000,48,'ACTIVE',1);
             """);
         setup.Parameters.AddWithValue("seller", sellerId);
         setup.Parameters.AddWithValue("otherSeller", otherSellerId);

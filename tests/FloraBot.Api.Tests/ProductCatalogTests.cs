@@ -704,8 +704,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setupProduct = data.CreateCommand("""
             -- Create and activate ARTIFICIAL flower product
-            INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
-            VALUES(@product,@seller,'Hoa Lan Giả','Mo ta',280000,'{"LAN"}',48,'ACTIVE','ARTIFICIAL',20,20,30);
+            INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm,quantity)
+            VALUES(@product,@seller,'Hoa Lan Giả','Mo ta',280000,'{"LAN"}',48,'ACTIVE','ARTIFICIAL',20,20,30,1);
             """);
         setupProduct.Parameters.AddWithValue("seller", seller);
         setupProduct.Parameters.AddWithValue("product", product);

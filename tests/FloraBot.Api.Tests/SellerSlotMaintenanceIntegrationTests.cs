@@ -69,8 +69,8 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
 
         // 3. Insert product, bouquet and update slot to target status
         await using var seedProduct = data.CreateCommand("""
-            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status)
-            VALUES(@product, @seller, 'Maintenance Flower', 250000, 48, 'ACTIVE');
+            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, quantity)
+            VALUES(@product, @seller, 'Maintenance Flower', 250000, 48, 'ACTIVE', 1);
 
             INSERT INTO kiosk_ops.bouquets(id, product_id, seller_id, qr_code, price_snapshot, status, stocked_at, sellable_until)
             VALUES(@bouquet, @product, @seller, @bouquet::text, 250000,
@@ -110,6 +110,112 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(role, userId: f.Actor, sellerId: f.Seller));
         return client;
+    }
+
+    [Theory]
+    [InlineData("LOAD")]
+    [InlineData("REPLACE")]
+    public async Task ExhaustedLoadingRemainsRetryableAndDoesNotBlockOtherSensorSessions(string action)
+    {
+        var f = await SetupAsync(slotStatus: action == "LOAD" ? "RENTED_EMPTY" : "STOCKED");
+        using var client = Client(f);
+        using var scope = factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        var session = Guid.NewGuid();
+        var otherSession = Guid.NewGuid();
+        var otherSlot = Guid.NewGuid();
+        var otherProduct = Guid.NewGuid();
+        var root = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions";
+
+        async Task<object?> Sql(string sql, params (string Name, object Value)[] extra)
+        {
+            await using var cmd = data.CreateCommand(sql);
+            foreach (var (name, value) in new[]
+            {
+                ("seller", f.Seller), ("actor", f.Actor), ("kiosk", f.Kiosk), ("slot", f.Slot),
+                ("product", f.Product), ("session", session), ("otherSession", otherSession),
+                ("otherSlot", otherSlot), ("otherProduct", otherProduct)
+            }) cmd.Parameters.AddWithValue(name, value);
+            foreach (var (name, value) in extra) cmd.Parameters.AddWithValue(name, value);
+            return await cmd.ExecuteScalarAsync();
+        }
+
+        const string presence = """
+            INSERT INTO kiosk_ops.flower_presence(kiosk_id,event_id,observed_at,states,received_at)
+            VALUES(@kiosk,gen_random_uuid(),(extract(epoch from clock_timestamp())*1000)::bigint+10,
+              ARRAY[@firstState,@secondState,-1,-1],clock_timestamp())
+            ON CONFLICT(kiosk_id) DO UPDATE SET states=excluded.states,
+              observed_at=excluded.observed_at,received_at=excluded.received_at;
+            """;
+        async Task DoorCycle(Guid command, int firstState, int secondState)
+        {
+            await Sql("""
+                SELECT flow.reset_clock();
+                SELECT flow.device_event(@cmd,'SENT');
+                SELECT flow.device_event(@cmd,'ACK');
+                SELECT flow.device_event(@cmd,'OPENED');
+                SELECT flow.device_event(@cmd,'CLOSED');
+                """ + presence, ("cmd", command), ("firstState", firstState), ("secondState", secondState));
+        }
+
+        await Sql(presence, ("firstState", 0), ("secondState", 0));
+        var start = await client.PostAsJsonAsync(root,
+            new StartSlotMaintenanceRequest(session, action, action == "REPLACE" ? f.Bouquet : null,
+                f.Product, "Load with a concurrent stock adjustment"));
+        start.EnsureSuccessStatusCode();
+        var active = (await start.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
+        if (action == "REPLACE")
+        {
+            await DoorCycle(active.CurrentCmdId!.Value, 0, 0);
+            (await client.PostAsync($"{root}/{session}/check", null)).EnsureSuccessStatusCode();
+            var open = await client.PostAsync($"{root}/{session}/open-next", null);
+            open.EnsureSuccessStatusCode();
+            active = (await open.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
+        }
+
+        await Sql("""
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@otherProduct,@seller,'Other maintenance flower',250000,48,'ACTIVE',1);
+            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,status,current_seller_id,zone)
+            VALUES(@otherSlot,@kiosk,'W02',1,'RENTED_EMPTY',@seller,'WALK_IN');
+            INSERT INTO kiosk_ops.slot_assignments(slot_id,seller_id,assigned_by)
+            VALUES(@otherSlot,@seller,@actor);
+            INSERT INTO kiosk_ops.slot_sensor_capabilities(slot_id,kiosk_id,relay_channel,enabled,door_verified,presence_verified)
+            VALUES(@otherSlot,@kiosk,1,true,true,true);
+            """);
+        await Sql(presence, ("firstState", 0), ("secondState", 0));
+        var otherStart = await client.PostAsJsonAsync(
+            $"/api/me/kiosks/{f.Kiosk}/slots/{otherSlot}/maintenance-sessions",
+            new StartSlotMaintenanceRequest(otherSession, "LOAD", null, otherProduct, "Load another available product"));
+        otherStart.EnsureSuccessStatusCode();
+        var other = (await otherStart.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
+
+        // Simulate another operator reconciling the shop count after doors were
+        // opened. Final confirmation must still enforce the latest quantity.
+        await Sql("UPDATE catalog.flower_products SET quantity=0 WHERE id=@product");
+        await DoorCycle(active.CurrentCmdId!.Value, 1, 1);
+        await DoorCycle(other.CurrentCmdId!.Value, 1, 1);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync($"{root}/{session}/check", null)).StatusCode);
+        Assert.Equal("LOCKED", await Sql("SELECT status FROM kiosk_ops.slots WHERE id=@slot"));
+        Assert.Equal("AwaitLoading", await Sql("SELECT stage FROM kiosk_ops.slot_maintenance_sessions WHERE id=@session"));
+        Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.product_quantity_deductions WHERE product_id=@product"));
+
+        await scope.ServiceProvider.GetRequiredService<SlotMaintenanceService>()
+            .SyncActiveSessionsForKioskAsync(f.Kiosk, default);
+        Assert.Equal("AwaitLoading", await Sql("SELECT stage FROM kiosk_ops.slot_maintenance_sessions WHERE id=@session"));
+        Assert.Equal("Completed", await Sql("SELECT stage FROM kiosk_ops.slot_maintenance_sessions WHERE id=@otherSession"));
+        Assert.Equal(0, await Sql("SELECT quantity FROM catalog.flower_products WHERE id=@otherProduct"));
+
+        // After an explicit shop correction the same closed-door evidence and
+        // session can complete; retrying completion cannot deduct again.
+        await Sql("UPDATE catalog.flower_products SET quantity=1 WHERE id=@product");
+        var retry = await client.PostAsync($"{root}/{session}/check", null);
+        retry.EnsureSuccessStatusCode();
+        Assert.Equal("Completed", (await retry.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!.Stage);
+        (await client.PostAsync($"{root}/{session}/check", null)).EnsureSuccessStatusCode();
+        Assert.Equal(0, await Sql("SELECT quantity FROM catalog.flower_products WHERE id=@product"));
+        Assert.Equal(1L, await Sql("SELECT count(*) FROM kiosk_ops.product_quantity_deductions WHERE product_id=@product"));
+        Assert.Equal(1L, await Sql("SELECT count(*) FROM kiosk_ops.inventory_logs WHERE slot_id=@slot AND movement_type='STOCK_IN'"));
     }
 
     [Fact]

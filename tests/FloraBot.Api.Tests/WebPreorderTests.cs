@@ -63,8 +63,8 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','Test shop','SELLER',@seller);
             INSERT INTO identity.users(id,email,full_name,role) VALUES(@customer,@customer::text || '@example.invalid','Customer','CUSTOMER'),(@stranger,@stranger::text || '@example.invalid','Other customer','CUSTOMER');
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'Test bouquet',350000,48,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'Test bouquet',350000,48,'ACTIVE',1);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash,last_heartbeat_at,latitude,longitude)
             VALUES(@kiosk,@kiosk::text,'Test kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash,CURRENT_TIMESTAMP,10.771918,106.698347);
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)

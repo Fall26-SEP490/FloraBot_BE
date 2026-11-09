@@ -1,0 +1,155 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.OpenApi;
+
+namespace FloraBot.Api.Modules.KioskOps;
+
+public sealed record Esp32ConfigDownloadRequest(string? Password)
+{
+    public override string ToString() => "[ESP32 download reauthentication redacted]";
+}
+
+public sealed record Esp32ConfigMetadata(Guid KioskId, string KioskCode, string Status,
+    string HardwareId, string MqttClientId, string FirmwareMqttClientId, bool MqttClientIdsMatch,
+    string? MqttHost, int? MqttTlsPort, string? CaCertificatePem,
+    bool CanDownload, bool RequiresReauthentication, string? DownloadUnavailableCode,
+    Esp32ProvisioningStatus? Provisioning = null);
+
+public sealed class Esp32ConfigurationService(IEsp32ConfigurationSessions sessions, IEsp32ConfigurationSource source,
+    IServiceProvider services)
+{
+    public async Task<IResult> HandleAsync(Guid resource, string role, bool download,
+        Esp32ConfigDownloadRequest? input, HttpContext http, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        http.Response.Headers.Pragma = "no-cache";
+        http.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Unauthorized();
+
+        await using var session = await sessions.OpenAsync(ct);
+        Guid? auditKiosk = role == "TECHNICIAN" ? null : resource;
+        Guid? installation = role == "TECHNICIAN" ? resource : null;
+        async Task<IResult> Deny(string code, int status)
+        {
+            await session.AuditAndCommitAsync(actor, auditKiosk, installation, download, code, ct);
+            return Results.Problem(statusCode: status, title: code,
+                extensions: new Dictionary<string, object?> { ["code"] = code });
+        }
+
+        // Account authorization admits portal identities so rejected roles (including Admin trying
+        // operational download URLs) can be audited. Enforce the exact route role again here and in
+        // the database; a kiosk-scoped identity is never accepted, even with an extra role claim.
+        if (http.User.Identity?.IsAuthenticated != true || http.User.HasClaim(c => c.Type == "kiosk_id")
+            || !http.User.IsInRole(role) || role is not ("OPERATIONS_MANAGER" or "TECHNICIAN" or "ADMIN")
+            || download && role == "ADMIN")
+            return await Deny("ESP32_CONFIG_FORBIDDEN", 403);
+
+        var access = await session.ResolveAsync(resource, actor, role, ct);
+        auditKiosk = access.AuditKioskId;
+        if (!access.ActorActive) return await Deny("ESP32_CONFIG_FORBIDDEN", 403);
+        if (access.Kiosk is not { } kiosk) return await Deny("ESP32_CONFIG_NOT_FOUND", 404);
+
+        if (download && !await session.ReauthenticateAsync(actor, role, input?.Password, ct))
+            return await Deny("ESP32_CONFIG_REAUTHENTICATION_FAILED", 401);
+
+        var broker = await source.ReadBrokerAsync(ct);
+        if (!download)
+        {
+            var store = services.GetService<Esp32ProvisioningStore>();
+            var provisioning = store is null ? null : await store.GetStatusAsync(kiosk.Id, ct);
+            var downloadableRole = role is "OPERATIONS_MANAGER" or "TECHNICIAN";
+            var unavailable = broker is null ? "ESP32_CONFIG_DEPLOYMENT_NOT_CONFIGURED"
+                : !downloadableRole ? "ESP32_CONFIG_DOWNLOAD_NOT_ALLOWED"
+                : provisioning is { State: not "READY" } ? provisioning.State == "FAILED"
+                    ? "ESP32_CONFIG_PROVISIONING_FAILED" : "ESP32_CONFIG_NOT_READY"
+                : !DeviceProtocol.ValidHardwareId(kiosk.HardwareId) ? "ESP32_CONFIG_NOT_PROVISIONED" : null;
+            var firmwareClientId = "esp32-" + kiosk.HardwareId;
+            var metadata = new Esp32ConfigMetadata(kiosk.Id, kiosk.Code, kiosk.Status, kiosk.HardwareId,
+                kiosk.MqttClientId, firmwareClientId, kiosk.MqttClientId == firmwareClientId,
+                broker?.Host, broker?.TlsPort, broker?.CaCertificatePem,
+                downloadableRole && unavailable is null, downloadableRole, unavailable, provisioning);
+            await session.AuditAndCommitAsync(actor, kiosk.Id, installation, false, "SUCCESS", ct);
+            return Results.Ok(metadata);
+        }
+        if (broker is null) return await Deny("ESP32_CONFIG_DEPLOYMENT_NOT_CONFIGURED", 409);
+
+        var provision = await source.ReadSecretsAsync(kiosk.HardwareId, ct);
+        if (provision.Secrets is null)
+            return await Deny(provision.ErrorCode is "ESP32_CONFIG_HMAC_MISMATCH" or "ESP32_CONFIG_NOT_READY" or "ESP32_CONFIG_PROVISIONING_FAILED"
+                ? provision.ErrorCode : "ESP32_CONFIG_NOT_PROVISIONED", 409);
+
+        var bytes = Esp32ConfigurationHeader.Render(kiosk, broker, provision.Secrets);
+        // Fail closed: do not disclose the generated bytes if recording the download fails.
+        await session.AuditAndCommitAsync(actor, kiosk.Id, installation, true, "SUCCESS", ct);
+        return Results.File(bytes, "text/x-c++hdr; charset=utf-8", "config.local.h",
+            enableRangeProcessing: false);
+    }
+}
+
+public static class Esp32Configuration
+{
+    public static IServiceCollection AddEsp32Configuration(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IEsp32ConfigurationSource, Esp32ConfigurationSource>();
+        services.TryAddScoped<IEsp32ConfigurationSessions, Esp32ConfigurationSessions>();
+        services.TryAddScoped<Esp32ConfigurationService>();
+        return services;
+    }
+
+    public static void MapEsp32Configuration(this WebApplication app)
+    {
+        DescribeRead(app.MapGet("/api/operations/kiosks/{id:guid}/esp32-config",
+            (Guid id, Esp32ConfigurationService service, HttpContext http, CancellationToken ct) =>
+                service.HandleAsync(id, "OPERATIONS_MANAGER", false, null, http, ct)),
+            "Read ESP32 metadata for a currently assigned Operations Manager kiosk.");
+        DescribeRead(app.MapGet("/api/staff/kiosk-installations/{installationId:guid}/esp32-config",
+            (Guid installationId, Esp32ConfigurationService service, HttpContext http, CancellationToken ct) =>
+                service.HandleAsync(installationId, "TECHNICIAN", false, null, http, ct)),
+            "Read ESP32 metadata for the assigned Technician's live installation (SCHEDULED, INSTALLING, AWAITING_HANDOVER).");
+        DescribeRead(app.MapGet("/api/admin/kiosks/{id:guid}/esp32-config",
+            (Guid id, Esp32ConfigurationService service, HttpContext http, CancellationToken ct) =>
+                service.HandleAsync(id, "ADMIN", false, null, http, ct)),
+            "Admin oversight metadata only. Admin cannot download ESP32 secrets.");
+
+        DescribeDownload(app.MapPost("/api/operations/kiosks/{id:guid}/esp32-config/download",
+            (Guid id, Esp32ConfigDownloadRequest? input, Esp32ConfigurationService service, HttpContext http, CancellationToken ct) =>
+                service.HandleAsync(id, "OPERATIONS_MANAGER", true, input, http, ct)),
+            "Download the assigned kiosk's config.local.h after verifying the current Operations Manager password.");
+        DescribeDownload(app.MapPost("/api/staff/kiosk-installations/{installationId:guid}/esp32-config/download",
+            (Guid installationId, Esp32ConfigDownloadRequest? input, Esp32ConfigurationService service, HttpContext http, CancellationToken ct) =>
+                service.HandleAsync(installationId, "TECHNICIAN", true, input, http, ct)),
+            "Download config.local.h after verifying the assigned Technician's current password and live installation.");
+    }
+
+    private static void DescribeRead(RouteHandlerBuilder route, string summary) => route
+        .RequireAuthorization("Account").WithTags("Esp32Configuration").WithSummary(summary)
+        .WithDescription("Cache-Control: no-store. No MQTT password or HMAC is read or returned. canDownload describes role/scope and public deployment readiness, not secret-store completeness. Foreign/missing/ended installations return the same 404. Current role and assignment are rechecked on every request. Error responses have a stable code extension.")
+        .Produces<Esp32ConfigMetadata>().ProducesProblem(401).ProducesProblem(403).ProducesProblem(404);
+
+    private static void DescribeDownload(RouteHandlerBuilder route, string summary) => route
+        .RequireAuthorization("Account").RequireRateLimiting("auth")
+        .WithTags("Esp32Configuration").WithSummary(summary)
+        .WithDescription("JSON body {password}: current account password, verified for this download only. Returns attachment config.local.h, Cache-Control: no-store; Wi-Fi fields are blank. Admin/other roles: 403. Foreign/missing/ended installation: 404. Wrong/missing password: 401 ESP32_CONFIG_REAUTHENTICATION_FAILED. 409 codes: ESP32_CONFIG_DEPLOYMENT_NOT_CONFIGURED, ESP32_CONFIG_NOT_PROVISIONED, ESP32_CONFIG_HMAC_MISMATCH. No secret values are included in errors or audit payloads.")
+        .Accepts<Esp32ConfigDownloadRequest>("application/json")
+        .Produces(200, contentType: "text/x-c++hdr; charset=utf-8")
+        .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
+        .ProducesProblem(409).ProducesProblem(429)
+        .AddOpenApiOperationTransformer((operation, _, _) =>
+        {
+            operation.Responses!["200"] = new OpenApiResponse
+            {
+                Description = "Private config.local.h attachment; fill in local Wi-Fi before flashing.",
+                Headers = new Dictionary<string, IOpenApiHeader>
+                {
+                    ["Content-Disposition"] = new OpenApiHeader { Description = "attachment; filename=config.local.h", Schema = new OpenApiSchema { Type = JsonSchemaType.String } },
+                    ["Cache-Control"] = new OpenApiHeader { Description = "no-store", Schema = new OpenApiSchema { Type = JsonSchemaType.String } }
+                },
+                Content = new Dictionary<string, OpenApiMediaType>
+                {
+                    ["text/x-c++hdr"] = new OpenApiMediaType { Schema = new OpenApiSchema { Type = JsonSchemaType.String, Format = "binary" } }
+                }
+            };
+            return Task.CompletedTask;
+        });
+}

@@ -23,8 +23,8 @@ public sealed class StockTests(ApiFactory factory) : IClassFixture<ApiFactory>
             SELECT id,'Stock test','0901234567','ACTIVE',@package,CURRENT_DATE+365 FROM unnest(ARRAY[@seller,@foreignSeller]::uuid[]) AS id;
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','Stock test','SELLER',@seller);
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'Stock flower',350000,48,'ACTIVE'),(@foreignProduct,@foreignSeller,'Foreign flower',999000,24,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'Stock flower',350000,48,'ACTIVE',2),(@foreignProduct,@foreignSeller,'Foreign flower',999000,24,'ACTIVE',1);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Stock kiosk','Stock address','HCM',@kiosk::text,@kiosk::text,'ONLINE'),
                   (@foreignKiosk,@foreignKiosk::text,'Foreign stock kiosk','Foreign stock address','HCM',@foreignKiosk::text,@foreignKiosk::text,'ONLINE');

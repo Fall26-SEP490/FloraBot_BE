@@ -5,7 +5,9 @@ namespace FloraBot.Api.Tests;
 public static class CurrentMainKioskFixture
 {
     public const string AdminUserId = "10000000-0000-0000-0000-000000000001";
-    public const string DefaultPackageId = "20000000-0000-0000-0000-00000000000a";
+    // The legacy monthly 00a package is retired by the annual-only migration.
+    // Use the active Pro annual package for kiosk-scoped fixture leases.
+    public const string DefaultPackageId = "20000000-0000-0000-0000-00000000000d";
 
     /// <summary>
     /// Seeds a coherent paid subscription charge in payment.payments and an active annual lease in
@@ -18,9 +20,9 @@ public static class CurrentMainKioskFixture
                 id, seller_id, kiosk_id, package_id, status, period_from, period_to,
                 period_from_ts, period_to_ts, price, payment_id
             ) VALUES (
-                public.uuid_v7(), @seller, @kiosk, '20000000-0000-0000-0000-00000000000a', 'ACTIVE',
-                CURRENT_DATE, CURRENT_DATE + 365,
-                public.app_now(), public.app_now() + interval '365 days', 600000, public.uuid_v7()
+                public.uuid_v7(), @seller, @kiosk, '20000000-0000-0000-0000-00000000000d', 'ACTIVE',
+                CURRENT_DATE, (CURRENT_DATE + interval '1 year')::date,
+                public.app_now(), public.app_now() + interval '1 year', 600000, public.uuid_v7()
             ) RETURNING id, payment_id, seller_id
         )
         INSERT INTO payment.payments (
@@ -51,8 +53,8 @@ public static class CurrentMainKioskFixture
                     period_from_ts, period_to_ts, price, payment_id
                 ) VALUES (
                     public.uuid_v7(), @seller, @kiosk, @package, 'ACTIVE',
-                    CURRENT_DATE, CURRENT_DATE + 365,
-                    public.app_now(), public.app_now() + interval '365 days', @price, public.uuid_v7()
+                    CURRENT_DATE, (CURRENT_DATE + interval '1 year')::date,
+                    public.app_now(), public.app_now() + interval '1 year', @price, public.uuid_v7()
                 ) RETURNING id, payment_id, seller_id
             )
             INSERT INTO payment.payments (

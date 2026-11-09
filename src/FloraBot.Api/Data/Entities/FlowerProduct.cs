@@ -15,6 +15,8 @@ public partial class FlowerProduct
 
     public long Price { get; set; }
 
+    public int Quantity { get; set; }
+
     public List<string> Tags { get; set; } = null!;
 
     public int ShelfLifeHours { get; set; }
