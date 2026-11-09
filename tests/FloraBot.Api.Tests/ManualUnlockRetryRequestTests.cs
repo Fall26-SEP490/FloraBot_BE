@@ -355,8 +355,11 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var requestId = JsonSerializer.SerializeToElement(payload).GetProperty("requestId").GetGuid();
         var issue = await seller.PostAsJsonAsync("/api/me/maintenance-access", new
         {
-            kioskId = fixture.Kiosk, slotId = fixture.Slot, sessionId = fixture.Session,
-            operation = "RETRY", requestId
+            kioskId = fixture.Kiosk,
+            slotId = fixture.Slot,
+            sessionId = fixture.Session,
+            operation = "RETRY",
+            requestId
         });
         if (!issue.IsSuccessStatusCode) return issue;
         using (issue)

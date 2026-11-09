@@ -159,7 +159,7 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
         }
 
         await Sql(presence, ("firstState", 0), ("secondState", 0));
-        var start = await client.PostAsJsonAsync(root,
+        var start = await PostMaintenanceAsync(client, f.Kiosk, f.Slot,
             new StartSlotMaintenanceRequest(session, action, action == "REPLACE" ? f.Bouquet : null,
                 f.Product, "Load with a concurrent stock adjustment"));
         start.EnsureSuccessStatusCode();
@@ -168,7 +168,7 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
         {
             await DoorCycle(active.CurrentCmdId!.Value, 0, 0);
             (await client.PostAsync($"{root}/{session}/check", null)).EnsureSuccessStatusCode();
-            var open = await client.PostAsync($"{root}/{session}/open-next", null);
+            var open = await PostMaintenanceAsync(client, f.Kiosk, f.Slot, session, "OPEN_NEXT");
             open.EnsureSuccessStatusCode();
             active = (await open.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
         }
@@ -184,8 +184,8 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
             VALUES(@otherSlot,@kiosk,1,true,true,true);
             """);
         await Sql(presence, ("firstState", 0), ("secondState", 0));
-        var otherStart = await client.PostAsJsonAsync(
-            $"/api/me/kiosks/{f.Kiosk}/slots/{otherSlot}/maintenance-sessions",
+        var otherStart = await PostMaintenanceAsync(
+            client, f.Kiosk, otherSlot,
             new StartSlotMaintenanceRequest(otherSession, "LOAD", null, otherProduct, "Load another available product"));
         otherStart.EnsureSuccessStatusCode();
         var other = (await otherStart.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
@@ -308,8 +308,13 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
         var taskId = Guid.NewGuid();
         using var created = await seller.PostAsJsonAsync("/api/me/inventory-tasks", new
         {
-            id = taskId, assigneeId = staffId, kioskId = f.Kiosk, slotId = f.Slot, action = "REMOVE",
-            expectedBouquetId = f.Bouquet, instructions = "Thu hồi bó hoa được giao",
+            id = taskId,
+            assigneeId = staffId,
+            kioskId = f.Kiosk,
+            slotId = f.Slot,
+            action = "REMOVE",
+            expectedBouquetId = f.Bouquet,
+            instructions = "Thu hồi bó hoa được giao",
         });
         Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         var taskPath = $"/api/staff/tasks/{taskId}";
@@ -478,7 +483,14 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
     {
         var issued = await seller.PostAsJsonAsync("/api/me/maintenance-access", new
         {
-            kioskId, slotId, sessionId, operation, action, expectedBouquetId, productId, reason,
+            kioskId,
+            slotId,
+            sessionId,
+            operation,
+            action,
+            expectedBouquetId,
+            productId,
+            reason,
         });
         if (!issued.IsSuccessStatusCode) return issued;
         using (issued)
