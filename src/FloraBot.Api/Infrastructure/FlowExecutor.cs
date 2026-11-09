@@ -76,6 +76,18 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
         // Authorization and flow run under one transaction; selected resources are locked against reassignment.
         var denied = await ResourceAccess.CheckAsync(connection, transaction, user, name, args, ct);
         if (denied is not null) return denied;
+        if (name is "stock_bouquet" or "return_to_seller" && args.TryGetValue("p_slot", out var targetSlot) && targetSlot.TryGetGuid(out var sId))
+        {
+            await using var checkCap = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.slot_sensor_capabilities WHERE slot_id = @slot AND enabled = true", connection, transaction);
+            checkCap.Parameters.AddWithValue("slot", sId);
+            if (await checkCap.ExecuteScalarAsync(ct) is not null)
+            {
+                var detail = name == "stock_bouquet"
+                    ? "Ô đã kích hoạt cảm biến giám sát. Vui lòng sử dụng quy trình bảo trì ô để nạp hoa."
+                    : "Ô đã kích hoạt cảm biến giám sát. Vui lòng sử dụng quy trình bảo trì ô để thu hồi hoa.";
+                return Results.Problem(statusCode: 409, detail: detail);
+            }
+        }
         VerifiedMedia? verifiedEvidence = null;
         if (name is "return_to_seller" or "report_device_fault" or "open_dispute" or "confirm_refund" or "pay_withdrawal")
         {

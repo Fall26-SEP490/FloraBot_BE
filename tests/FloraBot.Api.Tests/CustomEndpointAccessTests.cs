@@ -154,6 +154,15 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     private static Access[] BuildMatrix()
     {
         var entries = new List<Access>();
+        const string maintenance = "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions";
+        const string session = maintenance + "/{sessionId:guid}";
+        Add(["SELLER"], "POST", maintenance, session + "/check", session + "/open-next",
+            session + "/open-for-check", session + "/report-issue", session + "/retry-unlock");
+        Add(["SELLER"], "GET", session);
+        Add(["ADMIN"], "PUT", "/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities",
+            "/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/manual-unlock-retry");
+        Add(["KIOSK", "CUSTOMER", "SELLER"], "POST",
+            "/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}/commands/{cmdId:guid}/retry-unlock");
         Add(["SELLER"], "POST", "/api/me/preorders/{requestId:guid}/pickup-otp");
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/open");
         Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/attempts/{attemptId:guid}");

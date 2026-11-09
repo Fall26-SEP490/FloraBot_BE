@@ -91,7 +91,10 @@ internal static class SellerCheckoutPaymentLinks
             pin.Parameters.AddWithValue("version", version);
             pin.Parameters.Add("receiver", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(new
             {
-                bin = bankBin, accountNumber = account, accountName, provider = "PAYOS"
+                bin = bankBin,
+                accountNumber = account,
+                accountName,
+                provider = "PAYOS"
             });
             if (await pin.ExecuteNonQueryAsync(ct) != 1) return CheckoutClosed();
         }

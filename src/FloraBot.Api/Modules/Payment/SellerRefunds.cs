@@ -259,7 +259,8 @@ public static class SellerRefunds
                 {
                     var count = attemptReader.GetInt32(0);
                     var reason = attemptReader.IsDBNull(1) ? null : attemptReader.GetString(1);
-                    detail = detail with {
+                    detail = detail with
+                    {
                         CanSubmitTransfer = detail.IsApproved && detail.Status == "PENDING" && detail.CanAccessBank &&
                                             submission.Status == "REJECTED" && count < 4,
                         Submission = submission with { AttemptCount = count, ReviewReason = reason }

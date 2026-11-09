@@ -13,7 +13,38 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         t.status IN ('ISSUED','SENT') AND t.expires_at>CURRENT_TIMESTAMP
         AND k.status='ONLINE' AND k.last_heartbeat_at>CURRENT_TIMESTAMP-make_interval(secs=>flow.cfg('heartbeat_offline_seconds'))
         AND k.hardware_id=ANY(@hardware)
-        AND (t.purpose='SELLER_ACCESS' OR (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP))
+        AND (
+            (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP)
+            OR (t.purpose='SELLER_ACCESS' AND NOT EXISTS (SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms WHERE sms.current_cmd_id=t.cmd_id))
+            OR (t.purpose='SELLER_ACCESS' AND EXISTS (
+                SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms
+                JOIN identity.users u ON u.id=sms.actor_id
+                JOIN identity.sellers sel ON sel.id=sms.seller_id
+                JOIN kiosk_ops.slot_assignments sa ON sa.slot_id=sms.slot_id AND sa.seller_id=sms.seller_id AND sa.status='ACTIVE'
+                JOIN kiosk_ops.slot_sensor_capabilities cap ON cap.slot_id=sms.slot_id AND cap.kiosk_id=s.kiosk_id AND cap.relay_channel=s.relay_channel
+                WHERE sms.current_cmd_id=t.cmd_id AND sms.slot_id=s.id AND sms.kiosk_id=k.id
+                  AND t.issued_to_user_id=sms.actor_id
+                  AND u.role='SELLER' AND u.seller_id=sms.seller_id AND u.status='ACTIVE'
+                  AND (sel.status='ACTIVE'
+                       OR (sel.status='PAST_DUE' AND sms.action='REMOVE' AND sms.intended_stage='AwaitRemoval'))
+                  AND k.seller_id=sms.seller_id AND s.current_seller_id=sms.seller_id
+                  AND s.status='LOCKED' AND s.hold_order_id IS NULL AND s.hold_until IS NULL
+                  AND cap.enabled=true AND cap.door_verified=true AND cap.presence_verified=true
+                  AND sms.stage IN ('AwaitRemoval','AwaitLoading','NeedsInspection') AND sms.expires_at>CURRENT_TIMESTAMP
+                  AND (sms.intended_stage<>'AwaitLoading' OR flow.slot_sellable(s.id, sms.seller_id))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ordering.order_items i
+                      JOIN ordering.orders o ON o.id=i.order_id
+                      WHERE s.bouquet_id IS NOT NULL AND i.bouquet_id=s.bouquet_id
+                        AND o.status NOT IN ('EXPIRED','CANCELLED','DISPENSE_FAILED','REFUNDED')
+                  )
+            ))
+        )
+        """;
+
+    private const string MatchingDispatchSnapshot = """
+        ((d.hardware_id_snapshot IS NULL AND d.relay_channel_snapshot IS NULL AND d.slot_id_snapshot IS NULL)
+          OR (d.hardware_id_snapshot=k.hardware_id AND d.relay_channel_snapshot=s.relay_channel AND d.slot_id_snapshot=t.slot_id))
         """;
 
     public async Task<IReadOnlyList<Guid>> PendingAsync(CancellationToken ct)
@@ -21,7 +52,7 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         await using var command = data.CreateCommand($"""
             SELECT t.cmd_id FROM kiosk_ops.unlock_tokens t JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
             JOIN kiosk_ops.slots s ON s.id=t.slot_id LEFT JOIN kiosk_ops.mqtt_dispatches d ON d.cmd_id=t.cmd_id
-            WHERE {Eligible} AND (d.cmd_id IS NULL OR d.next_attempt_at<=CURRENT_TIMESTAMP)
+            WHERE {Eligible} AND {MatchingDispatchSnapshot} AND (d.cmd_id IS NULL OR d.next_attempt_at<=CURRENT_TIMESTAMP)
             ORDER BY t.issued_at,t.cmd_id LIMIT 100
             """);
         command.Parameters.AddWithValue("hardware", keys.HardwareIds);
@@ -42,6 +73,7 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
             FROM kiosk_ops.unlock_tokens t JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
             JOIN kiosk_ops.slots s ON s.id=t.slot_id LEFT JOIN kiosk_ops.mqtt_dispatches d ON d.cmd_id=t.cmd_id
             WHERE t.cmd_id=@cmd AND {Eligible} AND (d.cmd_id IS NULL OR d.next_attempt_at<=CURRENT_TIMESTAMP)
+              AND {MatchingDispatchSnapshot}
               AND NOT EXISTS (SELECT 1 FROM kiosk_ops.mqtt_inbox i WHERE i.cmd_id=t.cmd_id AND i.disposition='PENDING')
             FOR UPDATE OF t SKIP LOCKED
             """, connection, transaction))
@@ -71,12 +103,15 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         var delivery = Guid.NewGuid();
         await using var prepare = new NpgsqlCommand("""
             SELECT flow.device_event(@cmd,'SENT');
-            INSERT INTO kiosk_ops.mqtt_dispatches(cmd_id,delivery_id,next_attempt_at)
-            VALUES(@cmd,@delivery,CURRENT_TIMESTAMP+interval '10 seconds')
+            INSERT INTO kiosk_ops.mqtt_dispatches(cmd_id,delivery_id,next_attempt_at,hardware_id_snapshot,relay_channel_snapshot,slot_id_snapshot)
+            VALUES(@cmd,@delivery,CURRENT_TIMESTAMP+interval '10 seconds',@hardware,@relay,@slot)
             ON CONFLICT(cmd_id) DO UPDATE SET delivery_id=excluded.delivery_id,attempted_at=CURRENT_TIMESTAMP,
               next_attempt_at=excluded.next_attempt_at,pubacked_at=NULL
             """, connection, transaction);
         prepare.Parameters.AddWithValue("cmd", cmd); prepare.Parameters.AddWithValue("delivery", delivery);
+        prepare.Parameters.AddWithValue("hardware", message.HardwareId);
+        prepare.Parameters.AddWithValue("relay", message.RelayChannel);
+        prepare.Parameters.AddWithValue("slot", message.SlotId);
         await prepare.ExecuteNonQueryAsync(ct);
         await outbox.CommitAsync(ct);
         return new(delivery, signed);
@@ -91,7 +126,9 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         await using var live = new NpgsqlCommand($"""
             SELECT t.cmd_id FROM kiosk_ops.unlock_tokens t JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
             JOIN kiosk_ops.slots s ON s.id=t.slot_id JOIN kiosk_ops.mqtt_dispatches d ON d.cmd_id=t.cmd_id
-            WHERE t.cmd_id=@cmd AND d.delivery_id=@delivery AND d.pubacked_at IS NULL AND {Eligible}
+            WHERE t.cmd_id=@cmd AND d.delivery_id=@delivery AND d.pubacked_at IS NULL AND {Eligible} AND {MatchingDispatchSnapshot}
+              AND ((d.hardware_id_snapshot IS NULL AND d.relay_channel_snapshot IS NULL AND d.slot_id_snapshot IS NULL)
+                OR (d.hardware_id_snapshot=@expected_hardware AND d.relay_channel_snapshot=@relay AND d.slot_id_snapshot=@slot))
               AND NOT EXISTS (SELECT 1 FROM kiosk_ops.mqtt_inbox i WHERE i.cmd_id=t.cmd_id AND i.disposition='PENDING')
               AND k.hardware_id=@expected_hardware AND t.slot_id=@slot AND s.relay_channel=@relay AND t.purpose=@purpose
               AND floor(extract(epoch FROM t.issued_at))=@issued AND floor(extract(epoch FROM t.expires_at))=@expires

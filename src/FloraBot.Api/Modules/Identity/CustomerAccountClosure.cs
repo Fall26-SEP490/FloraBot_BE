@@ -83,12 +83,16 @@ public static class CustomerAccountClosure
                 }
             }
             var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
-            var cookie = new CookieOptions { HttpOnly=true,
-                Secure=http.Request.IsHttps || !(environment.IsDevelopment() || environment.IsEnvironment("Testing")),
-                SameSite=SameSiteMode.Strict, IsEssential=true };
-            cookie.Path="/";
+            var cookie = new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = http.Request.IsHttps || !(environment.IsDevelopment() || environment.IsEnvironment("Testing")),
+                SameSite = SameSiteMode.Strict,
+                IsEssential = true
+            };
+            cookie.Path = "/";
             http.Response.Cookies.Delete("florabot_access", cookie);
-            cookie.Path="/api/auth";
+            cookie.Path = "/api/auth";
             http.Response.Cookies.Delete("florabot_refresh", cookie);
             return Results.NoContent();
         }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth")

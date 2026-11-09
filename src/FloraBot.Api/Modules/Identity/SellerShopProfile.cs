@@ -65,9 +65,9 @@ public static class SellerShopProfile
                 """, conn, tx))
             {
                 update.Parameters.AddWithValue("seller", sellerId);
-                update.Parameters.Add("name", NpgsqlDbType.Text).Value=(object?)name ?? DBNull.Value;
-                update.Parameters.Add("phone", NpgsqlDbType.Text).Value=(object?)phone ?? DBNull.Value;
-                update.Parameters.Add("email", NpgsqlDbType.Text).Value=(object?)email ?? DBNull.Value;
+                update.Parameters.Add("name", NpgsqlDbType.Text).Value = (object?)name ?? DBNull.Value;
+                update.Parameters.Add("phone", NpgsqlDbType.Text).Value = (object?)phone ?? DBNull.Value;
+                update.Parameters.Add("email", NpgsqlDbType.Text).Value = (object?)email ?? DBNull.Value;
                 await update.ExecuteNonQueryAsync(ct);
             }
             await using (var audit = new NpgsqlCommand("""
@@ -123,8 +123,8 @@ public static class SellerShopProfile
             """, conn, tx);
         cmd.Parameters.AddWithValue("seller", sellerId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct) ? new(r.GetGuid(0),r.GetString(1),r.GetString(2),
-            r.IsDBNull(3)?null:r.GetString(3),r.IsDBNull(4)?null:r.GetString(4),
+        return await r.ReadAsync(ct) ? new(r.GetGuid(0), r.GetString(1), r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4),
             r.GetString(5)) : null;
     }
 }

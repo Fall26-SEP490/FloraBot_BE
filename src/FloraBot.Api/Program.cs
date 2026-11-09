@@ -91,8 +91,11 @@ if (builder.Configuration.GetValue("MQTT_ENABLED", false))
     builder.Services.AddScoped<DeviceEventInbox>();
     builder.Services.AddScoped<FlowerPresenceReceiver>();
     builder.Services.AddScoped<DeviceCommandDispatcher>();
+    builder.Services.AddScoped<ManualUnlockRetryDispatcher>();
     builder.Services.AddHostedService<MqttEventWorker>();
 }
+builder.Services.AddScoped<SlotMaintenanceService>();
+builder.Services.AddScoped<ManualUnlockRetryService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped(sp =>
 {
@@ -346,6 +349,9 @@ app.MapOnboardingPackages();
 app.MapKioskApplications();
 app.MapSlotLayoutRequests();
 app.MapSellerSlotBouquets();
+app.MapSellerSlotMaintenance();
+app.MapManualUnlockRetryEnrollment();
+app.MapManualUnlockRetries();
 app.MapPayOs();
 app.MapSellerPaymentChannels();
 app.MapSellerPayments();

@@ -129,6 +129,30 @@ public sealed class MqttEventWorker(IConfiguration configuration, IServiceScopeF
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                     catch (Exception ex) { logger.LogWarning(ex, "MQTT command dispatch failed; persisted retry deadline retained"); }
+
+                    try
+                    {
+                        using var scope = scopes.CreateScope();
+                        var retryDispatcher = scope.ServiceProvider.GetService<ManualUnlockRetryDispatcher>();
+                        if (retryDispatcher is not null)
+                        {
+                            foreach (var id in await retryDispatcher.PendingAsync(stoppingToken))
+                            {
+                                var prepared = await retryDispatcher.PrepareAsync(id, stoppingToken);
+                                if (prepared is null) continue;
+                                await retryDispatcher.DeliverAsync(prepared, async (command, ct) =>
+                                {
+                                    var result = await client.PublishAsync(new MqttApplicationMessageBuilder()
+                                        .WithTopic($"kiosk/{command.HardwareId}/cmd")
+                                        .WithPayload(JsonSerializer.Serialize(command)).WithRetainFlag(false)
+                                        .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build(), ct);
+                                    if ((int)result.ReasonCode >= 128) throw new InvalidOperationException("MQTT retry command was rejected by the broker.");
+                                }, stoppingToken);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                    catch (Exception ex) { logger.LogWarning(ex, "MQTT retry command dispatch failed; persisted retry deadline retained"); }
                 }
                 await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
             }

@@ -11,7 +11,7 @@ namespace FloraBot.Api.Infrastructure;
 
 public enum DeviceReceipt { Stored, Duplicate, Rejected }
 
-public sealed class DeviceEventInbox(NpgsqlDataSource data, ICapPublisher publisher, DeviceKeyRing keys, PortalNotifier notifier)
+public sealed class DeviceEventInbox(NpgsqlDataSource data, ICapPublisher publisher, DeviceKeyRing keys, PortalNotifier notifier, IServiceProvider? provider = null, ILogger<DeviceEventInbox>? logger = null)
 {
     // A broker delivery can be acknowledged only after this durable receipt succeeds.
     public async Task<DeviceReceipt> ReceiveAsync(string hardware, SignedDeviceEvent message, CancellationToken ct)
@@ -124,7 +124,27 @@ public sealed class DeviceEventInbox(NpgsqlDataSource data, ICapPublisher publis
         await finish.ExecuteNonQueryAsync(ct);
         await outbox.CommitAsync(ct);
         await connection.CloseAsync();
-        if (disposition == "APPLIED") await notifier.RefreshAsync(targetSeller);
+        if (disposition == "APPLIED")
+        {
+            await notifier.RefreshAsync(targetSeller);
+            if (kind == "CLOSED" && provider is not null)
+            {
+                try
+                {
+                    using var scope = provider.CreateScope();
+                    if (scope.ServiceProvider.GetService<SlotMaintenanceService>() is { } maintenance)
+                        await maintenance.SyncActiveSessionsForKioskAsync(kiosk, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Failed to synchronize maintenance sessions on door close for kiosk {KioskId}", kiosk);
+                }
+            }
+        }
         return true;
     }
 }
