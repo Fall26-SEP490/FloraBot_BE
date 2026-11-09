@@ -44,8 +44,8 @@ public sealed class StaffTaskTests
         (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input)).EnsureSuccessStatusCode();
         var product = Guid.NewGuid();
         await using var inventory = data.CreateCommand("""
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'Staff delivery bouquet',350000,48,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'Staff delivery bouquet',350000,48,'ACTIVE',1);
             """);
         inventory.Parameters.AddWithValue("product", product); inventory.Parameters.AddWithValue("seller", seller);
         await inventory.ExecuteNonQueryAsync();

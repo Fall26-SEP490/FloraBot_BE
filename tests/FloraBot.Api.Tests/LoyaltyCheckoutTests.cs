@@ -90,10 +90,10 @@ public sealed class LoyaltyCheckoutTests(ApiFactory factory) : IClassFixture<Api
 
         var bouquets = new List<Guid>();
         await using (var stock = source.CreateCommand("""
-            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status)
-            VALUES (@productA1, @sellerA, 'Bouquet 1', 400000, 48, 'ACTIVE'),
-                   (@productA2, @sellerA, 'Bouquet 2', 200000, 48, 'ACTIVE'),
-                   (@productB1, @sellerB, 'Bouquet B', 150000, 48, 'ACTIVE');
+            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, quantity)
+            VALUES (@productA1, @sellerA, 'Bouquet 1', 400000, 48, 'ACTIVE', 1),
+                   (@productA2, @sellerA, 'Bouquet 2', 200000, 48, 'ACTIVE', 1),
+                   (@productB1, @sellerB, 'Bouquet B', 150000, 48, 'ACTIVE', 1);
 
             SELECT flow.stock_bouquet(flow.new_batch(), @productA1, @slotA1, '10000000-0000-0000-0000-000000000001', @qrA1);
             SELECT flow.stock_bouquet(flow.new_batch(), @productA2, @slotA2, '10000000-0000-0000-0000-000000000001', @qrA2);

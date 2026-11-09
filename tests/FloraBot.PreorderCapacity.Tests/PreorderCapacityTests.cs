@@ -193,8 +193,8 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
             ON CONFLICT (id) DO NOTHING;
 
             -- 4. Insert active flower product
-            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, created_at, updated_at)
-            VALUES(@product, @seller, 'Cap Product', 50000, 48, 'ACTIVE', public.app_now(), public.app_now())
+            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, created_at, updated_at, quantity)
+            VALUES(@product, @seller, 'Cap Product', 50000, 48, 'ACTIVE', public.app_now(), public.app_now(), 1)
             ON CONFLICT (id) DO NOTHING;
 
             -- 5. Insert kiosk with location and seller (if activeLease)

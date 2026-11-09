@@ -22,7 +22,7 @@ public static class ResourceAccess
                 var id = value.GetGuid();
                 var owner = key switch
                 {
-                    "p_product" => await CatalogOwnership.ProductSellerAsync(connection, transaction, id, ct),
+                    "p_product" => await CatalogOwnership.ProductSellerAsync(connection, transaction, id, ct, forStocking: flow == "stock_bouquet"),
                     "p_slot" => await KioskOwnership.SlotSellerAsync(connection, transaction, id, ct),
                     "p_accessory" => await KioskOwnership.AccessorySellerAsync(connection, transaction, id, ct),
                     "p_seller" => await IdentityOwnership.SellerAsync(connection, transaction, id, ct),

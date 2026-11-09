@@ -648,6 +648,10 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             await outbox.CommitAsync(ct);
             return Results.Ok(result);
         }
+        catch (PostgresException ex) when (ex.SqlState == "40001")
+        {
+            return Results.Problem(statusCode: 409, detail: ex.MessageText);
+        }
         catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
         {
             return Results.Problem(statusCode: 409, detail: "Ô đang được xử lý đồng thời. Hãy tải lại trạng thái trước khi thử lại.");
@@ -1151,14 +1155,23 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         foreach (var (sessId, sId, selId) in sessionList)
         {
-            await using var txConn = await data.OpenConnectionAsync(ct);
-            using var outbox = await txConn.BeginTransactionAsync(publisher, cancellationToken: ct);
-            var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
-            var auth = await LoadAndLockContextAsync(txConn, transaction, kioskId, sId, selId, actorId: null, sessionId: sessId, ct);
-            if (auth is not null && auth.Session is not null)
+            try
             {
-                await SyncSessionInternalAsync(txConn, transaction, auth, ct);
-                await outbox.CommitAsync(ct);
+                await using var txConn = await data.OpenConnectionAsync(ct);
+                using var outbox = await txConn.BeginTransactionAsync(publisher, cancellationToken: ct);
+                var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
+                var auth = await LoadAndLockContextAsync(txConn, transaction, kioskId, sId, selId, actorId: null, sessionId: sessId, ct);
+                if (auth is not null && auth.Session is not null)
+                {
+                    await SyncSessionInternalAsync(txConn, transaction, auth, ct);
+                    await outbox.CommitAsync(ct);
+                }
+            }
+            catch (PostgresException ex) when (ex.SqlState == "40001")
+            {
+                // Rollback leaves this loading session retryable after the
+                // seller reconciles shop quantity. Continue other slots rather
+                // than making one exhausted product block the whole kiosk.
             }
         }
     }

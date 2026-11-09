@@ -1300,8 +1300,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         // 2. Create Artificial Product for Seller
         var productId = Guid.NewGuid();
         await using var insertProd = source.CreateCommand("""
-            INSERT INTO catalog.flower_products(id, seller_id, name, description, price, tags, shelf_life_hours, status)
-            VALUES(@pid, @sid, 'Hoa Lụa Cao Cấp', 'Bền đẹp mãi mãi', 50000, ARRAY['ROMANTIC','GIFT'], 720, 'ACTIVE');
+            INSERT INTO catalog.flower_products(id, seller_id, name, description, price, tags, shelf_life_hours, status, quantity)
+            VALUES(@pid, @sid, 'Hoa Lụa Cao Cấp', 'Bền đẹp mãi mãi', 50000, ARRAY['ROMANTIC','GIFT'], 720, 'ACTIVE', 2);
             """);
         insertProd.Parameters.AddWithValue("pid", productId);
         insertProd.Parameters.AddWithValue("sid", sellerId);

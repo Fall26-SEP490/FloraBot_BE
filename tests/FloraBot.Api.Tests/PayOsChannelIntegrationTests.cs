@@ -419,8 +419,8 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
         {
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = """
-                INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status)
-                VALUES (@product, @seller, 'Direct Rose', 200000, 48, 'ACTIVE');
+                INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, quantity)
+                VALUES (@product, @seller, 'Direct Rose', 200000, 48, 'ACTIVE', 1);
                 UPDATE identity.sellers SET status = 'ACTIVE', package_expires_at = CURRENT_DATE + 30 WHERE id = @seller;
                 INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, api_key_hash)
                 VALUES (@kiosk, @kiosk::text, 'Direct Kiosk', '123 Test St', 'HCM', @kiosk::text, @kiosk::text, 'ONLINE', @hash);
@@ -561,8 +561,8 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
             VALUES (@seller, 'No Channel Shop', '0909998888', 'ACTIVE', '20000000-0000-0000-0000-00000000000a', CURRENT_DATE + 30);
             INSERT INTO identity.users(id, email, password_hash, full_name, role, seller_id)
             VALUES (@user, @user::text || '@example.invalid', 'dummy_hash', 'No Channel Owner', 'SELLER', @seller);
-            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status)
-            VALUES (@product, @seller, 'No Channel Rose', 150000, 48, 'ACTIVE');
+            INSERT INTO catalog.flower_products(id, seller_id, name, price, shelf_life_hours, status, quantity)
+            VALUES (@product, @seller, 'No Channel Rose', 150000, 48, 'ACTIVE', 1);
             INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, api_key_hash)
             VALUES (@kiosk, @kiosk::text, 'No Channel Kiosk', '456 Test Ave', 'HCM', @kiosk::text, @kiosk::text, 'ONLINE', @hash);
             INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, zone) VALUES (@slot, @kiosk, 'C01', 0, 'WALK_IN');

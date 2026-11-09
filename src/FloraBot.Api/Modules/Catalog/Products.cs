@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.ComponentModel.DataAnnotations;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -14,7 +15,8 @@ public sealed record CreateProductRequest(
     List<string> Tags,
     decimal LengthCm,
     decimal WidthCm,
-    decimal HeightCm);
+    decimal HeightCm,
+    [property: Range(0, int.MaxValue)] int Quantity = 0);
 
 public sealed record UpdateProductRequest(
     string Name,
@@ -23,7 +25,8 @@ public sealed record UpdateProductRequest(
     List<string> Tags,
     decimal LengthCm,
     decimal WidthCm,
-    decimal HeightCm);
+    decimal HeightCm,
+    [property: Range(0, int.MaxValue)] int? Quantity = null);
 
 public static class Products
 {
@@ -32,6 +35,8 @@ public static class Products
         app.MapPost("/api/me/products", CreateAsync)
             .RequireAuthorization("Seller")
             .WithTags("Catalog")
+            .WithSummary("Tạo mẫu hoa và khai báo tồn bó tại shop")
+            .WithDescription("quantity là số bó còn tại shop, số nguyên không âm; bỏ qua mặc định 0. Nạp thành công vào kiosk hoặc fulfill preorder trừ một bó. Thu hồi không tự cộng lại.")
             .Produces<ProductIdResponse>(StatusCodes.Status201Created)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -41,6 +46,8 @@ public static class Products
         app.MapPut("/api/sellers/{sellerId:guid}/products/{productId:guid}", UpdateAsync)
             .RequireAuthorization("Seller", "SameSeller")
             .WithTags("Catalog")
+            .WithSummary("Sửa mẫu hoa và tồn bó tại shop")
+            .WithDescription("quantity là tồn thực tế tại shop, số nguyên không âm. Bỏ qua hoặc null giữ nguyên tồn hiện tại; gửi số mới là chốt lại tồn, không phải cộng thêm.")
             .Produces<ProductIdResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -56,6 +63,8 @@ public static class Products
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120) return Results.BadRequest();
         if (request.Description is not null && request.Description.Length > 2000) return Results.BadRequest();
         if (request.Price <= 0) return Results.BadRequest();
+        if (request.Quantity < 0) return Results.ValidationProblem(new Dictionary<string, string[]>
+            { ["quantity"] = ["Số lượng tồn tại shop phải là số nguyên không âm."] });
         if (!ValidDimensions(request.LengthCm, request.WidthCm, request.HeightCm)) return Results.BadRequest();
         if (request.Tags is null || request.Tags.Count > 20 || request.Tags.Any(t => t is null)) return Results.BadRequest();
         var trimmedTags = request.Tags.Select(t => t.Trim()).ToList();
@@ -89,6 +98,8 @@ public static class Products
             command.Parameters.Add("height", NpgsqlDbType.Numeric).Value = request.HeightCm;
 
             var resultId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+            if (!await SetQuantityAsync(connection, transaction, resultId, sellerId, actorId, request.Quantity, ct))
+                return Results.NotFound();
             await transaction.CommitAsync(ct);
             return Results.Created($"/api/sellers/{sellerId}/products/{resultId}", new ProductIdResponse(resultId));
         }
@@ -105,6 +116,8 @@ public static class Products
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120) return Results.BadRequest();
         if (request.Description is not null && request.Description.Length > 2000) return Results.BadRequest();
         if (request.Price <= 0) return Results.BadRequest();
+        if (request.Quantity < 0) return Results.ValidationProblem(new Dictionary<string, string[]>
+            { ["quantity"] = ["Số lượng tồn tại shop phải là số nguyên không âm."] });
         if (!ValidDimensions(request.LengthCm, request.WidthCm, request.HeightCm)) return Results.BadRequest();
         if (request.Tags is null || request.Tags.Count > 20 || request.Tags.Any(t => t is null)) return Results.BadRequest();
         var trimmedTags = request.Tags.Select(t => t.Trim()).ToList();
@@ -130,6 +143,9 @@ public static class Products
             command.Parameters.Add("height", NpgsqlDbType.Numeric).Value = request.HeightCm;
 
             var resultId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+            if (request.Quantity is { } quantity &&
+                !await SetQuantityAsync(connection, transaction, resultId, sellerId, actorId, quantity, ct))
+                return Results.NotFound();
             await transaction.CommitAsync(ct);
             return Results.Ok(new ProductIdResponse(resultId));
         }
@@ -137,6 +153,32 @@ public static class Products
         {
             return HandleProblem(ex);
         }
+    }
+
+    private static async Task<bool> SetQuantityAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid productId, Guid sellerId, Guid actorId, int quantity, CancellationToken ct)
+    {
+        // The existing create/update flow authorizes the owner and lease before this call.
+        // Keep the count, metadata and audit in that same transaction and product-row lock.
+        await using var read = new NpgsqlCommand("SELECT quantity FROM catalog.flower_products WHERE id=@id AND seller_id=@seller FOR UPDATE", connection, transaction);
+        read.Parameters.AddWithValue("id", productId);
+        read.Parameters.AddWithValue("seller", sellerId);
+        if (await read.ExecuteScalarAsync(ct) is not int previous) return false;
+        if (previous == quantity) return true;
+
+        await using var update = new NpgsqlCommand("""
+            UPDATE catalog.flower_products SET quantity=@quantity,updated_at=public.app_now()
+            WHERE id=@id AND seller_id=@seller;
+            SELECT flow.audit(@actor,'PRODUCT_SHOP_QUANTITY_CHANGED','flower_products',@id,
+              jsonb_build_object('previous_quantity',@previous,'quantity',@quantity));
+            """, connection, transaction);
+        update.Parameters.AddWithValue("id", productId);
+        update.Parameters.AddWithValue("seller", sellerId);
+        update.Parameters.AddWithValue("actor", actorId);
+        update.Parameters.AddWithValue("quantity", quantity);
+        update.Parameters.AddWithValue("previous", previous);
+        await update.ExecuteNonQueryAsync(ct);
+        return true;
     }
 
     private static bool ValidDimensions(decimal length, decimal width, decimal height) =>

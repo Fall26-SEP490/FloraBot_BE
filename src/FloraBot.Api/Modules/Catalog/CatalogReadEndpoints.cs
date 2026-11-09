@@ -13,7 +13,9 @@ public static class CatalogReadEndpoints
         {
             if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
             return Results.Ok(await db.FlowerProducts.AsNoTracking().Where(x => x.SellerId == sellerId).OrderBy(x => x.Name)
-                .Select(x => new ProductResponse(x.Id, x.Name, x.Description, x.Price, x.Tags, x.Status, x.InventoryKind == "ARTIFICIAL" ? null : x.ShelfLifeHours, x.InventoryKind, x.LengthCm, x.WidthCm, x.HeightCm)).ToListAsync());
-        }).RequireAuthorization("Seller").Produces<List<ProductResponse>>();
+                .Select(x => new ProductResponse(x.Id, x.Name, x.Description, x.Price, x.Tags, x.Status, x.InventoryKind == "ARTIFICIAL" ? null : x.ShelfLifeHours, x.InventoryKind, x.LengthCm, x.WidthCm, x.HeightCm, x.Quantity)).ToListAsync());
+        }).RequireAuthorization("Seller").Produces<List<ProductResponse>>()
+          .WithSummary("Danh sách mẫu hoa và tồn bó tại shop")
+          .WithDescription("quantity là số bó còn tại shop; không bao gồm các bó đã nạp trong kiosk và không được tính từ số ô tủ.");
     }
 }

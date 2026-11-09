@@ -52,6 +52,7 @@ if (exportFile is not null)
     builder.Configuration["JWT_SIGNING_KEY"] = "openapi-export-only-not-a-production-signing-key";
     builder.Configuration["DATABASE_URL"] = "Host=127.0.0.1;Port=1;Database=openapi_export;Username=unused;Password=unused";
     builder.Configuration["MQTT_ENABLED"] = "false";
+    builder.Configuration["MQTT_AUTO_PROVISIONING_ENABLED"] = "false";
     builder.Configuration["JOBS_ENABLED"] = "false";
 }
 var publicSwaggerEnabled = exportFile is not null || builder.Configuration.GetValue("PUBLIC_SWAGGER_ENABLED", false);
@@ -60,6 +61,12 @@ if (string.IsNullOrEmpty(builder.Configuration["JWT_SIGNING_KEY"]) && builder.En
 var signingKey = builder.Configuration["JWT_SIGNING_KEY"] ?? throw new InvalidOperationException("JWT_SIGNING_KEY is required.");
 if (Encoding.UTF8.GetByteCount(signingKey) < 32) throw new InvalidOperationException("JWT_SIGNING_KEY must contain at least 32 bytes.");
 var connectionString = builder.Configuration["DATABASE_URL"] ?? throw new InvalidOperationException("DATABASE_URL is required.");
+var autoProvisioning = builder.Configuration.GetValue("MQTT_AUTO_PROVISIONING_ENABLED", false);
+if (autoProvisioning && !builder.Configuration.GetValue("MQTT_ENABLED", false))
+    throw new InvalidOperationException("MQTT_AUTO_PROVISIONING_ENABLED requires MQTT_ENABLED.");
+if (autoProvisioning && !builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing")
+    && string.IsNullOrWhiteSpace(builder.Configuration["DATA_PROTECTION_KEYS_PATH"]))
+    throw new InvalidOperationException("Automatic device provisioning requires a persistent DATA_PROTECTION_KEYS_PATH.");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddCap(options =>
 {
@@ -87,7 +94,7 @@ builder.Services.AddTransient<RefundEventSubscriber>();
 if (builder.Configuration.GetValue("MQTT_ENABLED", false))
 {
     builder.Services.AddSingleton(DeviceKeyRing.Load(builder.Configuration["MQTT_CREDENTIALS_FILE"]
-        ?? throw new InvalidOperationException("MQTT_CREDENTIALS_FILE is required.")));
+        ?? throw new InvalidOperationException("MQTT_CREDENTIALS_FILE is required."), allowEmpty: autoProvisioning));
     builder.Services.AddScoped<DeviceEventInbox>();
     builder.Services.AddScoped<FlowerPresenceReceiver>();
     builder.Services.AddScoped<DeviceCommandDispatcher>();
@@ -96,6 +103,10 @@ if (builder.Configuration.GetValue("MQTT_ENABLED", false))
 }
 builder.Services.AddScoped<SlotMaintenanceService>();
 builder.Services.AddScoped<ManualUnlockRetryService>();
+builder.Services.AddEsp32Configuration();
+builder.Services.AddSingleton<Esp32ProvisioningStore>();
+builder.Services.AddSingleton<IMqttDeviceProvisioner, MosquittoDynamicSecurity>();
+if (autoProvisioning) builder.Services.AddHostedService<Esp32ProvisioningWorker>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped(sp =>
 {
@@ -272,8 +283,8 @@ app.Use(async (http, next) =>
     try { await next(); }
     catch (PostgresException ex)
     {
-        var status = ex.SqlState switch { "P0001" => 409, "23505" => 409, "23503" or "23514" or "22P02" or "22023" => 400, _ => 500 };
-        var detail = ex.SqlState == "P0001" ? ex.MessageText : status == 500 ? "Không thể xử lý yêu cầu lúc này." : "Dữ liệu không hợp lệ hoặc bị trùng.";
+        var status = ex.SqlState switch { "P0001" or "40001" => 409, "23505" => 409, "23503" or "23514" or "22P02" or "22023" => 400, _ => 500 };
+        var detail = ex.SqlState is "P0001" or "40001" ? ex.MessageText : status == 500 ? "Không thể xử lý yêu cầu lúc này." : "Dữ liệu không hợp lệ hoặc bị trùng.";
         await Results.Problem(statusCode: status, title: "Yêu cầu chưa được thực hiện", detail: detail).ExecuteAsync(http);
     }
 });
@@ -347,6 +358,8 @@ PrivateEvidence.MapPrivateEvidence(app);
 app.MapRegistration();
 app.MapOnboardingPackages();
 app.MapKioskApplications();
+app.MapEsp32Configuration();
+app.MapEsp32Provisioning();
 app.MapSlotLayoutRequests();
 app.MapSellerSlotBouquets();
 app.MapSellerSlotMaintenance();

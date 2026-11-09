@@ -17,7 +17,8 @@ public sealed record ProductResponse(
     string? InventoryKind = null,
     decimal? LengthCm = null,
     decimal? WidthCm = null,
-    decimal? HeightCm = null);
+    decimal? HeightCm = null,
+    int Quantity = 0);
 public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId);
 public sealed record SellerPackageResponse(string Name, long AnnualFee, int MaxSlots, string Status)
 {

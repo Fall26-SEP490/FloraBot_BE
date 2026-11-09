@@ -46,8 +46,8 @@ public sealed class AdvisorTests(ApiFactory factory) : IClassFixture<ApiFactory>
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','Test shop','SELLER',@seller);
             INSERT INTO identity.users(id,email,full_name,role) VALUES(@customer,@customer::text || '@example.invalid','Customer','CUSTOMER'),(@stranger,@stranger::text || '@example.invalid','Other','CUSTOMER');
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,description,tags)
-            VALUES(@product,@seller,'Test bouquet',250000,48,'ACTIVE','Hoa tang me',ARRAY['MOTHER']);
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,description,tags,quantity)
+            VALUES(@product,@seller,'Test bouquet',250000,48,'ACTIVE','Hoa tang me',ARRAY['MOTHER'],1);
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,api_key_hash)
             VALUES(@kiosk,@kiosk::text,'Advisor kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE',@hash);
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone) VALUES(@slot,@kiosk,'A01',0,'WALK_IN');

@@ -56,11 +56,12 @@ public sealed class PaidMqttCycleTests(ApiFactory factory) : IClassFixture<ApiFa
             VALUES(@seller,'Paid MQTT test','0901112233','PENDING');
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id)
             VALUES(@user,@user::text || '@example.invalid','!unprovisioned','MQTT test','SELLER',@seller);
-            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status)
-            VALUES(@product,@seller,'MQTT test bouquet',350000,48,'ACTIVE');
+            INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,quantity)
+            VALUES(@product,@seller,'MQTT test bouquet',350000,48,'ACTIVE',@quantity);
             """);
         fixture.Parameters.AddWithValue("seller", seller); fixture.Parameters.AddWithValue("user", user);
         fixture.Parameters.AddWithValue("product", product);
+        fixture.Parameters.AddWithValue("quantity", bouquetCount);
         await fixture.ExecuteNonQueryAsync();
         var slots = new List<Guid>();
         for (var index = 0; index < bouquetCount; index++)
