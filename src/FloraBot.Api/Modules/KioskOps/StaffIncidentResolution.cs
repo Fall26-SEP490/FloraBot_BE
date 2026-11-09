@@ -21,7 +21,14 @@ public static class StaffIncidentResolution
             try
             {
                 var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
-                await using var command = new NpgsqlCommand("SELECT flow.staff_resolve_incident(@id,@task,@actor,@version,@report)", connection, transaction);
+                await using var command = new NpgsqlCommand("""
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM kiosk_ops.staff_tasks task JOIN ordering.disputes incident ON incident.id=task.incident_id
+                        WHERE task.id=@task AND incident.slot_id IS NOT NULL)
+                      THEN flow.submit_technical_repair(@id,@task,@actor,@version,@report)
+                      ELSE flow.staff_resolve_incident(@id,@task,@actor,@version,@report)
+                    END
+                    """, connection, transaction);
                 command.Parameters.AddWithValue("id", input.Id); command.Parameters.AddWithValue("task", taskId);
                 command.Parameters.AddWithValue("actor", Guid.Parse(http.User.FindFirstValue("sub")!));
                 command.Parameters.AddWithValue("version", input.Version); command.Parameters.AddWithValue("report", input.Report.Trim());

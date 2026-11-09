@@ -8,6 +8,8 @@ using FloraBot.Api.Data.Entities;
 using FloraBot.Api.Infrastructure;
 using FloraBot.Api.Modules.KioskOps;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.AspNetCore.Mvc.Testing;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using NpgsqlTypes;
@@ -16,6 +18,7 @@ namespace FloraBot.Api.Tests;
 
 public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
+    private readonly Dictionary<HttpClient, WebApplicationFactory<Program>> clientHosts = [];
     private static readonly byte[] DeviceSigningKey = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
 
     private sealed record SellerFixture(
@@ -328,6 +331,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
             : factory;
 
         var client = clientFactory.CreateClient();
+        clientHosts.Add(client, clientFactory);
 
         if (memberToken is not null)
         {
@@ -346,23 +350,42 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         return client;
     }
 
+    private async Task<HttpResponseMessage> PostSellerRetryAsync(HttpClient seller, SellerFixture fixture, object payload)
+    {
+        var requestId = JsonSerializer.SerializeToElement(payload).GetProperty("requestId").GetGuid();
+        var issue = await seller.PostAsJsonAsync("/api/me/maintenance-access", new
+        {
+            kioskId = fixture.Kiosk, slotId = fixture.Slot, sessionId = fixture.Session,
+            operation = "RETRY", requestId
+        });
+        if (!issue.IsSuccessStatusCode) return issue;
+        using (issue)
+        using (var device = clientHosts[seller].CreateClient())
+        {
+            device.DefaultRequestHeaders.Add("X-Kiosk-Key", fixture.RawApiKey);
+            var credential = await issue.Content.ReadFromJsonAsync<JsonElement>();
+            return await device.PostAsJsonAsync(
+                $"/api/kiosks/{fixture.Kiosk}/maintenance-access/{credential.GetProperty("id").GetGuid()}/confirm",
+                new { code = credential.GetProperty("code").GetString() });
+        }
+    }
+
     [Fact]
     public async Task SellerRetryUnlock_QueuesFirstRequest_AndIdempotentOnRepeat()
     {
         var f = await SetupSellerSessionAsync();
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
         var requestId = Guid.NewGuid();
         var payload = new { requestId };
 
         // 1. First attempt -> 200 OK (queued)
-        var resp1 = await client.PostAsJsonAsync(route, payload);
+        var resp1 = await PostSellerRetryAsync(client, f, payload);
         Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
         Assert.True(resp1.Headers.CacheControl?.NoStore);
 
         // 2. Immediate repeat with exact same requestId -> 200 OK (idempotent duplicate)
-        var resp2 = await client.PostAsJsonAsync(route, payload);
+        var resp2 = await PostSellerRetryAsync(client, f, payload);
         Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
     }
 
@@ -389,8 +412,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         await update.ExecuteNonQueryAsync();
 
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var response = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var response = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
         Assert.Equal(expected, response.StatusCode);
     }
 
@@ -401,16 +423,15 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync();
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
 
         // First requestId accepted
         var req1 = new { requestId = Guid.NewGuid() };
-        var resp1 = await client.PostAsJsonAsync(route, req1);
+        var resp1 = await PostSellerRetryAsync(client, f, req1);
         Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
 
         // Distinct second requestId for same session -> 409 Conflict (second ID denial)
         var req2 = new { requestId = Guid.NewGuid() };
-        var resp2 = await client.PostAsJsonAsync(route, req2);
+        var resp2 = await PostSellerRetryAsync(client, f, req2);
         Assert.Equal(HttpStatusCode.Conflict, resp2.StatusCode);
     }
 
@@ -421,8 +442,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync(agedPastCooldown: false);
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
         Assert.True(resp.Headers.Contains("Retry-After") || resp.Headers.RetryAfter != null);
@@ -435,8 +455,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync(tokenStatus: "SENT", withAppliedAck: false);
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
     }
@@ -448,8 +467,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var fOpened = await SetupSellerSessionAsync(doorOpened: true);
         using var clientOpened = CreateClient([fOpened.HardwareId], role: "SELLER", userId: fOpened.Actor, sellerId: fOpened.Seller);
 
-        var route = $"/api/me/kiosks/{fOpened.Kiosk}/slots/{fOpened.Slot}/maintenance-sessions/{fOpened.Session}/retry-unlock";
-        var respOpened = await clientOpened.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var respOpened = await PostSellerRetryAsync(clientOpened, fOpened, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, respOpened.StatusCode);
     }
@@ -461,8 +479,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var fExpired = await SetupSellerSessionAsync(tokenExpired: true);
         using var clientExpired = CreateClient([fExpired.HardwareId], role: "SELLER", userId: fExpired.Actor, sellerId: fExpired.Seller);
 
-        var route = $"/api/me/kiosks/{fExpired.Kiosk}/slots/{fExpired.Slot}/maintenance-sessions/{fExpired.Session}/retry-unlock";
-        var respExpired = await clientExpired.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var respExpired = await PostSellerRetryAsync(clientExpired, fExpired, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, respExpired.StatusCode);
     }
@@ -474,17 +491,16 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var fA = await SetupSellerSessionAsync();
         var fB = await SetupSellerSessionAsync();
 
-        var routeA = $"/api/me/kiosks/{fA.Kiosk}/slots/{fA.Slot}/maintenance-sessions/{fA.Session}/retry-unlock";
         var payload = new { requestId = Guid.NewGuid() };
 
         // 1. Seller B calling retry-unlock on Seller A's kiosk/session -> 404 Not Found
         using var clientB = CreateClient([fA.HardwareId, fB.HardwareId], role: "SELLER", userId: fB.Actor, sellerId: fB.Seller);
-        var respWrongSeller = await clientB.PostAsJsonAsync(routeA, payload);
+        var respWrongSeller = await PostSellerRetryAsync(clientB, fA, payload);
         Assert.Equal(HttpStatusCode.NotFound, respWrongSeller.StatusCode);
 
         // 2. Anonymous caller -> 401 Unauthorized
         using var clientAnon = CreateClient([fA.HardwareId]);
-        var respAnon = await clientAnon.PostAsJsonAsync(routeA, payload);
+        var respAnon = await PostSellerRetryAsync(clientAnon, fA, payload);
         Assert.Equal(HttpStatusCode.Unauthorized, respAnon.StatusCode);
 
         // 3. Customer caller with valid customer identity on seller route -> 403 Forbidden
@@ -500,7 +516,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
             await custCmd.ExecuteNonQueryAsync();
         }
         using var clientCust = CreateClient([fA.HardwareId], role: "CUSTOMER", userId: customerId);
-        var respCust = await clientCust.PostAsJsonAsync(routeA, payload);
+        var respCust = await PostSellerRetryAsync(clientCust, fA, payload);
         Assert.Equal(HttpStatusCode.Forbidden, respCust.StatusCode);
     }
 
@@ -511,8 +527,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         // Hardware key missing from KeyRing (provisioned with unrelated key) -> 503 Service Unavailable
         using var clientMissingKey = CreateClient(["OTHER_PROVISIONED_HW"], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await clientMissingKey.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(clientMissingKey, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
     }
@@ -524,8 +539,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync(supportsManualRetry: false);
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
     }
@@ -537,8 +551,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync(withSnapshots: false);
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
     }
@@ -550,8 +563,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync(slotStatus: "STOCKED");
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
 
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        var resp = await client.PostAsJsonAsync(route, new { requestId = Guid.NewGuid() });
+        var resp = await PostSellerRetryAsync(client, f, new { requestId = Guid.NewGuid() });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
     }
@@ -651,8 +663,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync();
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
         var requestId = Guid.NewGuid();
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(route, new { requestId })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostSellerRetryAsync(client, f, new { requestId })).StatusCode);
 
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
@@ -711,8 +722,7 @@ public sealed class ManualUnlockRetryRequestTests(ApiFactory factory) : IClassFi
         var f = await SetupSellerSessionAsync();
         using var client = CreateClient([f.HardwareId], role: "SELLER", userId: f.Actor, sellerId: f.Seller);
         var requestId = Guid.NewGuid();
-        var route = $"/api/me/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-sessions/{f.Session}/retry-unlock";
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(route, new { requestId })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostSellerRetryAsync(client, f, new { requestId })).StatusCode);
 
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();

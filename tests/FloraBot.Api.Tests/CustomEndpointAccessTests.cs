@@ -154,6 +154,13 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     private static Access[] BuildMatrix()
     {
         var entries = new List<Access>();
+        Add(["SELLER"], "POST", "/api/me/maintenance-access", "/api/me/inventory-tasks", "/api/me/technical-repairs/{taskId:guid}/approve");
+        Add(["SELLER"], "GET", "/api/me/technical-repairs");
+        Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/inventory-maintenance");
+        Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/inventory-maintenance/access");
+        Add(["TECHNICIAN"], "POST", "/api/staff/tasks/{taskId:guid}/repair-access");
+        Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/maintenance-access/pending");
+        Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/maintenance-access/{id:guid}/confirm");
         const string maintenance = "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions";
         const string session = maintenance + "/{sessionId:guid}";
         Add(["SELLER"], "POST", maintenance, session + "/check", session + "/open-next",

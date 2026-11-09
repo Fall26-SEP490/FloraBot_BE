@@ -259,9 +259,21 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         return new(kiosk, slot, actor, seller, assignmentActive, cap, session);
     }
 
-    public async Task<IResult> StartSessionAsync(
+    private static async Task<bool> CanOperateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        MaintenanceLockedContext auth, Guid sessionId, string action, CancellationToken ct)
+    {
+        if (auth.Actor.Status != "ACTIVE") return false;
+        if (auth.Actor.Role == "SELLER") return true;
+        if (auth.Actor.Role != "SELLER_STAFF") return false;
+        var task = await StaffInventoryTasks.LoadAsync(connection, transaction, sessionId, auth.Actor.Id, auth.Seller.Id, ct);
+        return task is { Status: "IN_PROGRESS" } && task.KioskId == auth.Kiosk.Id
+            && task.SlotId == auth.Slot.Id && task.Action == action;
+    }
+
+    internal async Task<IResult> StartSessionAsync(
         Guid kioskId, Guid slotId, Guid actorId, Guid sellerId,
-        StartSlotMaintenanceRequest input, CancellationToken ct)
+        StartSlotMaintenanceRequest input, CancellationToken ct,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
     {
         if (input.Id == Guid.Empty)
             return Results.Problem(statusCode: 400, detail: "Cần Id hợp lệ cho phiên bảo trì.");
@@ -282,13 +294,24 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
+            var verified = await confirmAccess(connection, transaction, ct);
+            if (verified != MaintenanceAccessVerification.Valid)
+            {
+                if (verified == MaintenanceAccessVerification.Invalid)
+                {
+                    await outbox.CommitAsync(ct);
+                    return Results.Problem(statusCode: 400, detail: "Mã xác nhận không hợp lệ.");
+                }
+                return Results.NotFound();
+            }
+
             // Lock kiosk -> slot -> actor/seller/assignment in uniform order
             var auth = await LoadAndLockContextAsync(connection, transaction, kioskId, slotId, sellerId, actorId, sessionId: null, ct);
             if (auth is null) return Results.NotFound();
 
             var isShopAuthorized = auth.Seller.CanMaintain(action == MaintenanceAction.Remove);
 
-            if (auth.Actor.Status != "ACTIVE" || auth.Actor.Role != "SELLER" || !isShopAuthorized)
+            if (!isShopAuthorized || !await CanOperateAsync(connection, transaction, auth, input.Id, actionUpper, ct))
                 return Results.Forbid();
 
             if (!auth.AssignmentActive)
@@ -349,6 +372,8 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                         reader.IsDBNull(21) ? null : reader.GetDateTime(21),
                         Convert.ToInt64(reader.GetValue(22)));
 
+                    await reader.CloseAsync();
+                    await outbox.CommitAsync(ct);
                     return Results.Ok(ToResponse(row));
                 }
             }
@@ -658,8 +683,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         }
     }
 
-    public async Task<IResult> OpenNextAsync(
-        Guid kioskId, Guid slotId, Guid sessionId, Guid actorId, Guid sellerId, CancellationToken ct)
+    internal async Task<IResult> OpenNextAsync(
+        Guid kioskId, Guid slotId, Guid sessionId, Guid actorId, Guid sellerId, CancellationToken ct,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
     {
         await using var connection = await data.OpenConnectionAsync(ct);
         using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
@@ -667,6 +693,17 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
+            var verified = await confirmAccess(connection, transaction, ct);
+            if (verified != MaintenanceAccessVerification.Valid)
+            {
+                if (verified == MaintenanceAccessVerification.Invalid)
+                {
+                    await outbox.CommitAsync(ct);
+                    return Results.Problem(statusCode: 400, detail: "Mã xác nhận không hợp lệ.");
+                }
+                return Results.NotFound();
+            }
+
             var auth = await LoadAndLockContextAsync(connection, transaction, kioskId, slotId, sellerId, actorId, sessionId, ct);
             if (auth is null || auth.Session is null) return Results.NotFound();
 
@@ -678,7 +715,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             if (s.ExpiresAt <= now.UtcDateTime)
                 return Results.Problem(statusCode: 409, detail: "Phiên bảo trì đã hết hạn. Vui lòng kiểm tra tủ.");
 
-            if (auth.Actor.Status != "ACTIVE" || auth.Actor.Role != "SELLER" || auth.Seller.Status != "ACTIVE" || !auth.AssignmentActive)
+            if (auth.Seller.Status != "ACTIVE" || !auth.AssignmentActive || !await CanOperateAsync(connection, transaction, auth, s.Id, s.Action, ct))
                 return Results.Forbid();
 
             // Recheck kiosk online & fresh heartbeat (fail-closed immediately)
@@ -782,9 +819,10 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         }
     }
 
-    public async Task<IResult> OpenForCheckAsync(
+    internal async Task<IResult> OpenForCheckAsync(
         Guid kioskId, Guid slotId, Guid sessionId, Guid actorId, Guid sellerId,
-        OpenForCheckRequest input, CancellationToken ct)
+        OpenForCheckRequest input, CancellationToken ct,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
     {
         if (string.IsNullOrWhiteSpace(input.Reason) || input.Reason.Trim().Length is < 5 or > 500)
             return Results.Problem(statusCode: 400, detail: "Lý do mở kiểm tra phải từ 5 đến 500 ký tự.");
@@ -798,6 +836,17 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
+            var verified = await confirmAccess(connection, transaction, ct);
+            if (verified != MaintenanceAccessVerification.Valid)
+            {
+                if (verified == MaintenanceAccessVerification.Invalid)
+                {
+                    await outbox.CommitAsync(ct);
+                    return Results.Problem(statusCode: 400, detail: "Mã xác nhận không hợp lệ.");
+                }
+                return Results.NotFound();
+            }
+
             var auth = await LoadAndLockContextAsync(connection, transaction, kioskId, slotId, sellerId, actorId, sessionId, ct);
             if (auth is null || auth.Session is null) return Results.NotFound();
 
@@ -810,7 +859,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
             var isShopAuthorized = auth.Seller.CanMaintain(s.Action == "REMOVE");
 
-            if (auth.Actor.Status != "ACTIVE" || auth.Actor.Role != "SELLER" || !isShopAuthorized || !auth.AssignmentActive)
+            if (!isShopAuthorized || !auth.AssignmentActive || !await CanOperateAsync(connection, transaction, auth, s.Id, s.Action, ct))
                 return Results.Forbid();
 
             // Recheck kiosk online & fresh heartbeat
@@ -1191,7 +1240,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         var isShopAuthorized = auth.Seller.CanMaintain(s.Action == "REMOVE");
 
         // Recheck seller/actor/assignment revocation under locks
-        if (auth.Actor.Status != "ACTIVE" || auth.Actor.Role != "SELLER" || !isShopAuthorized || !auth.AssignmentActive)
+        if (!isShopAuthorized || !auth.AssignmentActive || !await CanOperateAsync(connection, transaction, auth, s.Id, s.Action, ct))
         {
             if (s.Stage != "NeedsInspection")
             {
@@ -1610,23 +1659,8 @@ public static class SellerSlotMaintenanceEndpoints
 {
     public static void MapSellerSlotMaintenance(this WebApplication app)
     {
-        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions", async (
-            Guid kioskId, Guid slotId, [FromBody] StartSlotMaintenanceRequest input,
-            HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
-        {
-            http.Response.Headers.CacheControl = "no-store";
-            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId) ||
-                !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
-                return Results.Unauthorized();
-            return await service.StartSessionAsync(kioskId, slotId, actorId, sellerId, input, ct);
-        })
-        .RequireAuthorization("Seller")
-        .WithTags("KioskOps")
-        .WithSummary("Bắt đầu phiên bảo trì tự phục vụ cho ô tủ (Load, Remove, Replace)")
-        .WithDescription("Khóa ô chuyển sang LOCKED, phát lệnh SELLER_ACCESS và thiết lập phiên bảo trì.")
-        .Produces<SlotMaintenanceSessionResponse>()
-        .ProducesProblem(400).ProducesProblem(409)
-        .Produces(401).Produces(403).Produces(404);
+        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions", (Guid kioskId, Guid slotId) => Results.Problem(statusCode: 409, detail: "Hãy xác nhận mã mở ô tại kiosk."))
+            .RequireAuthorization("Seller").WithTags("KioskOps").ProducesProblem(409);
 
         app.MapGet("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}", async (
             Guid kioskId, Guid slotId, Guid sessionId,
@@ -1673,39 +1707,11 @@ public static class SellerSlotMaintenanceEndpoints
         .Produces<SlotMaintenanceSessionResponse>()
         .Produces(401).Produces(403).Produces(404);
 
-        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/open-next", async (
-            Guid kioskId, Guid slotId, Guid sessionId,
-            HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
-        {
-            http.Response.Headers.CacheControl = "no-store";
-            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId) ||
-                !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
-                return Results.Unauthorized();
-            return await service.OpenNextAsync(kioskId, slotId, sessionId, actorId, sellerId, ct);
-        })
-        .RequireAuthorization("Seller")
-        .WithTags("KioskOps")
-        .WithSummary("Mở cửa bước tiếp theo (nạp hoa mới) trong quy trình đổi hoa REPLACE")
-        .Produces<SlotMaintenanceSessionResponse>()
-        .ProducesProblem(409)
-        .Produces(401).Produces(403).Produces(404);
+        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/open-next", (Guid kioskId, Guid slotId, Guid sessionId) => Results.Problem(statusCode: 409, detail: "Hãy xác nhận mã mở ô tại kiosk."))
+            .RequireAuthorization("Seller").WithTags("KioskOps").ProducesProblem(409);
 
-        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/open-for-check", async (
-            Guid kioskId, Guid slotId, Guid sessionId, [FromBody] OpenForCheckRequest input,
-            HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
-        {
-            http.Response.Headers.CacheControl = "no-store";
-            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId) ||
-                !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
-                return Results.Unauthorized();
-            return await service.OpenForCheckAsync(kioskId, slotId, sessionId, actorId, sellerId, input, ct);
-        })
-        .RequireAuthorization("Seller")
-        .WithTags("KioskOps")
-        .WithSummary("Mở cửa kiểm tra ô trong trạng thái NeedsInspection")
-        .Produces<SlotMaintenanceSessionResponse>()
-        .ProducesProblem(400).ProducesProblem(409)
-        .Produces(401).Produces(403).Produces(404);
+        app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/open-for-check", (Guid kioskId, Guid slotId, Guid sessionId) => Results.Problem(statusCode: 409, detail: "Hãy xác nhận mã mở ô tại kiosk."))
+            .RequireAuthorization("Seller").WithTags("KioskOps").ProducesProblem(409);
 
         app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/report-issue", async (
             Guid kioskId, Guid slotId, Guid sessionId, [FromBody] ReportIssueRequest input,

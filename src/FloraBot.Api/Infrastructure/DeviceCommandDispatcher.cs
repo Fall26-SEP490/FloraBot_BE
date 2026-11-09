@@ -15,7 +15,14 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         AND k.hardware_id=ANY(@hardware)
         AND (
             (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP)
-            OR (t.purpose='SELLER_ACCESS' AND NOT EXISTS (SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms WHERE sms.current_cmd_id=t.cmd_id))
+            OR (t.purpose='SELLER_ACCESS'
+                AND NOT EXISTS (SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms WHERE sms.current_cmd_id=t.cmd_id)
+                AND NOT EXISTS (SELECT 1 FROM kiosk_ops.technical_repair_commands repair WHERE repair.cmd_id=t.cmd_id))
+            OR (t.purpose='SELLER_ACCESS' AND EXISTS (
+                SELECT 1 FROM kiosk_ops.technical_repair_commands repair
+                CROSS JOIN LATERAL flow.technical_repair_scope(repair.task_id,t.issued_to_user_id) scope
+                WHERE repair.cmd_id=t.cmd_id AND scope.kiosk_id=k.id AND scope.slot_id=s.id
+            ))
             OR (t.purpose='SELLER_ACCESS' AND EXISTS (
                 SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms
                 JOIN identity.users u ON u.id=sms.actor_id
@@ -24,7 +31,13 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
                 JOIN kiosk_ops.slot_sensor_capabilities cap ON cap.slot_id=sms.slot_id AND cap.kiosk_id=s.kiosk_id AND cap.relay_channel=s.relay_channel
                 WHERE sms.current_cmd_id=t.cmd_id AND sms.slot_id=s.id AND sms.kiosk_id=k.id
                   AND t.issued_to_user_id=sms.actor_id
-                  AND u.role='SELLER' AND u.seller_id=sms.seller_id AND u.status='ACTIVE'
+                  AND (u.role='SELLER' OR (u.role='SELLER_STAFF' AND EXISTS (
+                      SELECT 1 FROM kiosk_ops.staff_tasks task
+                      JOIN kiosk_ops.staff_inventory_tasks inventory ON inventory.task_id=task.id
+                      WHERE task.id=sms.id AND task.assignee_id=u.id AND task.kind='DELIVERY'
+                        AND task.status='IN_PROGRESS' AND task.kiosk_id=k.id AND task.seller_id=sms.seller_id
+                        AND inventory.slot_id=s.id AND inventory.action=sms.action
+                  ))) AND u.seller_id=sms.seller_id AND u.status='ACTIVE'
                   AND (sel.status='ACTIVE'
                        OR (sel.status='PAST_DUE' AND sms.action='REMOVE' AND sms.intended_stage='AwaitRemoval'))
                   AND k.seller_id=sms.seller_id AND s.current_seller_id=sms.seller_id

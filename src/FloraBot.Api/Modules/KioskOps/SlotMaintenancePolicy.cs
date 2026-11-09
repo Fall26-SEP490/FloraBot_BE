@@ -94,7 +94,7 @@ public static class SlotMaintenancePolicy
         if (context.SellerId == Guid.Empty) return new(false, null, null, "InvalidSellerId");
         if (!context.IsActorActive) return new(false, null, null, "ActorNotActive");
         if (!context.IsShopActive) return new(false, null, null, "ShopNotActive");
-        if (context.ActorRole != "SELLER") return new(false, null, null, "UnauthorizedRole");
+        if (context.ActorRole is not ("SELLER" or "SELLER_STAFF")) return new(false, null, null, "UnauthorizedRole");
         if (context.SlotCurrentSellerId != context.SellerId) return new(false, null, null, "SlotNotOwnedBySeller");
         if (context.KioskSellerId != context.SellerId) return new(false, null, null, "KioskNotOwnedBySeller");
         if (!context.HasActiveAssignment) return new(false, null, null, "SlotAssignmentInactive");

@@ -195,11 +195,24 @@ public static class StaffTasks
     private static async Task<IResult> Transition(Guid taskId, TransitionStaffTask input, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
     {
         if (input.Version < 1 || !ValidReport(input.Report) || input.Status is not ("IN_PROGRESS" or "SUBMITTED" or "COMPLETED" or "CANCELLED")) return Results.BadRequest();
-        await using var command = data.CreateCommand("SELECT flow.transition_staff_task(@id,@actor,@version,@status,@report)");
+        await using var command = data.CreateCommand("""
+            SELECT CASE WHEN @status='COMPLETED' AND EXISTS (
+                SELECT 1 FROM kiosk_ops.technical_repair_access g WHERE g.task_id=@id)
+                THEN flow.accept_technical_repair(@id,@actor,@version,@report)
+                ELSE flow.transition_staff_task(@id,@actor,@version,@status,@report)
+            END
+            WHERE (@status NOT IN ('SUBMITTED', 'COMPLETED') OR NOT EXISTS (
+                SELECT 1 FROM kiosk_ops.staff_inventory_tasks inventory
+                LEFT JOIN kiosk_ops.slot_maintenance_sessions session ON session.id=inventory.task_id
+                WHERE inventory.task_id=@id AND session.stage IS DISTINCT FROM 'Completed'
+            )) AND (@status<>'SUBMITTED' OR NOT EXISTS (
+                SELECT 1 FROM kiosk_ops.staff_tasks task JOIN ordering.disputes incident ON incident.id=task.incident_id
+                WHERE task.id=@id AND task.kind='INCIDENT' AND incident.slot_id IS NOT NULL))
+            """);
         command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("actor", Actor(http));
         command.Parameters.AddWithValue("version", input.Version); command.Parameters.AddWithValue("status", input.Status);
         command.Parameters.AddWithValue("report", input.Report.Trim());
-        try { var version = (int)(await command.ExecuteScalarAsync(ct))!; return Results.Ok(new StaffTaskResult(taskId, version)); }
+        try { return await command.ExecuteScalarAsync(ct) is int version ? Results.Ok(new StaffTaskResult(taskId, version)) : Results.Conflict(); }
         catch (PostgresException ex) when (Handled(ex)) { return Problem(ex); }
     }
 

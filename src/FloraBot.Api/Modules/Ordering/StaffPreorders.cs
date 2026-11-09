@@ -43,13 +43,16 @@ public static class StaffPreorders
             {
                 var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
                 await using var command = new NpgsqlCommand(
-                    "SELECT flow.staff_fulfill_preorder(@task,@request,@actor,@slot,@qr)", connection, transaction);
+                    """
+                    SELECT flow.staff_fulfill_preorder(@task,@request,@actor,@slot,@qr)
+                    WHERE NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)
+                    """, connection, transaction);
                 command.Parameters.AddWithValue("task", taskId);
                 command.Parameters.AddWithValue("request", requestId);
                 command.Parameters.AddWithValue("actor", Actor(http));
                 command.Parameters.AddWithValue("slot", input.SlotId);
                 command.Parameters.AddWithValue("qr", input.QrCode.Trim());
-                var bouquetId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+                if (await command.ExecuteScalarAsync(ct) is not Guid bouquetId) return Results.NotFound();
                 await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, ct);
                 await outbox.CommitAsync(ct);
                 return Results.Ok(new StaffPreorderFulfillResult(requestId, bouquetId));
@@ -79,6 +82,7 @@ public static class StaffPreorders
             SELECT seller_id,kiosk_id,status
             FROM kiosk_ops.staff_tasks
             WHERE id=@task AND assignee_id=@actor AND seller_id=@seller AND kind='DELIVERY'
+              AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)
             """))
         {
             task.Parameters.AddWithValue("task", taskId);

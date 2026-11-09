@@ -11,7 +11,7 @@ public sealed class StaffIncidentResolutionTests(ApiFactory factory) : IClassFix
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ScopedResolutionRestoresSlotAndSubmitsReportWithoutPayingRefund(bool refundPending)
+    public async Task ScopedResolutionWithoutRepairEvidenceKeepsSlotFaultedAndRefundUnchanged(bool refundPending)
     {
         using var scope = factory.Services.CreateScope(); var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
         var staffId = Guid.NewGuid(); var otherId = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var slot = Guid.NewGuid();
@@ -55,33 +55,21 @@ public sealed class StaffIncidentResolutionTests(ApiFactory factory) : IClassFix
         (await staff.PostAsJsonAsync($"/api/staff/tasks/{task}/transition", new TransitionStaffTask(1, "IN_PROGRESS", "Started inspecting the faulty door"))).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(path, input with { Report = "short" })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input with { Version = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input)).StatusCode);
+        await using var verify = data.CreateCommand("SELECT status FROM kiosk_ops.slots WHERE id=@id");
+        verify.Parameters.AddWithValue("id", slot);
+        Assert.Equal("FAULT", await verify.ExecuteScalarAsync());
+        verify.CommandText = "SELECT status FROM ordering.disputes WHERE id=@id";
+        verify.Parameters["id"].Value = incident;
+        Assert.Equal("OPEN", await verify.ExecuteScalarAsync());
+        verify.CommandText = "SELECT status FROM kiosk_ops.staff_tasks WHERE id=@id";
+        verify.Parameters["id"].Value = task;
+        Assert.Equal("IN_PROGRESS", await verify.ExecuteScalarAsync());
         if (refundPending)
         {
-            Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync(path, input)).StatusCode);
-            await using var check = data.CreateCommand("SELECT status FROM payment.payments WHERE id=@id"); check.Parameters.AddWithValue("id", refund);
-            Assert.Equal("PENDING", await check.ExecuteScalarAsync());
-            check.CommandText = "SELECT status FROM kiosk_ops.staff_tasks WHERE id=@id"; check.Parameters["id"].Value = task;
-            Assert.Equal("IN_PROGRESS", await check.ExecuteScalarAsync());
-            check.CommandText = "SELECT status FROM kiosk_ops.slots WHERE id=@id"; check.Parameters["id"].Value = slot;
-            Assert.Equal("FAULT", await check.ExecuteScalarAsync());
-            return;
+            verify.CommandText = "SELECT status FROM payment.payments WHERE id=@id";
+            verify.Parameters["id"].Value = refund;
+            Assert.Equal("PENDING", await verify.ExecuteScalarAsync());
         }
-        var responses = await Task.WhenAll(staff.PostAsJsonAsync(path, input), staff.PostAsJsonAsync(path, input));
-        foreach (var response in responses) response.EnsureSuccessStatusCode();
-        Assert.Equal(3, (await responses[0].Content.ReadFromJsonAsync<StaffIncidentResolutionResult>())!.Version);
-        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input with { Report = "Different repair report must not overwrite" })).StatusCode);
-        Assert.Equal(HttpStatusCode.Conflict, (await staff.PostAsJsonAsync(path, input with { Id = Guid.NewGuid() })).StatusCode);
-        await using var verify = data.CreateCommand("SELECT status FROM kiosk_ops.slots WHERE id=@id"); verify.Parameters.AddWithValue("id", slot);
-        Assert.Equal("FREE", await verify.ExecuteScalarAsync());
-        verify.CommandText = "SELECT status FROM ordering.disputes WHERE id=@id"; verify.Parameters["id"].Value = incident;
-        Assert.Equal("RESOLVED_FIXED", await verify.ExecuteScalarAsync());
-        verify.CommandText = "SELECT status FROM kiosk_ops.staff_tasks WHERE id=@id"; verify.Parameters["id"].Value = task;
-        Assert.Equal("SUBMITTED", await verify.ExecuteScalarAsync());
-        verify.CommandText = "SELECT count(*) FROM notify.audit_logs WHERE entity_id=@id AND action='STAFF_INCIDENT_RESOLVED'";
-        Assert.Equal(1L, await verify.ExecuteScalarAsync());
-        var detail = (await staff.GetFromJsonAsync<StaffTaskDetail>($"/api/staff/tasks/{task}"))!;
-        Assert.Equal("STAFF_INCIDENT_RESOLVED", detail.History[0].Action);
-        (await admin.PostAsJsonAsync($"/api/admin/staff-tasks/{task}/transition", new TransitionStaffTask(3, "COMPLETED", "Repair report reviewed and approved"))).EnsureSuccessStatusCode();
-        (await staff.PostAsJsonAsync(path, input)).EnsureSuccessStatusCode();
     }
 }

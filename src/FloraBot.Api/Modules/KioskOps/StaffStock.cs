@@ -27,7 +27,7 @@ public static class StaffStock
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
             try
             {
-                await using (var authCheck = new NpgsqlCommand("SELECT 1 WHERE flow.verify_staff_delivery_task(@task, @actor) IS NOT NULL", connection, transaction))
+                await using (var authCheck = new NpgsqlCommand("SELECT 1 WHERE flow.verify_staff_delivery_task(@task, @actor) IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)", connection, transaction))
                 {
                     authCheck.Parameters.AddWithValue("task", taskId);
                     authCheck.Parameters.AddWithValue("actor", actor);

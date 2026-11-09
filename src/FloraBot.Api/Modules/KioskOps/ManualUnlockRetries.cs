@@ -133,9 +133,10 @@ public sealed class ManualUnlockRetryService(NpgsqlDataSource data, ICapPublishe
             ackOccurredAt, hasPendingOrDoor);
     }
 
-    public async Task<IResult> RequestSellerRetryAsync(
+    internal async Task<IResult> RequestSellerRetryAsync(
         Guid kioskId, Guid slotId, Guid sessionId, ManualUnlockRetryRequest input,
-        HttpContext http, CancellationToken ct)
+        Guid actorId, HttpContext http, CancellationToken ct,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
     {
         http.Response.Headers.CacheControl = "no-store";
 
@@ -145,15 +146,21 @@ public sealed class ManualUnlockRetryService(NpgsqlDataSource data, ICapPublishe
         if (input.RequestId == Guid.Empty)
             return Results.Problem(statusCode: 400, detail: "RequestId is required.");
 
-        var subClaim = http.User.FindFirstValue("sub");
-        if (string.IsNullOrEmpty(subClaim) || !Guid.TryParse(subClaim, out var actorId) || actorId == Guid.Empty)
-            return Results.Unauthorized();
-
         try
         {
             await using var connection = await data.OpenConnectionAsync(ct);
             using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
+            var verified = await confirmAccess(connection, transaction, ct);
+            if (verified != MaintenanceAccessVerification.Valid)
+            {
+                if (verified == MaintenanceAccessVerification.Invalid)
+                {
+                    await outbox.CommitAsync(ct);
+                    return Results.Problem(statusCode: 400, detail: "Mã xác nhận không hợp lệ.");
+                }
+                return Results.NotFound();
+            }
             var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
 
             await using var setLockTimeout = new NpgsqlCommand("SET LOCAL lock_timeout = '5s'", connection, transaction);
@@ -462,16 +469,8 @@ public static class ManualUnlockRetries
     public static IEndpointRouteBuilder MapManualUnlockRetries(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions/{sessionId:guid}/retry-unlock",
-            async (Guid kioskId, Guid slotId, Guid sessionId, [FromBody] ManualUnlockRetryRequest input,
-                HttpContext http, ManualUnlockRetryService service, CancellationToken ct) =>
-            {
-                http.Response.Headers.CacheControl = "no-store";
-                return await service.RequestSellerRetryAsync(kioskId, slotId, sessionId, input, http, ct);
-            })
-            .RequireAuthorization("Seller")
-            .RequireRateLimiting("auth")
-            .Produces<ManualUnlockRetryResponse>()
-            .WithTags("KioskOps");
+            (Guid kioskId, Guid slotId, Guid sessionId) => Results.Problem(statusCode: 409, detail: "Hãy xác nhận mã mở ô tại kiosk."))
+            .RequireAuthorization("Seller").RequireRateLimiting("auth").WithTags("KioskOps").ProducesProblem(409);
 
         app.MapPost("/api/kiosks/{kioskId:guid}/pickup/orders/{orderId:guid}/commands/{cmdId:guid}/retry-unlock",
             async (Guid kioskId, Guid orderId, Guid cmdId, [FromBody] ManualUnlockRetryRequest input,

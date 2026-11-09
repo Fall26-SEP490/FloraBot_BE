@@ -157,6 +157,7 @@ if (builder.Configuration.GetValue("JOBS_ENABLED", !builder.Environment.IsEnviro
 var protection = builder.Services.AddDataProtection();
 if (!string.IsNullOrWhiteSpace(builder.Configuration["DATA_PROTECTION_KEYS_PATH"]))
     protection.PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["DATA_PROTECTION_KEYS_PATH"]!));
+builder.Services.AddSingleton(new MaintenanceAccessStore(HMACSHA256.HashData(Encoding.UTF8.GetBytes(signingKey), "florabot:maintenance-otp:v1"u8)));
 builder.Services.AddProblemDetails();
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 65536);
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow);
@@ -234,6 +235,10 @@ builder.Services.AddRateLimiter(options =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(10), QueueLimit = 0 }));
     options.AddPolicy("pickup-otp", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("maintenance-code-issue", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("sub") ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("maintenance-code-verify", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("advisor", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     foreach (var name in new[] { "auth", "receipt" })
@@ -363,6 +368,9 @@ app.MapEsp32Provisioning();
 app.MapSlotLayoutRequests();
 app.MapSellerSlotBouquets();
 app.MapSellerSlotMaintenance();
+app.MapMaintenanceAccess();
+app.MapStaffInventoryTasks();
+app.MapTechnicalRepairAccess();
 app.MapManualUnlockRetryEnrollment();
 app.MapManualUnlockRetries();
 app.MapPayOs();
