@@ -155,6 +155,13 @@ builder.Services.AddSingleton<JobRunner>();
 if (builder.Configuration.GetValue("JOBS_ENABLED", !builder.Environment.IsEnvironment("Testing")))
     builder.Services.AddHostedService<FloraJobs>();
 var protection = builder.Services.AddDataProtection();
+// Versioned publish directories change ContentRootPath. Keep the Data Protection
+// application discriminator configurable so deployments can pin the legacy value
+// before switching folders; changing it blindly makes existing protected payloads
+// (bank accounts, device secrets, evidence tokens) unreadable.
+var dataProtectionApplicationName = builder.Configuration["DATA_PROTECTION_APPLICATION_NAME"];
+if (!string.IsNullOrWhiteSpace(dataProtectionApplicationName))
+    protection.SetApplicationName(dataProtectionApplicationName.Trim());
 if (!string.IsNullOrWhiteSpace(builder.Configuration["DATA_PROTECTION_KEYS_PATH"]))
     protection.PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["DATA_PROTECTION_KEYS_PATH"]!));
 builder.Services.AddSingleton(new MaintenanceAccessStore(HMACSHA256.HashData(Encoding.UTF8.GetBytes(signingKey), "florabot:maintenance-otp:v1"u8)));
@@ -258,6 +265,10 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.Wi
 // Schema export resolves endpoint descriptions only, with no DB initialization or background jobs.
 if (exportFile is not null) builder.Services.RemoveAll<IHostedService>();
 var app = builder.Build();
+var dataProtectionDiscriminator = app.Services
+    .GetRequiredService<Microsoft.Extensions.Options.IOptions<DataProtectionOptions>>()
+    .Value.ApplicationDiscriminator;
+app.Logger.LogInformation("Data Protection application discriminator: {ApplicationDiscriminator}", dataProtectionDiscriminator);
 app.Use(async (http, next) =>
 {
     // A 5,000-row statement can exceed the default 64 KiB even after field normalization.
