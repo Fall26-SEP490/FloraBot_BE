@@ -64,7 +64,9 @@ public static class WebOrders
                 command.Parameters.AddWithValue("bouquet", NpgsqlDbType.Uuid, (object?)input.BouquetId ?? DBNull.Value);
                 command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
             }, ct);
-        }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth").Produces<FlowResult>();
+        }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth").Produces<FlowResult>()
+          .ProducesProblem(StatusCodes.Status409Conflict)
+          .WithDescription("Chỉ nhận preorder CUSTOM theo mẫu hoa đang ACTIVE và còn tồn tại shop. Nếu quantity = 0, trả 409 với detail PREORDER_PRODUCT_OUT_OF_STOCK. Số lượng không bị giữ chỗ khi tạo yêu cầu; được trừ khi Seller/nhân viên nạp hoa vào kiosk.");
         app.MapPost("/api/member/preorders/{requestId:guid}/accept", async (Guid requestId, WebAcceptInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (!await Owns(source, requestId, User(http), null, ct)) return Results.NotFound();
