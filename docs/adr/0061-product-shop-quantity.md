@@ -31,3 +31,9 @@ conflict. Product metadata, count changes and audit remain transactional.
 No change to public flow signatures, sale/payment timing, kiosk zone selection,
 or existing role/tenant/lease/slot checks. Deploy the additive migration before
 the new API binary; the API does not apply migrations on startup.
+
+The public catalog exposes a boolean `preorderAvailable`, not the shop's exact
+quantity. A new CUSTOM preorder is accepted only while quantity is positive;
+zero stock returns HTTP 409. Creating the request does not reserve a bouquet,
+and existing idempotent retries remain valid. Quantity is deducted at the
+existing STOCK_IN event when the bouquet is loaded into a kiosk.

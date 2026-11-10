@@ -47,6 +47,12 @@ active status during the atomic decrement. Seller stocking uses `FOR KEY SHARE`
 for its product ownership lookup; other catalog resource checks retain
 `FOR UPDATE`.
 
+The public shop catalog exposes `preorderAvailable` rather than the exact shop
+quantity. New `CUSTOM` preorder requests are rejected with HTTP 409 and detail
+`PREORDER_PRODUCT_OUT_OF_STOCK` when the product has no shop stock. This check
+does not reserve stock: the physical count is decremented only when a bouquet is
+loaded into a kiosk, as described above.
+
 Deploy the additive migration before the API binary through the normal
 migration workflow. Do not recreate the database or initialize historical shop
 stock as part of deployment.
