@@ -956,7 +956,7 @@ public static partial class KioskApplications
         }).RequireAuthorization("OperationsManager").WithTags("KioskOnboarding").Produces<EnrollKioskResponse>(201)
           .WithDescription("Kiosk được tạo OFFLINE. Khi bật tự cấp ESP32, yêu cầu cấp MQTT/HMAC được lưu cùng transaction; provisioning PENDING/PROVISIONING/READY/FAILED tách biệt trạng thái ONLINE. Không trả bí mật ESP32 trong response đăng ký.");
 
-        // Operations Manager: remove a kiosk that was enrolled by mistake and has never been used.
+        // Operations Manager: archive an offline kiosk after its rental, stock and pending work have ended.
         app.MapDelete("/api/operations/kiosks/{id:guid}", async (
             Guid id,
             HttpContext http,
@@ -967,7 +967,7 @@ public static partial class KioskApplications
         {
             await using var connection = await data.OpenConnectionAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            await using var command = new NpgsqlCommand("SELECT flow.delete_unassigned_kiosk(@id, @actor)", connection, transaction);
+            await using var command = new NpgsqlCommand("SELECT flow.archive_kiosk(@id, @actor)", connection, transaction);
             command.Parameters.AddWithValue("id", id);
             command.Parameters.AddWithValue("actor", Actor(http));
 
@@ -988,17 +988,17 @@ public static partial class KioskApplications
                     if (await reader.ReadAsync(ct))
                     {
                         if (reader.GetString(1) == "PROVISIONING")
-                            return Results.Problem(statusCode: 409, detail: "Thiết bị đang được cấp cấu hình. Hãy chờ hoàn tất rồi thử xóa lại.");
+                            return Results.Problem(statusCode: 409, detail: "Thiết bị đang được cấp cấu hình. Hãy chờ hoàn tất rồi thử lưu trữ lại.");
                         provisionedHardware = reader.GetString(0);
                     }
                 }
-                var deleted = (bool)(await command.ExecuteScalarAsync(ct))!;
-                if (deleted && provisionedHardware is not null)
+                var archived = (bool)(await command.ExecuteScalarAsync(ct))!;
+                if (archived && provisionedHardware is not null)
                     await mqttProvisioner.DisableAsync(id, provisionedHardware, ct);
                 await transaction.CommitAsync(ct);
-                if (deleted && provisionedHardware is not null)
+                if (archived && provisionedHardware is not null)
                     services.GetService<DeviceKeyRing>()?.RemoveDynamic(provisionedHardware);
-                return deleted
+                return archived
                     ? Results.NoContent()
                     : Results.NotFound(new ProblemDetails { Title = "Không tìm thấy", Detail = "Kiosk không tồn tại." });
             }
@@ -1006,12 +1006,31 @@ public static partial class KioskApplications
             {
                 return Results.Problem(
                     statusCode: 409,
-                    title: "Không thể xóa kiosk",
-                    detail: ex.MessageText);
+                    title: "Kiosk chưa đủ điều kiện lưu trữ",
+                    detail: ex.MessageText switch
+                    {
+                        "KIOSK_ARCHIVE_MUST_BE_OFFLINE" => "Chỉ lưu trữ được kiosk đang OFFLINE.",
+                        "KIOSK_ARCHIVE_SELLER_STILL_ASSIGNED" => "Kiosk vẫn còn Seller hoặc ô đang được gán. Hãy hoàn tất chấm dứt hợp đồng trước.",
+                        "KIOSK_ARCHIVE_SLOTS_NOT_EMPTY" => "Kiosk còn hoa, đơn giữ hoặc ô đang cần xử lý. Hãy làm trống và giải phóng tất cả ô trước.",
+                        "KIOSK_ARCHIVE_LEASE_STILL_ACTIVE" => "Kiosk còn kỳ thuê đang hoạt động hoặc chờ thanh toán.",
+                        "KIOSK_ARCHIVE_PENDING_PAYMENT" => "Kiosk còn khoản thanh toán thuê đang chờ xử lý.",
+                        "KIOSK_ARCHIVE_ONBOARDING_IN_PROGRESS" => "Kiosk còn hồ sơ đăng ký hoặc lắp đặt đang xử lý.",
+                        "KIOSK_ARCHIVE_TERMINATION_IN_PROGRESS" => "Yêu cầu chấm dứt hợp đồng của kiosk chưa hoàn tất.",
+                        "KIOSK_ARCHIVE_ACCESSORY_STOCK_REMAINS" => "Kiosk vẫn còn phụ kiện trong kho.",
+                        "KIOSK_ARCHIVE_PENDING_WORK" => "Kiosk còn sự cố hoặc công việc nhân viên chưa hoàn tất.",
+                        "KIOSK_ARCHIVE_PENDING_ORDER" => "Kiosk còn đơn hàng, đơn đặt trước hoặc thanh toán đang chờ.",
+                        "KIOSK_ARCHIVE_DEVICE_COMMAND_PENDING" => "Kiosk còn lệnh mở cửa đang xử lý.",
+                        _ => "Hãy xử lý các hợp đồng, hàng tồn, đơn hàng và công việc chưa hoàn tất rồi thử lại."
+                    });
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42501")
+            {
+                return Results.Problem(statusCode: 403, title: "Không có quyền lưu trữ kiosk",
+                    detail: "Chỉ Operations Manager đang hoạt động mới được lưu trữ kiosk.");
             }
             catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
             {
-                return Results.Problem(statusCode: 409, detail: "Kiosk đang được xử lý. Hãy tải lại rồi thử xóa lại.");
+                return Results.Problem(statusCode: 409, detail: "Kiosk đang được xử lý. Hãy tải lại rồi thử lưu trữ lại.");
             }
             catch (Esp32ProvisioningException ex)
             {
@@ -1021,7 +1040,8 @@ public static partial class KioskApplications
         })
         .RequireAuthorization("OperationsManager")
         .WithTags("KioskOnboarding")
-        .WithSummary("Xóa kiosk chưa bàn giao và chưa phát sinh dữ liệu vận hành")
+        .WithSummary("Lưu trữ kiosk OFFLINE đã kết thúc thuê")
+        .WithDescription("Lưu trữ mềm: chỉ Operations Manager được thao tác khi kiosk OFFLINE, không còn Seller/lease, tồn kho, đơn hàng hoặc công việc đang chờ. Kiosk được chuyển sang DISABLED; dữ liệu, đơn hàng, thanh toán và nhật ký lịch sử được giữ nguyên. Trả 409 nếu còn điều kiện chưa hoàn tất.")
         .Produces(204)
         .ProducesProblem(401)
         .ProducesProblem(403)
