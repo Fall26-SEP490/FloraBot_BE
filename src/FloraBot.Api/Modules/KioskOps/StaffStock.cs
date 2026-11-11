@@ -27,16 +27,27 @@ public static class StaffStock
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
             try
             {
-                await using (var authCheck = new NpgsqlCommand("SELECT 1 WHERE flow.verify_staff_delivery_task(@task, @actor) IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)", connection, transaction))
+                // Lock the assignment before the stock routine updates the same row.
+                await using (var scope = new NpgsqlCommand("""
+                    SELECT t.status,
+                           EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks i WHERE i.task_id=t.id),
+                           EXISTS (SELECT 1 FROM kiosk_ops.staff_stock_actions a
+                                   WHERE a.id=@operation AND a.task_id=t.id AND a.actor_id=u.id)
+                    FROM kiosk_ops.staff_tasks t
+                    JOIN identity.users u ON u.id=@actor AND u.seller_id=t.seller_id
+                    WHERE t.id=@task AND t.assignee_id=u.id AND t.kind='DELIVERY'
+                      AND u.role='SELLER_STAFF' AND u.status='ACTIVE'
+                    FOR UPDATE OF t FOR SHARE OF u
+                    """, connection, transaction))
                 {
-                    authCheck.Parameters.AddWithValue("task", taskId);
-                    authCheck.Parameters.AddWithValue("actor", actor);
-                    if (await authCheck.ExecuteScalarAsync(ct) is null)
-                    {
-                        await using var existsCmd = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.staff_tasks WHERE id = @task", connection, transaction);
-                        existsCmd.Parameters.AddWithValue("task", taskId);
-                        return await existsCmd.ExecuteScalarAsync(ct) is null ? Results.NotFound() : Results.Forbid();
-                    }
+                    scope.Parameters.AddWithValue("task", taskId);
+                    scope.Parameters.AddWithValue("actor", actor);
+                    scope.Parameters.AddWithValue("operation", input.Id);
+                    await using var reader = await scope.ExecuteReaderAsync(ct);
+                    if (!await reader.ReadAsync(ct)) return Results.NotFound();
+                    if (reader.GetBoolean(1)) return Results.Forbid();
+                    if (reader.GetString(0) != "IN_PROGRESS" && !reader.GetBoolean(2))
+                        return Results.BadRequest();
                 }
 
                 await using (var checkCap = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.slot_sensor_capabilities WHERE slot_id = @slot AND enabled = true", connection, transaction))
@@ -65,7 +76,9 @@ public static class StaffStock
                     _ => Results.Problem(statusCode: 400, detail: "Công việc, shop, sản phẩm hoặc ô tủ hiện không cho phép nạp hoa. Tải lại các lựa chọn.")
                 };
             }
-        }).RequireAuthorization("SellerStaff").Produces<StaffStockResult>();
+        }).RequireAuthorization("SellerStaff").Produces<StaffStockResult>()
+            .Produces(StatusCodes.Status400BadRequest).Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound).ProducesProblem(StatusCodes.Status409Conflict);
     }
 
     private static async Task<IResult> Read(Guid taskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
