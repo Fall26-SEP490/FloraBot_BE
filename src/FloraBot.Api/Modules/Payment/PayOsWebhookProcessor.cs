@@ -24,6 +24,7 @@ public static class PayOsWebhookProcessor
         bool isDirect = false;
         string? expectedAccount = null;
         Guid? pinnedChannelId = null;
+        string? pinnedReceiver = null;
 
         if (body.Data.ValueKind == JsonValueKind.Object &&
             body.Data.TryGetProperty("orderCode", out var codeProp) &&
@@ -34,7 +35,9 @@ public static class PayOsWebhookProcessor
             await using var chFind = chConn.CreateCommand();
             chFind.CommandText = """
                 SELECT (p.is_direct_receipt OR p.funding_provenance='SELLER_DIRECT'), p.channel_id,
-                       cv.secret_ref, cv.expected_bank_account, cv.expected_bank_bin, p.seller_id
+                       cv.secret_ref, cv.expected_bank_account, cv.expected_bank_bin, p.seller_id,
+                       cv.allow_virtual_accounts, cv.bound_credential_fingerprint, cv.verified_credential_fingerprint,
+                       g.receiver_account, g.verified_seller_channel_id
                 FROM payment.payments p
                 JOIN payment.gateway_orders g ON g.payment_id=p.id
                 LEFT JOIN payment.payment_channel_versions cv ON cv.id=p.channel_id
@@ -60,6 +63,17 @@ public static class PayOsWebhookProcessor
                         return Results.Problem(statusCode: 503, title: "Kênh thanh toán của người bán tạm thời không khả dụng.");
                     }
                     checksumKey = chConfig.Options.ChecksumKey;
+                    var boundFingerprint = chReader.IsDBNull(7) ? null : chReader.GetString(7);
+                    if (boundFingerprint is not null && !PayOsReceiverEvidence.MatchesFingerprint(chConfig.Options, boundFingerprint))
+                        return Results.Problem(statusCode: 503, title: "Thông tin xác thực kênh thanh toán đã thay đổi.");
+                    if (chReader.GetBoolean(6))
+                    {
+                        if (!PayOsReceiverEvidence.MatchesFingerprint(chConfig.Options, boundFingerprint) ||
+                            chReader.IsDBNull(8) || !PayOsReceiverEvidence.MatchesFingerprint(chConfig.Options, chReader.GetString(8)) ||
+                            chReader.IsDBNull(9) || chReader.IsDBNull(10) || chReader.GetGuid(10) != pinnedChannelId)
+                            return Results.BadRequest(new { message = "Chưa có bằng chứng người nhận cho giao dịch." });
+                        pinnedReceiver = chReader.GetString(9);
+                    }
                 }
             }
         }
@@ -110,9 +124,7 @@ public static class PayOsWebhookProcessor
                 return Results.BadRequest(new { message = "Tài khoản nhận tiền không hợp lệ." });
             }
 
-            if (!body.Data.TryGetProperty("accountNumber", out var accProp) ||
-                accProp.ValueKind != JsonValueKind.String ||
-                !string.Equals(accProp.GetString()?.Trim(), expectedAccount.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (!PayOsReceiverEvidence.ValidateSubsequent(body.Data, expectedAccount, pinnedReceiver, true))
             {
                 logger.LogWarning("Rejected direct payment webhook for order {OrderCode}: receiver account mismatch or missing", orderCode);
                 return Results.BadRequest(new { message = "Tài khoản nhận tiền không khớp." });

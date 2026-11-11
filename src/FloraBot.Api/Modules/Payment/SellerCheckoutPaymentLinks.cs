@@ -48,8 +48,11 @@ internal static class SellerCheckoutPaymentLinks
         int version;
         string secretRef, bankBin, account, state;
         string? accountName;
+        bool allowVirtualAccounts;
+        string? boundFingerprint, verifiedFingerprint;
         await using (var find = new NpgsqlCommand("""
-            SELECT id, version, secret_ref, state, expected_bank_bin, expected_bank_account, expected_bank_name
+            SELECT id, version, secret_ref, state, expected_bank_bin, expected_bank_account, expected_bank_name,
+                   allow_virtual_accounts, bound_credential_fingerprint, verified_credential_fingerprint
             FROM payment.payment_channel_versions
             WHERE seller_id=@seller AND (@channel IS NULL OR id=@channel)
             ORDER BY version DESC LIMIT 1
@@ -68,12 +71,21 @@ internal static class SellerCheckoutPaymentLinks
             bankBin = row.GetString(4);
             account = row.GetString(5);
             accountName = row.IsDBNull(6) ? null : row.GetString(6);
+            allowVirtualAccounts = row.GetBoolean(7);
+            boundFingerprint = row.IsDBNull(8) ? null : row.GetString(8);
+            verifiedFingerprint = row.IsDBNull(9) ? null : row.GetString(9);
         }
 
         if (!channelId.HasValue && state != "ACTIVE")
             return Results.Problem(statusCode: 409, title: "Kênh thanh toán của người bán đang tạm dừng hoặc chưa sẵn sàng.", detail: "channel_not_active");
         if (!resolver.TryResolveChannelConfig(secretRef, out var config) || config is null ||
             !config.MatchesReceiver(sellerId, bankBin, account)) return ChannelUnavailable();
+        if (boundFingerprint is not null && !PayOsReceiverEvidence.MatchesFingerprint(config.Options, boundFingerprint))
+            return ChannelUnavailable();
+        var virtualReady = allowVirtualAccounts && config.Options.AllowVirtualAccounts &&
+            PayOsReceiverEvidence.MatchesFingerprint(config.Options, boundFingerprint) &&
+            PayOsReceiverEvidence.MatchesFingerprint(config.Options, verifiedFingerprint);
+        if (allowVirtualAccounts && !virtualReady) return ChannelUnavailable();
         var gateway = resolver.ResolveClient(config.Options);
         if (!gateway.IsConfigured) return ChannelUnavailable();
 
@@ -101,14 +113,15 @@ internal static class SellerCheckoutPaymentLinks
 
         var maskedAccount = SellerPaymentChannels.MaskAccountNumber(account);
         PaymentLinkResponse? existing = null;
-        await using (var read = new NpgsqlCommand("SELECT order_code, checkout_url, qr_code, verified_seller_channel_id FROM payment.gateway_orders WHERE payment_id=@id", connection, transaction))
+        await using (var read = new NpgsqlCommand("SELECT order_code, checkout_url, qr_code, verified_seller_channel_id, receiver_account, receiver_account_name FROM payment.gateway_orders WHERE payment_id=@id", connection, transaction))
         {
             read.Parameters.AddWithValue("id", paymentId);
             await using var row = await read.ExecuteReaderAsync(ct);
             if (await row.ReadAsync(ct) && !row.IsDBNull(1))
             {
                 if (row.IsDBNull(3) || row.GetGuid(3) != versionId) return LegacyCheckout();
-                existing = new(row.GetInt64(0), amount, row.GetString(1), row.IsDBNull(2) ? null : row.GetString(2), accountName, maskedAccount);
+                existing = new(row.GetInt64(0), amount, row.GetString(1), row.IsDBNull(2) ? null : row.GetString(2),
+                    row.IsDBNull(5) ? accountName : row.GetString(5), row.IsDBNull(4) ? maskedAccount : SellerPaymentChannels.MaskAccountNumber(row.GetString(4)));
             }
         }
 
@@ -125,12 +138,17 @@ internal static class SellerCheckoutPaymentLinks
 
         try
         {
-            var link = await gateway.CreateAsync(orderCode, amount, ct, new DateTimeOffset(deadline).ToUnixTimeSeconds());
+            var link = await gateway.CreateForVerifiedSellerAsync(orderCode, amount, ct, new DateTimeOffset(deadline).ToUnixTimeSeconds(), virtualReady);
             // Payment or cancellation may have won while the gateway was creating the link.
             await using var save = new NpgsqlCommand("""
-                UPDATE payment.gateway_orders g SET checkout_url=@url, qr_code=@qr, verified_seller_channel_id=@channel
+                UPDATE payment.gateway_orders g SET checkout_url=@url, qr_code=@qr, verified_seller_channel_id=@channel,
+                    receiver_bin=@receiverBin, receiver_account=@receiverAccount, receiver_account_name=@receiverName,
+                    receiver_mode=@receiverMode, receiver_verified_at=@receiverAt
                 FROM (SELECT id FROM payment.payments WHERE id=@id AND channel_id=@channel AND status='PENDING' FOR UPDATE) pending
                 WHERE g.payment_id=pending.id AND g.order_code=@code
+                  AND (g.checkout_url IS NULL OR
+                       (g.checkout_url=@url AND g.receiver_account IS NOT DISTINCT FROM @receiverAccount
+                        AND g.receiver_bin IS NOT DISTINCT FROM @receiverBin AND g.receiver_mode IS NOT DISTINCT FROM @receiverMode))
                 RETURNING g.qr_code
                 """, connection);
             save.Parameters.AddWithValue("id", paymentId);
@@ -138,9 +156,19 @@ internal static class SellerCheckoutPaymentLinks
             save.Parameters.AddWithValue("channel", versionId);
             save.Parameters.AddWithValue("url", link.CheckoutUrl);
             save.Parameters.Add("qr", NpgsqlDbType.Text).Value = (object?)link.QrCode ?? DBNull.Value;
+            save.Parameters.Add("receiverBin", NpgsqlDbType.Text).Value = (object?)link.ReceiverEvidence?.Bin ?? DBNull.Value;
+            save.Parameters.Add("receiverAccount", NpgsqlDbType.Text).Value = (object?)link.ReceiverEvidence?.AccountNumber ?? DBNull.Value;
+            save.Parameters.Add("receiverName", NpgsqlDbType.Text).Value = (object?)link.ReceiverEvidence?.AccountName ?? DBNull.Value;
+            save.Parameters.Add("receiverMode", NpgsqlDbType.Text).Value = (object?)link.ReceiverEvidence?.Mode ?? DBNull.Value;
+            save.Parameters.Add("receiverAt", NpgsqlDbType.TimestampTz).Value = link.ReceiverEvidence is null ? DBNull.Value : DateTime.UtcNow;
             var stored = await save.ExecuteScalarAsync(ct);
             if (stored is null || deadline <= DateTime.UtcNow) return CheckoutClosed();
-            return Results.Ok(link with { QrCode = stored as string, RecipientName = accountName, RecipientAccountMasked = maskedAccount });
+            return Results.Ok(link with
+            {
+                QrCode = stored as string,
+                RecipientName = link.ReceiverEvidence?.AccountName ?? accountName,
+                RecipientAccountMasked = link.ReceiverEvidence is null ? maskedAccount : SellerPaymentChannels.MaskAccountNumber(link.ReceiverEvidence.AccountNumber)
+            });
         }
         catch (Exception ex) when (ex is PaymentGatewayException or HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException || ex is OperationCanceledException && !ct.IsCancellationRequested)
         {

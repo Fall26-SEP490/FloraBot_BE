@@ -13,6 +13,7 @@ public sealed class PayOsChannelOptions
     public string? ExpectedAccount { get; }
     public string? ExpectedName { get; }
     public bool AllowDevLoopback { get; }
+    public bool AllowVirtualAccounts { get; }
 
     public PayOsChannelOptions(
         string clientId,
@@ -23,7 +24,8 @@ public sealed class PayOsChannelOptions
         string? expectedBin = null,
         string? expectedAccount = null,
         string? expectedName = null,
-        bool allowDevLoopback = false)
+        bool allowDevLoopback = false,
+        bool allowVirtualAccounts = false)
     {
         ClientId = clientId;
         ApiKey = apiKey;
@@ -34,6 +36,7 @@ public sealed class PayOsChannelOptions
         ExpectedAccount = expectedAccount;
         ExpectedName = expectedName;
         AllowDevLoopback = allowDevLoopback;
+        AllowVirtualAccounts = allowVirtualAccounts;
     }
 
     public override string ToString() =>
@@ -124,6 +127,10 @@ public sealed class PayOsClientResolver : IPayOsClientResolver
         var expectedBin = configuration[prefix + "ExpectedBin"];
         var expectedAccount = configuration[prefix + "ExpectedAccount"];
         var expectedName = configuration[prefix + "ExpectedName"];
+        var virtualAccountSetting = configuration[prefix + "AllowVirtualAccounts"];
+        if (virtualAccountSetting is not null && !bool.TryParse(virtualAccountSetting, out _))
+            return false;
+        var allowVirtualAccounts = string.Equals(virtualAccountSetting, "true", StringComparison.OrdinalIgnoreCase);
         var allowDevLoopback = string.Equals(
             configuration[prefix + "AllowDevLoopback"] ?? configuration["PAYOS_ALLOW_DEV_LOOPBACK"],
             "true",
@@ -151,7 +158,8 @@ public sealed class PayOsClientResolver : IPayOsClientResolver
             expectedBin,
             expectedAccount,
             expectedName,
-            allowDevLoopback
+            allowDevLoopback,
+            allowVirtualAccounts
         );
 
         config = new PayOsChannelConfig(sellerId, secretRef, options);

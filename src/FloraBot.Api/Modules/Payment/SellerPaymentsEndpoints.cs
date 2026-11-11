@@ -327,7 +327,9 @@ public static class SellerPaymentsEndpoints
                 await using var cmd = connection.CreateCommand();
                 cmd.CommandText = """
                     SELECT p.id, p.checkout_id, p.amount, p.status, p.gateway_txn_id, g.order_code,
-                           cv.secret_ref, cv.expected_bank_bin, cv.expected_bank_account
+                           cv.secret_ref, cv.expected_bank_bin, cv.expected_bank_account,
+                           cv.allow_virtual_accounts, cv.bound_credential_fingerprint, cv.verified_credential_fingerprint,
+                           g.receiver_account, g.verified_seller_channel_id, p.channel_id
                     FROM payment.payments p
                     JOIN payment.gateway_orders g ON g.payment_id = p.id
                     LEFT JOIN payment.payment_channel_versions cv ON cv.id = p.channel_id
@@ -339,6 +341,9 @@ public static class SellerPaymentsEndpoints
                 Guid id; Guid checkoutId; long amount; string previousStatus;
                 string? existingTxn; long orderCode; string? secretRef;
                 string? expectedBin; string? expectedAccount;
+                bool allowVirtualAccounts;
+                string? boundFingerprint, verifiedFingerprint, pinnedReceiver;
+                Guid? evidenceChannelId, paymentChannelId;
 
                 await using (var reader = await cmd.ExecuteReaderAsync(ct))
                 {
@@ -355,6 +360,12 @@ public static class SellerPaymentsEndpoints
                     secretRef = reader.IsDBNull(6) ? null : reader.GetString(6);
                     expectedBin = reader.IsDBNull(7) ? null : reader.GetString(7);
                     expectedAccount = reader.IsDBNull(8) ? null : reader.GetString(8);
+                    allowVirtualAccounts = !reader.IsDBNull(9) && reader.GetBoolean(9);
+                    boundFingerprint = reader.IsDBNull(10) ? null : reader.GetString(10);
+                    verifiedFingerprint = reader.IsDBNull(11) ? null : reader.GetString(11);
+                    pinnedReceiver = reader.IsDBNull(12) ? null : reader.GetString(12);
+                    evidenceChannelId = reader.IsDBNull(13) ? null : reader.GetGuid(13);
+                    paymentChannelId = reader.IsDBNull(14) ? null : reader.GetGuid(14);
                 }
 
                 if (string.IsNullOrWhiteSpace(secretRef) || expectedBin is null || expectedAccount is null ||
@@ -363,6 +374,13 @@ public static class SellerPaymentsEndpoints
                 {
                     return Results.Problem(statusCode: 503, title: "Kênh thanh toán đã gắn vào giao dịch không khả dụng trên máy chủ.");
                 }
+
+                if (boundFingerprint is not null && !PayOsReceiverEvidence.MatchesFingerprint(channelConfig.Options, boundFingerprint))
+                    return Results.Problem(statusCode: 503, title: "Thông tin xác thực kênh thanh toán đã thay đổi.");
+                if (allowVirtualAccounts && (!PayOsReceiverEvidence.MatchesFingerprint(channelConfig.Options, boundFingerprint) ||
+                    !PayOsReceiverEvidence.MatchesFingerprint(channelConfig.Options, verifiedFingerprint) ||
+                    pinnedReceiver is null || evidenceChannelId is null || evidenceChannelId != paymentChannelId))
+                    return Results.Problem(statusCode: 422, title: "Chưa có bằng chứng người nhận cho giao dịch.");
 
                 // Query signed provider authority using pinned channel
                 var client = resolver.ResolveClient(channelConfig.Options);
@@ -386,13 +404,9 @@ public static class SellerPaymentsEndpoints
                 }
 
                 // If provider GET returned account, validate it matches expected account
-                if (expectedAccount is not null && providerData.TryGetProperty("accountNumber", out var returnedAcc))
+                if (!PayOsReceiverEvidence.ValidateSubsequent(providerData, expectedAccount, allowVirtualAccounts ? pinnedReceiver : null, false))
                 {
-                    var accStr = returnedAcc.GetString();
-                    if (!string.IsNullOrWhiteSpace(accStr) && !string.Equals(accStr.Trim(), expectedAccount.Trim(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Results.Problem(statusCode: 422, title: "Số tài khoản nhận tiền tại cổng thanh toán không khớp với tài khoản người bán.", detail: "receiver_account_mismatch");
-                    }
+                    return Results.Problem(statusCode: 422, title: "Số tài khoản nhận tiền tại cổng thanh toán không khớp với tài khoản người bán.", detail: "receiver_account_mismatch");
                 }
 
                 var transitioned = false;

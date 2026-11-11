@@ -63,11 +63,12 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
         ["PAYOS_CHANNELS:invalid-recipient:ExpectedAccount"] = "1010099887766"
     };
 
-    private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> CreateTestApp(HttpMessageHandler? payOsHandler = null)
+    private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> CreateTestApp(HttpMessageHandler? payOsHandler = null, bool allowVirtualAccounts = false)
     {
         return factory.WithWebHostBuilder(builder =>
         {
             foreach (var kvp in TestConfig) builder.UseSetting(kvp.Key, kvp.Value);
+            builder.UseSetting("PAYOS_CHANNELS:seller-1-valid:AllowVirtualAccounts", allowVirtualAccounts.ToString());
             if (payOsHandler is not null)
             {
                 builder.ConfigureServices(services =>
@@ -386,11 +387,13 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
         Assert.NotNull(activeChannel.VerifiedAt);
     }
 
-    [Fact]
-    public async Task DirectPayment_FullHttpLifecycle_PinsChannel_ProcessesWebhook_BypassesPlatformLedger()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DirectPayment_FullHttpLifecycle_PinsChannel_ProcessesWebhook_BypassesPlatformLedger(bool virtualAccounts)
     {
-        var fakePayOs = new FakePayOsTransport();
-        using var app = CreateTestApp(fakePayOs);
+        var fakePayOs = new FakePayOsTransport { VirtualReceiver = virtualAccounts ? "VA98765432" : null };
+        using var app = CreateTestApp(fakePayOs, virtualAccounts);
         using var client = app.CreateClient();
 
         // 1. Admin binds channel for Seller 1
@@ -425,7 +428,6 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
                 INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, api_key_hash)
                 VALUES (@kiosk, @kiosk::text, 'Direct Kiosk', '123 Test St', 'HCM', @kiosk::text, @kiosk::text, 'ONLINE', @hash);
                 INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, zone) VALUES (@slot, @kiosk, 'B01', 0, 'WALK_IN');
-                SELECT flow.assign_kiosk(@kiosk, @seller, '10000000-0000-0000-0000-000000000001');
                 """;
             cmd.Parameters.AddWithValue("product", product);
             cmd.Parameters.AddWithValue("seller", Seller1Id);
@@ -433,6 +435,8 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
             cmd.Parameters.AddWithValue("hash", hash);
             cmd.Parameters.AddWithValue("slot", slot);
             await cmd.ExecuteNonQueryAsync();
+
+            await CurrentMainKioskFixture.AssignKioskWithLeaseAsync(source, kiosk, Seller1Id);
 
             await using var stockCmd = conn.CreateCommand();
             stockCmd.CommandText = "SELECT flow.stock_bouquet(flow.new_batch(), @product, @slot, @sellerOwner, @qr)";
@@ -456,6 +460,18 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
             Assert.Equal(HttpStatusCode.OK, linkRes.StatusCode);
             var link = await linkRes.Content.ReadFromJsonAsync<PaymentLinkResponse>();
             Assert.NotNull(link);
+            if (virtualAccounts)
+            {
+                Assert.Equal("******5432", link.RecipientAccountMasked);
+                var repeated = await kioskClient.PostAsync($"/api/kiosks/{kiosk}/checkouts/{checkoutId}/payment-link", null);
+                Assert.Equal(HttpStatusCode.OK, repeated.StatusCode);
+                Assert.Equal(link, await repeated.Content.ReadFromJsonAsync<PaymentLinkResponse>());
+                var runtimeConfig = app.Services.GetRequiredService<IConfiguration>();
+                runtimeConfig["PAYOS_CHANNELS:seller-1-valid:ApiKey"] = "rotated-without-rebinding";
+                Assert.Equal(HttpStatusCode.ServiceUnavailable,
+                    (await kioskClient.PostAsync($"/api/kiosks/{kiosk}/checkouts/{checkoutId}/payment-link", null)).StatusCode);
+                runtimeConfig["PAYOS_CHANNELS:seller-1-valid:ApiKey"] = "api-1";
+            }
 
             // 5. Verify payment row in DB has SELLER_DIRECT provenance, is_direct_receipt = true, and receiver snapshot
             Guid paymentId;
@@ -484,9 +500,33 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
                 amount = 200000,
                 reference = txnRef,
                 code = "00",
-                accountNumber = "1010099887766"
+                accountNumber = "1010099887766",
+                virtualAccountNumber = fakePayOs.VirtualReceiver ?? ""
             });
             var paymentSig = PayOsChecksum.Sign(paymentData, "checksum-1-32bytes-secret-key-ok!");
+            if (virtualAccounts)
+            {
+                var wrongData = JsonSerializer.SerializeToElement(new
+                {
+                    orderCode = link.OrderCode,
+                    amount = 200000,
+                    reference = txnRef,
+                    code = "00",
+                    accountNumber = "1010099887766",
+                    virtualAccountNumber = "OTHER98765432"
+                });
+                var rejected = await client.PostAsJsonAsync(fakePayOs.CapturedWebhookUrl!, new PayOsWebhook(wrongData,
+                    PayOsChecksum.Sign(wrongData, "checksum-1-32bytes-secret-key-ok!"), "00", "success", true));
+                Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+                var foreign = await client.PostAsJsonAsync(fakePayOs.CapturedWebhookUrl!, new PayOsWebhook(paymentData,
+                    PayOsChecksum.Sign(paymentData, "foreign-seller-key"), "00", "success", true));
+                Assert.Equal(HttpStatusCode.BadRequest, foreign.StatusCode);
+                var runtimeConfig = app.Services.GetRequiredService<IConfiguration>();
+                runtimeConfig["PAYOS_CHANNELS:seller-1-valid:ApiKey"] = "rotated-without-rebinding";
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsJsonAsync(fakePayOs.CapturedWebhookUrl!,
+                    new PayOsWebhook(paymentData, paymentSig, "00", "success", true))).StatusCode);
+                runtimeConfig["PAYOS_CHANNELS:seller-1-valid:ApiKey"] = "api-1";
+            }
 
             var webhookRes = await client.PostAsJsonAsync(fakePayOs.CapturedWebhookUrl!, new PayOsWebhook(
                 paymentData, paymentSig, "00", "success", true));
@@ -527,6 +567,14 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
             Assert.Equal(200000, detail.Amount);
             Assert.Equal("SUCCEEDED", detail.Status);
             Assert.True(detail.Reconciled);
+            if (virtualAccounts)
+            {
+                var reconciled = await client.PostAsync($"/api/sellers/{Seller1Id}/payments/{paymentId}/reconcile", null);
+                Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
+                fakePayOs.LookupAccount = "WRONG123456";
+                Assert.Equal(HttpStatusCode.UnprocessableEntity,
+                    (await client.PostAsync($"/api/sellers/{Seller1Id}/payments/{paymentId}/reconcile", null)).StatusCode);
+            }
 
             // 10. Seller queries sales report
             var reportRes = await client.GetAsync($"/api/sellers/{Seller1Id}/reports/sales");
@@ -566,7 +614,6 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
             INSERT INTO kiosk_ops.kiosks(id, code, name, address, region, hardware_id, mqtt_client_id, status, api_key_hash)
             VALUES (@kiosk, @kiosk::text, 'No Channel Kiosk', '456 Test Ave', 'HCM', @kiosk::text, @kiosk::text, 'ONLINE', @hash);
             INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, zone) VALUES (@slot, @kiosk, 'C01', 0, 'WALK_IN');
-            SELECT flow.assign_kiosk(@kiosk, @seller, '10000000-0000-0000-0000-000000000001');
             """;
         cmd.Parameters.AddWithValue("seller", newSeller);
         cmd.Parameters.AddWithValue("user", newSellerUser);
@@ -575,6 +622,8 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
         cmd.Parameters.AddWithValue("slot", slot);
         cmd.Parameters.AddWithValue("hash", hash);
         await cmd.ExecuteNonQueryAsync();
+
+        await CurrentMainKioskFixture.AssignKioskWithLeaseAsync(source, kiosk, newSeller);
 
         await using var stockCmd = conn.CreateCommand();
         stockCmd.CommandText = "SELECT flow.stock_bouquet(flow.new_batch(), @product, @slot, @user, @qr)";
@@ -602,6 +651,9 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
         private string? expectedAccount;
         private string? expectedName;
         public string? CapturedWebhookUrl { get; private set; }
+        public string? VirtualReceiver { get; init; }
+        public string? LookupAccount { get; set; }
+        private long createdAmount;
 
         public void SetConfirmWebhookResponse(string account, string name)
         {
@@ -636,6 +688,7 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
                 var bodyJson = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 var code = bodyJson.GetProperty("orderCode").GetInt64();
                 var amt = bodyJson.GetProperty("amount").GetInt64();
+                createdAmount = amt;
 
                 var data = JsonSerializer.SerializeToElement(new
                 {
@@ -645,7 +698,7 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
                     checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07",
                     qrCode = PayOsClientQrTests.QrPayload,
                     bin = "970415",
-                    accountNumber = expectedAccount ?? "1010099887766",
+                    accountNumber = VirtualReceiver ?? expectedAccount ?? "1010099887766",
                     accountName = expectedName ?? "TIEM HOA SO 1"
                 });
 
@@ -654,6 +707,23 @@ public sealed class PayOsChannelIntegrationTests : IClassFixture<ApiFactory>
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(envelope) };
             }
 
+            if (request.Method == HttpMethod.Get)
+            {
+                var lookup = new Dictionary<string, object>
+                {
+                    ["orderCode"] = long.Parse(request.RequestUri!.Segments.Last(), System.Globalization.CultureInfo.InvariantCulture),
+                    ["amount"] = createdAmount,
+                    ["status"] = "PAID",
+                    ["transactions"] = new[] { new { reference = "TEST-LOOKUP-REFERENCE" } }
+                };
+                if (LookupAccount is not null) lookup["accountNumber"] = LookupAccount;
+                var data = JsonSerializer.SerializeToElement(lookup);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new
+                    { code = "00", data, signature = PayOsChecksum.Sign(data, "checksum-1-32bytes-secret-key-ok!") })
+                };
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new { code = "00", data = new { status = "PAID", amount = 100000 } })

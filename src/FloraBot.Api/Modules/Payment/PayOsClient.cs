@@ -5,7 +5,10 @@ using System.Text.RegularExpressions;
 namespace FloraBot.Api.Modules.Payment;
 
 public sealed record PaymentLinkResponse(long OrderCode, long Amount, string CheckoutUrl, string? QrCode = null,
-    string? RecipientName = null, string? RecipientAccountMasked = null);
+    string? RecipientName = null, string? RecipientAccountMasked = null)
+{
+    internal PayOsOrderReceiver? ReceiverEvidence { get; init; }
+}
 public sealed record PayOsConfirmWebhookResponse(string WebhookUrl, string AccountNumber, string AccountName, string? Name = null, string? ShortName = null);
 public sealed class PaymentGatewayException(string failureCode) : Exception
 {
@@ -56,7 +59,14 @@ public sealed class PayOsClient
         !string.IsNullOrWhiteSpace(options.ReturnUrl) &&
         !string.IsNullOrWhiteSpace(options.CancelUrl);
 
-    public async Task<PaymentLinkResponse> CreateAsync(long orderCode, long amount, CancellationToken ct, long? expiredAt = null)
+    public Task<PaymentLinkResponse> CreateAsync(long orderCode, long amount, CancellationToken ct, long? expiredAt = null) =>
+        CreateCoreAsync(orderCode, amount, ct, expiredAt, false);
+
+    internal Task<PaymentLinkResponse> CreateForVerifiedSellerAsync(long orderCode, long amount, CancellationToken ct,
+        long? expiredAt, bool verifiedVirtualAccounts) => CreateCoreAsync(orderCode, amount, ct, expiredAt, verifiedVirtualAccounts);
+
+    private async Task<PaymentLinkResponse> CreateCoreAsync(long orderCode, long amount, CancellationToken ct, long? expiredAt,
+        bool verifiedVirtualAccounts)
     {
         if (!IsConfigured) throw new PaymentGatewayException("configuration_missing");
         if (amount <= 0 || orderCode is <= 0 or > 9007199254740991) throw new PaymentGatewayException("request_values_invalid");
@@ -92,8 +102,11 @@ public sealed class PayOsClient
         if (data.GetProperty("orderCode").GetInt64() != orderCode || data.GetProperty("amount").GetInt64() != amount ||
             data.GetProperty("status").GetString() != "PENDING") throw new PaymentGatewayException("provider_data_mismatch");
 
-        // When expected receiver fields are configured, signed response MUST contain and match expected bin/account
-        if (HasExpectedReceiver)
+        PayOsOrderReceiver? receiver = null;
+        if (verifiedVirtualAccounts)
+            receiver = PayOsReceiverEvidence.ReadCreation(data, options, true);
+        // Platform/public callers and legacy seller versions retain their exact recipient policy.
+        else if (HasExpectedReceiver)
         {
             if (!string.IsNullOrWhiteSpace(options.ExpectedBin))
             {
@@ -105,8 +118,11 @@ public sealed class PayOsClient
             }
             if (!string.IsNullOrWhiteSpace(options.ExpectedAccount))
             {
-                if (!data.TryGetProperty("accountNumber", out var accProp) || accProp.ValueKind != JsonValueKind.String ||
-                    !string.Equals(accProp.GetString(), options.ExpectedAccount, StringComparison.OrdinalIgnoreCase))
+                if (!data.TryGetProperty("accountNumber", out var accProp))
+                    throw new PaymentGatewayException("provider_receiver_account_missing");
+                if (accProp.ValueKind != JsonValueKind.String || !PayOsReceiverEvidence.IsAccount(accProp.GetString()))
+                    throw new PaymentGatewayException("provider_receiver_account_invalid");
+                if (!string.Equals(accProp.GetString(), options.ExpectedAccount, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new PaymentGatewayException("provider_receiver_account_mismatch");
                 }
@@ -134,7 +150,7 @@ public sealed class PayOsClient
                 !qrCode.StartsWith("000201", StringComparison.Ordinal) || qrCode.Any(char.IsControl))
                 throw new PaymentGatewayException("provider_qr_code_invalid");
         }
-        return new(orderCode, amount, uri.AbsoluteUri, qrCode);
+        return new(orderCode, amount, uri.AbsoluteUri, qrCode) { ReceiverEvidence = receiver };
     }
 
     public async Task<JsonElement> GetPaymentRequestAsync(long orderCode, CancellationToken ct)

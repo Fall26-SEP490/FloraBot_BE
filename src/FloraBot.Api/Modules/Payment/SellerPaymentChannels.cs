@@ -127,10 +127,10 @@ public static class SellerPaymentChannels
 
                     await using var chCmd = connection.CreateCommand();
                     chCmd.Transaction = tx;
-                    chCmd.CommandText = "SELECT id, seller_id, version, secret_ref, state FROM payment.payment_channel_versions WHERE id = @versionId FOR UPDATE";
+                    chCmd.CommandText = "SELECT id, seller_id, version, secret_ref, state, bound_credential_fingerprint FROM payment.payment_channel_versions WHERE id = @versionId FOR UPDATE";
                     chCmd.Parameters.AddWithValue("versionId", versionId);
 
-                    Guid sellerId; int version; string secretRef; string state;
+                    Guid sellerId; int version; string secretRef; string state; string? boundFingerprint;
                     await using (var r = await chCmd.ExecuteReaderAsync(ct))
                     {
                         if (!await r.ReadAsync(ct)) return Results.NotFound(new { message = "Kênh thanh toán không tồn tại." });
@@ -138,6 +138,7 @@ public static class SellerPaymentChannels
                         version = r.GetInt32(2);
                         secretRef = r.GetString(3);
                         state = r.GetString(4);
+                        boundFingerprint = r.IsDBNull(5) ? null : r.GetString(5);
                     }
 
                     // A paused channel cannot be activated by a probe
@@ -153,6 +154,10 @@ public static class SellerPaymentChannels
                         return Results.BadRequest(new { message = "Cấu hình kênh không khả dụng." });
                     }
 
+                    if (chConfig.SellerId != sellerId || boundFingerprint is not null &&
+                        !PayOsReceiverEvidence.MatchesFingerprint(chConfig.Options, boundFingerprint))
+                        return Results.BadRequest(new { message = "Cấu hình kênh đã thay đổi. Cần gắn lại phiên bản mới." });
+
                     // Verify HMAC using channel-pinned checksum key
                     if (!PayOsChecksum.Verify(body.Data, body.Signature, chConfig.Options.ChecksumKey))
                     {
@@ -165,7 +170,7 @@ public static class SellerPaymentChannels
                     await using var attemptCmd = connection.CreateCommand();
                     attemptCmd.Transaction = tx;
                     attemptCmd.CommandText = """
-                        SELECT id, confirm_reply_received
+                        SELECT id, confirm_reply_received, credential_fingerprint
                         FROM payment.channel_verification_attempts
                         WHERE channel_version_id = @versionId AND attempt_token = @token AND status = 'PENDING' AND expires_at > @now
                         FOR UPDATE;
@@ -185,6 +190,8 @@ public static class SellerPaymentChannels
                         }
                         attemptId = ar.GetGuid(0);
                         confirmReplyReceived = ar.GetBoolean(1);
+                        if (ar.IsDBNull(2) || !PayOsReceiverEvidence.MatchesFingerprint(chConfig.Options, ar.GetString(2)))
+                            return Results.BadRequest(new { message = "Thông tin xác thực đã thay đổi trong lần kiểm tra." });
                     }
 
                     var now = DateTime.UtcNow;
@@ -202,7 +209,8 @@ public static class SellerPaymentChannels
                         actCmd.Transaction = tx;
                         actCmd.CommandText = """
                             UPDATE payment.payment_channel_versions
-                            SET state = 'ACTIVE', verified_at = @now, updated_at = @now
+                            SET state = 'ACTIVE', verified_at = @now, updated_at = @now,
+                                verified_credential_fingerprint = CASE WHEN bound_credential_fingerprint IS NULL THEN NULL ELSE @fingerprint END
                             WHERE id = @versionId AND state <> 'PAUSED';
                             UPDATE payment.channel_verification_attempts
                             SET status = 'SUCCEEDED', updated_at = @now
@@ -211,6 +219,7 @@ public static class SellerPaymentChannels
                         actCmd.Parameters.AddWithValue("now", now);
                         actCmd.Parameters.AddWithValue("versionId", versionId);
                         actCmd.Parameters.AddWithValue("attemptId", attemptId);
+                        actCmd.Parameters.AddWithValue("fingerprint", PayOsReceiverEvidence.Fingerprint(chConfig.Options));
                         await actCmd.ExecuteNonQueryAsync(ct);
 
                         await using var auditCmd = connection.CreateCommand();
@@ -345,9 +354,11 @@ public static class SellerPaymentChannels
                 insertCmd.Transaction = tx;
                 insertCmd.CommandText = """
                     INSERT INTO payment.payment_channel_versions (
-                        id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account, expected_bank_name, state, created_at, updated_at
+                        id, seller_id, version, secret_ref, expected_bank_bin, expected_bank_account, expected_bank_name, state, created_at, updated_at,
+                        allow_virtual_accounts, bound_credential_fingerprint
                     ) VALUES (
-                        public.uuid_v7(), @sellerId, @version, @secretRef, @bin, @account, @name, 'PENDING_VERIFICATION', @now, @now
+                        public.uuid_v7(), @sellerId, @version, @secretRef, @bin, @account, @name, 'PENDING_VERIFICATION', @now, @now,
+                        @virtualAccounts, @fingerprint
                     )
                     RETURNING id, seller_id, version, state, expected_bank_bin, expected_bank_account, expected_bank_name, verified_at, created_at, updated_at
                     """;
@@ -358,6 +369,8 @@ public static class SellerPaymentChannels
                 insertCmd.Parameters.AddWithValue("account", opt.ExpectedAccount);
                 insertCmd.Parameters.Add("name", NpgsqlDbType.Text).Value = (object?)opt.ExpectedName ?? DBNull.Value;
                 insertCmd.Parameters.AddWithValue("now", now);
+                insertCmd.Parameters.AddWithValue("virtualAccounts", opt.AllowVirtualAccounts);
+                insertCmd.Parameters.AddWithValue("fingerprint", PayOsReceiverEvidence.Fingerprint(opt));
 
                 Guid versionId;
                 SellerPaymentChannelResponse response;
@@ -410,7 +423,7 @@ public static class SellerPaymentChannels
                 await using var readCmd = connection.CreateCommand();
                 readCmd.Transaction = tx;
                 readCmd.CommandText = """
-                    SELECT id, version, secret_ref, state, expected_bank_bin, expected_bank_account, expected_bank_name
+                    SELECT id, version, secret_ref, state, expected_bank_bin, expected_bank_account, expected_bank_name, bound_credential_fingerprint
                     FROM payment.payment_channel_versions
                     WHERE seller_id = @sellerId
                     ORDER BY version DESC
@@ -426,6 +439,7 @@ public static class SellerPaymentChannels
                 string expectedBin;
                 string expectedAccount;
                 string? expectedName;
+                string? boundFingerprint;
                 await using (var reader = await readCmd.ExecuteReaderAsync(ct))
                 {
                     if (!await reader.ReadAsync(ct))
@@ -440,6 +454,7 @@ public static class SellerPaymentChannels
                     expectedBin = reader.GetString(4);
                     expectedAccount = reader.GetString(5);
                     expectedName = reader.IsDBNull(6) ? null : reader.GetString(6);
+                    boundFingerprint = reader.IsDBNull(7) ? null : reader.GetString(7);
                 }
 
                 if (currentState == "PAUSED")
@@ -455,6 +470,10 @@ public static class SellerPaymentChannels
                 }
 
                 var publicBase = config["PAYOS_PUBLIC_BASE_URL"] ?? config["MEMBER_WEB_URL"] ?? "https://api.florabot.test";
+                if (!channelConfig.MatchesReceiver(sellerId, expectedBin, expectedAccount) || boundFingerprint is not null &&
+                    !PayOsReceiverEvidence.MatchesFingerprint(channelConfig.Options, boundFingerprint))
+                    return Results.Problem(statusCode: 503, title: "Cấu hình kênh đã thay đổi. Cần gắn lại phiên bản mới.");
+                var credentialFingerprint = PayOsReceiverEvidence.Fingerprint(channelConfig.Options);
                 var attemptToken = Guid.NewGuid().ToString("N");
                 var webhookUrl = $"{publicBase.TrimEnd('/')}/api/payments/channels/{versionId}/webhook?attempt={attemptToken}";
 
@@ -471,9 +490,9 @@ public static class SellerPaymentChannels
                 insertAttempt.Transaction = tx;
                 insertAttempt.CommandText = """
                     INSERT INTO payment.channel_verification_attempts (
-                        id, channel_version_id, seller_id, attempt_token, status, expires_at, created_at, updated_at
+                        id, channel_version_id, seller_id, attempt_token, status, expires_at, created_at, updated_at, credential_fingerprint
                     ) VALUES (
-                        public.uuid_v7(), @versionId, @sellerId, @token, 'PENDING', @expires, @now, @now
+                        public.uuid_v7(), @versionId, @sellerId, @token, 'PENDING', @expires, @now, @now, @fingerprint
                     ) RETURNING id;
                     """;
                 insertAttempt.Parameters.AddWithValue("versionId", versionId);
@@ -481,6 +500,7 @@ public static class SellerPaymentChannels
                 insertAttempt.Parameters.AddWithValue("token", attemptToken);
                 insertAttempt.Parameters.AddWithValue("expires", DateTime.UtcNow.AddMinutes(10));
                 insertAttempt.Parameters.AddWithValue("now", DateTime.UtcNow);
+                insertAttempt.Parameters.AddWithValue("fingerprint", credentialFingerprint);
                 var attemptId = (Guid)(await insertAttempt.ExecuteScalarAsync(ct))!;
 
                 await tx.CommitAsync(ct);
@@ -550,7 +570,8 @@ public static class SellerPaymentChannels
                     actCmd.Transaction = actTx;
                     actCmd.CommandText = """
                         UPDATE payment.payment_channel_versions
-                        SET state = 'ACTIVE', verified_at = @now, updated_at = @now
+                        SET state = 'ACTIVE', verified_at = @now, updated_at = @now,
+                            verified_credential_fingerprint = CASE WHEN bound_credential_fingerprint IS NULL THEN NULL ELSE @fingerprint END
                         WHERE id = @versionId AND state <> 'PAUSED';
                         UPDATE payment.channel_verification_attempts
                         SET status = 'SUCCEEDED', updated_at = @now
@@ -559,6 +580,7 @@ public static class SellerPaymentChannels
                     actCmd.Parameters.AddWithValue("now", now);
                     actCmd.Parameters.AddWithValue("versionId", versionId);
                     actCmd.Parameters.AddWithValue("attemptId", attemptId);
+                    actCmd.Parameters.AddWithValue("fingerprint", credentialFingerprint);
                     await actCmd.ExecuteNonQueryAsync(ct);
 
                     await using var auditCmd = connection.CreateCommand();
