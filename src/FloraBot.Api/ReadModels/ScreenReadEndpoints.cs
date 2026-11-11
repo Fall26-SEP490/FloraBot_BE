@@ -23,7 +23,16 @@ public static class ScreenReadEndpoints
         app.MapGet("/api/kiosks/{kioskId:guid}/catalog/items", async (Guid kioskId, HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
         {
             if (http.User.FindFirstValue("kiosk_id") != kioskId.ToString()) return Results.Forbid();
-            await using var command = data.CreateCommand("SELECT c.bouquet_id,c.name,c.gia,c.slot_code,c.shop_name,(SELECT p.photo FROM screen.v_web_catalog p WHERE p.kiosk_id=c.kiosk_id AND c.bouquet_id=ANY(p.bouquets) LIMIT 1) FROM screen.v_kiosk_catalog c WHERE c.kiosk_id=@id ORDER BY c.slot_code");
+            await using var command = data.CreateCommand("""
+                SELECT c.bouquet_id,c.name,c.gia,c.slot_code,c.shop_name,
+                  (SELECT a.file_url FROM notify.attachments a
+                   WHERE a.owner_service='catalog' AND a.owner_type='flower_product'
+                     AND a.owner_id=c.product_id AND a.phase='PRODUCT' AND NOT a.is_hidden
+                   ORDER BY a.is_cover DESC,a.sort_order,a.created_at,a.id LIMIT 1)
+                FROM screen.v_kiosk_catalog c
+                WHERE c.kiosk_id=@id
+                ORDER BY c.slot_code
+                """);
             command.Parameters.AddWithValue("id", kioskId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             var items = new List<KioskCatalogResponse>();
