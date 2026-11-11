@@ -8,16 +8,41 @@ public static class WebCatalog
 {
     public static void MapWebCatalog(this WebApplication app)
     {
-        app.MapGet("/api/shop/catalog", async (int? page, string? search, NpgsqlDataSource source, HttpContext http, CancellationToken ct) =>
+        app.MapGet("/api/shop/catalog", async (int? page, string? search, bool? availablePreorderOnly, NpgsqlDataSource source, HttpContext http, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
             var number = page ?? 1; if (number is < 1 or > 100000 || search?.Length > 100) return Results.BadRequest();
-            await using var command = source.CreateCommand("SELECT v.product_id,v.seller_id,v.shop_name,v.name,v.description,v.price,v.kiosk_id,v.kiosk_name,v.address,(SELECT CASE WHEN bool_or(sl.zone = 'PREORDER') THEN 'PREORDER' ELSE NULL END FROM kiosk_ops.slots sl WHERE sl.kiosk_id=v.kiosk_id AND sl.current_seller_id=v.seller_id AND flow.slot_sellable(sl.id,v.seller_id) AND (sl.zone IS NULL OR sl.zone='PREORDER')),v.photo,v.bouquets,COALESCE((SELECT fp.quantity > 0 FROM catalog.flower_products fp WHERE fp.id=v.product_id AND fp.seller_id=v.seller_id),false) FROM screen.v_web_catalog v WHERE v.name ILIKE @search OR v.shop_name ILIKE @search OR v.kiosk_name ILIKE @search ORDER BY v.name,v.product_id,v.kiosk_id LIMIT 26 OFFSET @offset");
+            await using var command = source.CreateCommand("""
+                WITH available_kiosks AS MATERIALIZED (
+                    SELECT k.id, k.seller_id
+                    FROM kiosk_ops.kiosks k
+                    WHERE @available_preorder_only AND EXISTS (
+                        SELECT 1 FROM flow.get_kiosk_preorder_availability(k.id) a WHERE a.is_available
+                    )
+                )
+                SELECT v.product_id, v.seller_id, v.shop_name, v.name, v.description, v.price,
+                       v.kiosk_id, v.kiosk_name, v.address,
+                       (SELECT CASE WHEN bool_or(sl.zone = 'PREORDER') THEN 'PREORDER' END
+                        FROM kiosk_ops.slots sl
+                        WHERE sl.kiosk_id = v.kiosk_id AND sl.current_seller_id = v.seller_id
+                          AND flow.slot_sellable(sl.id, v.seller_id) AND (sl.zone IS NULL OR sl.zone = 'PREORDER')),
+                       v.photo, v.bouquets, COALESCE(fp.quantity > 0, false)
+                FROM screen.v_web_catalog v
+                LEFT JOIN catalog.flower_products fp ON fp.id = v.product_id AND fp.seller_id = v.seller_id
+                WHERE (v.name ILIKE @search OR v.shop_name ILIKE @search OR v.kiosk_name ILIKE @search)
+                  AND (NOT @available_preorder_only OR (
+                      fp.quantity > 0 AND EXISTS (
+                          SELECT 1 FROM available_kiosks a WHERE a.id = v.kiosk_id AND a.seller_id = v.seller_id
+                      )
+                  ))
+                ORDER BY v.name, v.product_id, v.kiosk_id LIMIT 26 OFFSET @offset
+                """);
+            command.Parameters.AddWithValue("available_preorder_only", availablePreorderOnly == true);
             command.Parameters.AddWithValue("search", "%" + (search?.Trim() ?? "") + "%"); command.Parameters.AddWithValue("offset", (number - 1) * 25);
             await using var reader = await command.ExecuteReaderAsync(ct); var items = new List<WebCatalogItem>();
             while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5), reader.GetGuid(6), reader.GetString(7), reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.GetFieldValue<Guid[]>(11), reader.GetBoolean(12)));
             return Results.Ok(new WebCatalogPage(items.Take(25).ToList(), number, items.Count > 25));
         }).AllowAnonymous().Produces<WebCatalogPage>()
-          .WithDescription("preorderAvailable cho biết mẫu còn tồn tại shop và có thể tạo preorder mới; số lượng cụ thể không được công khai trong catalog.");
+          .WithDescription("preorderAvailable cho biết mẫu còn hàng tại shop. availablePreorderOnly lọc thêm theo sức chứa của kiosk.");
     }
 }

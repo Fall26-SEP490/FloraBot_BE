@@ -19,7 +19,7 @@ public sealed record WebRequestInput(
     Guid? BouquetId = null,
     Guid? Id = null);
 public sealed record WebQuoteInput(long Price, DateTimeOffset PickupAt, string Note, bool Reject = false);
-public sealed record WebFulfillInput(Guid SlotId, string QrCode);
+public sealed record WebFulfillInput(Guid SlotId, string QrCode, Guid? LoadingAccessId = null);
 public sealed record WebCancelInput(string Reason);
 public sealed record WebAcceptInput(long Price, DateTimeOffset PickupAt, string Note);
 public sealed record WebRequestRow(Guid Id, string Kind, string State, Guid ProductId, Guid KioskId, Guid SellerId, string Instructions, DateTimeOffset PickupAt, DateTimeOffset PickupBefore, long? QuotedPrice, string? QuoteNote, DateTimeOffset? QuoteExpiresAt, Guid? OrderId, Guid? CheckoutId, string? OrderCode, string? OrderStatus, string? TrackingToken, bool Ready, DateTimeOffset? PayBefore, string? ProductName, string? ShopName, string? KioskName, string? Address);
@@ -88,13 +88,12 @@ public static class WebOrders
         }).RequireAuthorization("Merchant", "SameSeller").Produces<FlowResult>();
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", async (Guid sellerId, Guid requestId, WebFulfillInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(input.QrCode) || input.QrCode.Length > 120) return Results.BadRequest();
+            if (input.SlotId == Guid.Empty || string.IsNullOrWhiteSpace(input.QrCode) || input.QrCode.Length > 120
+                || input.QrCode.Any(char.IsControl)) return Results.BadRequest();
             if (!await Owns(source, requestId, null, sellerId, ct)) return Results.NotFound();
-            return await Run(source, publisher, "SELECT flow.web_fulfill(@id,@seller,@actor,@slot,@qr)", command =>
-            {
-                command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("seller", sellerId); command.Parameters.AddWithValue("actor", User(http)); command.Parameters.AddWithValue("slot", input.SlotId); command.Parameters.AddWithValue("qr", input.QrCode.Trim());
-            }, ct);
-        }).RequireAuthorization("Merchant", "SameSeller").Produces<FlowResult>();
+            return await StaffPreorders.ConfirmLoadingAsync(source, publisher, requestId, input.SlotId, User(http),
+                null, input.LoadingAccessId, input.QrCode.Trim(), ct);
+        }).RequireAuthorization("Seller", "SameSeller").Produces<FlowResult>();
     }
 
     internal static async Task<bool> Owns(NpgsqlDataSource source, Guid id, Guid? customer, Guid? seller, CancellationToken ct)

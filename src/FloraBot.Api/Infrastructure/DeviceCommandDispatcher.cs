@@ -17,7 +17,9 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
             (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP)
             OR (t.purpose='SELLER_ACCESS'
                 AND NOT EXISTS (SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms WHERE sms.current_cmd_id=t.cmd_id)
-                AND NOT EXISTS (SELECT 1 FROM kiosk_ops.technical_repair_commands repair WHERE repair.cmd_id=t.cmd_id))
+                AND NOT EXISTS (SELECT 1 FROM kiosk_ops.technical_repair_commands repair WHERE repair.cmd_id=t.cmd_id)
+                AND NOT EXISTS (SELECT 1 FROM kiosk_ops.preorder_loading_sessions loading WHERE loading.command_id=t.cmd_id))
+            OR (t.purpose='SELLER_ACCESS' AND flow.preorder_loading_dispatch_allowed(t.cmd_id))
             OR (t.purpose='SELLER_ACCESS' AND EXISTS (
                 SELECT 1 FROM kiosk_ops.technical_repair_commands repair
                 CROSS JOIN LATERAL flow.technical_repair_scope(repair.task_id,t.issued_to_user_id) scope

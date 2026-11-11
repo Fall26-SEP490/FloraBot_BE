@@ -1,22 +1,32 @@
 using System.Security.Claims;
+using System.Text.Json;
 using DotNetCore.CAP;
 using FloraBot.Api.Data;
 using FloraBot.Api.Infrastructure;
+using FloraBot.Api.Modules.KioskOps;
 using FloraBot.Api.Modules.Notify;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace FloraBot.Api.Modules.Ordering;
 
 public sealed record StaffPreorderCandidate(Guid RequestId, Guid OrderId, string OrderCode, Guid ProductId, string ProductName, long Amount, DateTimeOffset PickupAt, DateTimeOffset PickupBefore);
 public sealed record StaffPreorderSlot(Guid Id, string SlotCode, string? Zone);
 public sealed record StaffPreorderOptions(List<StaffPreorderCandidate> Preorders, List<StaffPreorderSlot> Slots);
-public sealed record StaffPreorderFulfillInput(Guid SlotId, string QrCode);
+public sealed record AssignStaffPreorderInput(Guid Id, Guid AssigneeId, Guid SlotId, string Instructions);
+public sealed record StaffPreorderFulfillInput(Guid SlotId, string QrCode, Guid? LoadingAccessId = null);
 public sealed record StaffPreorderFulfillResult(Guid RequestId, Guid BouquetId);
 
 public static class StaffPreorders
 {
     public static void MapStaffPreorders(this WebApplication app)
     {
+        app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/assignment", AssignAsync)
+            .RequireAuthorization("Seller", "SameSeller")
+            .WithTags("Ordering")
+            .WithSummary("Giao đơn đã thanh toán và ô PREORDER cụ thể cho nhân viên của shop")
+            .Produces<StaffTaskResult>();
+
         app.MapGet("/api/staff/tasks/{taskId:guid}/preorders", Read)
             .RequireAuthorization("SellerStaff")
             .WithTags("Ordering")
@@ -36,36 +46,77 @@ public static class StaffPreorders
                 input.QrCode.Trim().Length > 120 || input.QrCode.Any(char.IsControl))
                 return Results.BadRequest();
 
-            await using var connection = await data.OpenConnectionAsync(ct);
-            using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
-            var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
-            try
-            {
-                var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
-                await using var command = new NpgsqlCommand(
-                    """
-                    SELECT flow.staff_fulfill_preorder(@task,@request,@actor,@slot,@qr)
-                    WHERE NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)
-                    """, connection, transaction);
-                command.Parameters.AddWithValue("task", taskId);
-                command.Parameters.AddWithValue("request", requestId);
-                command.Parameters.AddWithValue("actor", Actor(http));
-                command.Parameters.AddWithValue("slot", input.SlotId);
-                command.Parameters.AddWithValue("qr", input.QrCode.Trim());
-                if (await command.ExecuteScalarAsync(ct) is not Guid bouquetId) return Results.NotFound();
-                await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, ct);
-                await outbox.CommitAsync(ct);
-                return Results.Ok(new StaffPreorderFulfillResult(requestId, bouquetId));
-            }
-            catch (PostgresException ex) when (Handled(ex))
-            {
-                return Problem(ex);
-            }
+            return await ConfirmLoadingAsync(data, publisher, requestId, input.SlotId, Actor(http), taskId,
+                input.LoadingAccessId, input.QrCode.Trim(), ct);
         })
             .RequireAuthorization("SellerStaff")
             .WithTags("Ordering")
             .WithSummary("Giao đơn preorder đã thanh toán vào ô PREORDER trong công việc được phân công")
             .Produces<StaffPreorderFulfillResult>();
+    }
+
+    internal static async Task<IResult> ConfirmLoadingAsync(NpgsqlDataSource data, ICapPublisher publisher,
+        Guid requestId, Guid slotId, Guid actor, Guid? task, Guid? challenge, string qr, CancellationToken ct)
+    {
+        if (challenge is null || challenge == Guid.Empty) return Results.NotFound();
+        await using var connection = await data.OpenConnectionAsync(ct);
+        using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
+        var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
+        try
+        {
+            var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
+            await using var command = new NpgsqlCommand(
+                "SELECT flow.complete_preorder_loading(@challenge,@request,@slot,@actor,@task,@qr)",
+                connection, transaction);
+            command.Parameters.AddWithValue("challenge", challenge.Value);
+            command.Parameters.AddWithValue("request", requestId);
+            command.Parameters.AddWithValue("slot", slotId);
+            command.Parameters.AddWithValue("actor", actor);
+            command.Parameters.AddWithValue("task", NpgsqlDbType.Uuid, (object?)task ?? DBNull.Value);
+            command.Parameters.AddWithValue("qr", qr);
+            if (await command.ExecuteScalarAsync(ct) is not Guid bouquetId) return Results.NotFound();
+            await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, ct);
+            await outbox.CommitAsync(ct);
+            return task is null
+                ? Results.Ok(new FlowResult(JsonSerializer.SerializeToElement(bouquetId)))
+                : Results.Ok(new StaffPreorderFulfillResult(requestId, bouquetId));
+        }
+        catch (PostgresException ex) when (ex.SqlState == "22023")
+        {
+            return Results.Problem(statusCode: 409, detail: "Chưa có tín hiệu có hoa hợp lệ sau khi mở ô, hoặc lượt nạp đã hết hạn.");
+        }
+        catch (PostgresException ex) when (Handled(ex) || ex.SqlState == "40P01")
+        {
+            return ex.SqlState == "40P01" ? Results.Conflict() : Problem(ex);
+        }
+    }
+
+    private static async Task<IResult> AssignAsync(Guid sellerId, Guid requestId, AssignStaffPreorderInput input,
+        NpgsqlDataSource data, HttpContext http, CancellationToken ct)
+    {
+        if (requestId == Guid.Empty || input.Id == Guid.Empty || input.AssigneeId == Guid.Empty
+            || input.SlotId == Guid.Empty || input.Instructions?.Trim().Length is not (>= 10 and <= 2000))
+            return Results.BadRequest();
+        if (!await WebOrders.Owns(data, requestId, null, sellerId, ct)) return Results.NotFound();
+
+        await using var command = data.CreateCommand(
+            "SELECT flow.assign_preorder_staff_task(@id,@actor,@staff,@request,@slot,@instructions)");
+        command.Parameters.AddWithValue("id", input.Id);
+        command.Parameters.AddWithValue("actor", Actor(http));
+        command.Parameters.AddWithValue("staff", input.AssigneeId);
+        command.Parameters.AddWithValue("request", requestId);
+        command.Parameters.AddWithValue("slot", input.SlotId);
+        command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
+        try
+        {
+            return await command.ExecuteScalarAsync(ct) is Guid taskId
+                ? Results.Ok(new StaffTaskResult(taskId))
+                : Results.NotFound();
+        }
+        catch (PostgresException ex) when (Handled(ex) || ex.SqlState == "40P01")
+        {
+            return ex.SqlState == "40P01" ? Results.Conflict() : Problem(ex);
+        }
     }
 
     private static async Task<IResult> Read(Guid taskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
@@ -79,9 +130,11 @@ public static class StaffPreorders
         Guid kioskId;
         string status;
         await using (var task = data.CreateCommand("""
-            SELECT seller_id,kiosk_id,status
-            FROM kiosk_ops.staff_tasks
-            WHERE id=@task AND assignee_id=@actor AND seller_id=@seller AND kind='DELIVERY'
+            SELECT t.seller_id,t.kiosk_id,t.status
+            FROM kiosk_ops.staff_tasks t
+            JOIN identity.users u ON u.id=t.assignee_id AND u.seller_id=t.seller_id
+                AND u.role='SELLER_STAFF' AND u.status='ACTIVE'
+            WHERE t.id=@task AND t.assignee_id=@actor AND t.seller_id=@seller AND t.kind='DELIVERY'
               AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)
             """))
         {
@@ -107,11 +160,16 @@ public static class StaffPreorders
                   AND s.zone='PREORDER'
                   AND k.status NOT IN ('DISABLED','MAINTENANCE')
                   AND flow.slot_sellable(s.id,@seller)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM kiosk_ops.staff_preorder_tasks scope
+                      WHERE scope.task_id=@task AND scope.slot_id<>s.id
+                  )
                 ORDER BY s.slot_code,s.id
                 """))
             {
                 command.Parameters.AddWithValue("kiosk", kioskId);
                 command.Parameters.AddWithValue("seller", sellerId);
+                command.Parameters.AddWithValue("task", taskId);
                 await using var reader = await command.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
                     slots.Add(new(reader.GetGuid(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
@@ -126,10 +184,15 @@ public static class StaffPreorders
                   AND o.status='PAID'
                   AND public.app_now() < r.pickup_before
                   AND NOT EXISTS (SELECT 1 FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='BOUQUET')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM kiosk_ops.staff_preorder_tasks scope
+                      WHERE scope.task_id=@task AND scope.request_id<>r.id
+                  )
                 ORDER BY r.pickup_at,r.id
                 """))
             {
                 command.Parameters.AddWithValue("seller", sellerId);
+                command.Parameters.AddWithValue("task", taskId);
                 command.Parameters.AddWithValue("kiosk", kioskId);
                 await using var reader = await command.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))

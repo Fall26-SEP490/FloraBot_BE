@@ -86,6 +86,8 @@ internal static class MaintenanceAccessEndpoints
         if (binding.ActorRole == "TECHNICIAN" && binding.Operation == "REPAIR")
             return await TechnicalRepairAccess.ConfirmAsync(binding, id, input.Code, data, publisher, store, ct);
         if (binding.ActorRole is not ("SELLER" or "SELLER_STAFF")) return Results.NotFound();
+        if (binding.Operation == PreorderLoadingAccess.Operation)
+            return await PreorderLoadingAccess.ConfirmAsync(binding, id, input.Code, data, store, publisher, ct);
 
         var payload = JsonSerializer.Deserialize<MaintenanceAccessRequest>(binding.Payload);
         if (payload is null || payload.Operation != binding.Operation || payload.KioskId != kioskId

@@ -57,7 +57,9 @@ internal static class StaffInventoryTasks
         command.CommandText = """
             SELECT flow.assign_staff_task(@id,@actor,@staff,'DELIVERY',@kiosk,@seller,NULL,@instructions);
             INSERT INTO kiosk_ops.staff_inventory_tasks(task_id,slot_id,action,expected_bouquet_id,product_id)
-                VALUES(@id,@slot,@action,@bouquet,@product) ON CONFLICT(task_id) DO NOTHING;
+                SELECT @id,@slot,@action,@bouquet,@product
+                WHERE NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_preorder_tasks WHERE task_id=@id)
+                ON CONFLICT(task_id) DO NOTHING;
             """;
         command.Parameters.AddWithValue("id", input.Id);
         command.Parameters.AddWithValue("actor", actorId);

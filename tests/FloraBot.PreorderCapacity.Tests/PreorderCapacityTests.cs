@@ -1,10 +1,20 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FloraBot.Api.Auth;
+using DotNetCore.CAP;
+using FloraBot.Api.Infrastructure;
 using FloraBot.Api.Data.Entities;
 using FloraBot.Api.Modules.Identity;
+using FloraBot.Api.Modules.KioskOps;
+using FloraBot.Api.Modules.Notify;
 using FloraBot.Api.Modules.Ordering;
+using FloraBot.Api.ReadModels;
+using FloraBot.Api.Realtime;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +28,18 @@ public class PreorderCapacityTestFactory : WebApplicationFactory<Program>
 {
     public string DatabaseUrl { get; }
     public string ValkeyUrl { get; }
+    public TestEmailSender Email { get; } = new();
+
+    public sealed class TestEmailSender : ITransactionalEmailSender
+    {
+        public List<TransactionalEmail> Messages { get; } = [];
+
+        public Task SendAsync(TransactionalEmail email, CancellationToken ct)
+        {
+            Messages.Add(email);
+            return Task.CompletedTask;
+        }
+    }
 
     public PreorderCapacityTestFactory()
     {
@@ -62,8 +84,12 @@ public class PreorderCapacityTestFactory : WebApplicationFactory<Program>
             ["PAYOS_CHECKSUM_KEY"] = "test-only-checksum-key",
             ["JOBS_ENABLED"] = "false",
             ["MQTT_ENABLED"] = "false",
+            ["EMAIL_PROVIDER"] = "Brevo",
+            ["EMAIL_SENDER"] = "noreply@test.local",
+            ["BREVO_API_KEY"] = "test-only-replaced-sender",
         };
         foreach (var pair in settings) builder.UseSetting(pair.Key, pair.Value);
+        builder.ConfigureServices(services => services.AddSingleton<ITransactionalEmailSender>(Email));
 
         // Production Program.cs already maps MapPreorderCapacity; no duplicate TestStartupFilter.
     }
@@ -365,6 +391,60 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
     #region Atomic Capacity Commitment & Concurrency Tests
 
     [Fact]
+    public async Task WebRequest_RejectsNewRequestWhenFullButAllowsExistingRetry()
+    {
+        var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
+        var pickupAt = DateTimeOffset.UtcNow.AddDays(1);
+        var quoted = await CreateQuotedPreorderAsync(f, pickupAt);
+        using var scope = _factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        await using var connection = await data.OpenConnectionAsync();
+        await using var request = connection.CreateCommand();
+        request.CommandText = """
+            SELECT flow.web_request(@id, @customer, 'CUSTOM', @product, @kiosk,
+                NULL::uuid, @pickup, 'Please prepare a nice bouquet')
+            """;
+        var first = Guid.CreateVersion7();
+        request.Parameters.AddWithValue("id", first);
+        request.Parameters.AddWithValue("customer", f.CustomerUserId);
+        request.Parameters.AddWithValue("product", f.ProductId);
+        request.Parameters.AddWithValue("kiosk", f.KioskId);
+        request.Parameters.AddWithValue("pickup", pickupAt.UtcDateTime);
+        Assert.Equal(first, (Guid)(await request.ExecuteScalarAsync())!);
+
+        var catalogPath = $"/api/shop/catalog?search={f.SellerId:N}";
+        var eligiblePath = catalogPath + "&availablePreorderOnly=true";
+        Assert.Equal(f.KioskId, Assert.Single((await _client.GetFromJsonAsync<WebCatalogPage>(eligiblePath))!.Items).KioskId);
+
+        await using var accept = connection.CreateCommand();
+        accept.CommandText = "SELECT flow.web_accept(@id, @customer, 50000::bigint, @pickup, 'Ready for you')";
+        accept.Parameters.AddWithValue("id", quoted);
+        accept.Parameters.AddWithValue("customer", f.CustomerUserId);
+        accept.Parameters.AddWithValue("pickup", pickupAt.UtcDateTime);
+        await accept.ExecuteScalarAsync();
+
+        // Keep product stock positive so the catalog assertion tests kiosk capacity.
+        await using var restock = connection.CreateCommand();
+        restock.CommandText = "UPDATE catalog.flower_products SET quantity = 1 WHERE id = @product";
+        restock.Parameters.AddWithValue("product", f.ProductId);
+        await restock.ExecuteNonQueryAsync();
+
+        Assert.Equal(first, (Guid)(await request.ExecuteScalarAsync())!);
+        request.Parameters["id"].Value = Guid.CreateVersion7();
+        var failure = await Assert.ThrowsAsync<PostgresException>(() => request.ExecuteScalarAsync());
+        Assert.Equal("P0001", failure.SqlState);
+        Assert.Empty((await _client.GetFromJsonAsync<WebCatalogPage>(eligiblePath))!.Items);
+        Assert.Equal(f.KioskId, Assert.Single((await _client.GetFromJsonAsync<WebCatalogPage>(catalogPath))!.Items).KioskId);
+
+        await using var cancel = connection.CreateCommand();
+        cancel.CommandText = "SELECT flow.web_cancel(@id, @customer, 'Customer changed plans')";
+        cancel.Parameters.AddWithValue("id", quoted);
+        cancel.Parameters.AddWithValue("customer", f.CustomerUserId);
+        await cancel.ExecuteNonQueryAsync();
+        Assert.Equal(f.KioskId, Assert.Single((await _client.GetFromJsonAsync<WebCatalogPage>(eligiblePath))!.Items).KioskId);
+    }
+
+    [Fact]
     public async Task WebAccept_Idempotent_ReturnsSameOrder()
     {
         var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
@@ -520,6 +600,273 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
     }
 
     [Fact]
+    public async Task AssignStaffTask_BindsPaidPreorderToOneSlotAndShopStaff()
+    {
+        var f = await SeedCapacityFixtureAsync();
+        var other = await SeedCapacityFixtureAsync();
+        var pickup = DateTimeOffset.UtcNow.AddDays(1);
+        var requestId = await CreateQuotedPreorderAsync(f, pickup);
+        var staffId = Guid.NewGuid();
+        var externalStaffId = Guid.NewGuid();
+        using var scope = _factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        await using var connection = await data.OpenConnectionAsync();
+        await using var setup = connection.CreateCommand();
+        setup.CommandText = """
+            INSERT INTO identity.users(id, email, password_hash, full_name, role, status, seller_id)
+            VALUES (@staff, @staff::text || '@test.local', '!hash', 'Assigned staff', 'SELLER_STAFF', 'ACTIVE', @seller),
+                   (@external, @external::text || '@test.local', '!hash', 'External staff', 'SELLER_STAFF', 'ACTIVE', @otherSeller);
+            SELECT flow.web_accept(@request, @customer, 50000::bigint, @pickup, 'Ready for you');
+            """;
+        setup.Parameters.AddWithValue("staff", staffId);
+        setup.Parameters.AddWithValue("external", externalStaffId);
+        setup.Parameters.AddWithValue("seller", f.SellerId);
+        setup.Parameters.AddWithValue("otherSeller", other.SellerId);
+        setup.Parameters.AddWithValue("request", requestId);
+        setup.Parameters.AddWithValue("customer", f.CustomerUserId);
+        setup.Parameters.AddWithValue("pickup", pickup.UtcDateTime);
+        await setup.ExecuteNonQueryAsync();
+
+        await using var assign = connection.CreateCommand();
+        assign.CommandText = "SELECT flow.assign_preorder_staff_task(@id, @actor, @staff, @request, @slot, 'Load the paid bouquet')";
+        var taskId = Guid.NewGuid();
+        assign.Parameters.AddWithValue("id", taskId);
+        assign.Parameters.AddWithValue("actor", f.SellerUserId);
+        assign.Parameters.AddWithValue("staff", staffId);
+        assign.Parameters.AddWithValue("request", requestId);
+        assign.Parameters.AddWithValue("slot", f.PreorderSlotIds[0]);
+        Assert.Equal("22023", (await Assert.ThrowsAsync<PostgresException>(() => assign.ExecuteScalarAsync())).SqlState);
+
+        await using var payment = connection.CreateCommand();
+        payment.CommandText = """
+            UPDATE payment.payments SET status = 'SUCCEEDED', paid_at = public.app_now()
+            WHERE checkout_id = (SELECT checkout_id FROM ordering.orders WHERE id =
+                (SELECT order_id FROM ordering.web_requests WHERE id = @request));
+            UPDATE ordering.orders SET status = 'PAID'
+            WHERE id = (SELECT order_id FROM ordering.web_requests WHERE id = @request);
+            """;
+        payment.Parameters.AddWithValue("request", requestId);
+        await payment.ExecuteNonQueryAsync();
+
+        assign.Parameters["slot"].Value = other.PreorderSlotIds[0];
+        Assert.Equal("P0002", (await Assert.ThrowsAsync<PostgresException>(() => assign.ExecuteScalarAsync())).SqlState);
+        assign.Parameters["slot"].Value = f.PreorderSlotIds[0];
+        assign.Parameters["staff"].Value = externalStaffId;
+        Assert.Equal("22023", (await Assert.ThrowsAsync<PostgresException>(() => assign.ExecuteScalarAsync())).SqlState);
+        assign.Parameters["staff"].Value = staffId;
+
+        using var sellerClient = _factory.CreateClient();
+        sellerClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _factory.CreateToken("SELLER", f.SellerUserId, f.SellerId));
+        var assignmentPath = $"/api/sellers/{f.SellerId}/preorders/{requestId}/assignment";
+        using var result = await sellerClient.PostAsJsonAsync(assignmentPath,
+            new AssignStaffPreorderInput(taskId, staffId, f.PreorderSlotIds[0], "Load the paid bouquet"));
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        Assert.Equal(taskId, (await result.Content.ReadFromJsonAsync<StaffTaskResult>())!.Id);
+
+        Assert.Equal(taskId, (Guid)(await assign.ExecuteScalarAsync())!);
+
+        assign.Parameters["id"].Value = Guid.NewGuid();
+        assign.Parameters["slot"].Value = f.PreorderSlotIds[1];
+        Assert.Equal("40001", (await Assert.ThrowsAsync<PostgresException>(() => assign.ExecuteScalarAsync())).SqlState);
+
+        using var staffClient = _factory.CreateClient();
+        staffClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _factory.CreateToken("SELLER_STAFF", staffId, f.SellerId));
+        await using var start = connection.CreateCommand();
+        start.CommandText = "SELECT flow.transition_staff_task(@task, @staff, 1, 'IN_PROGRESS', 'Started loading task')";
+        start.Parameters.AddWithValue("task", taskId);
+        start.Parameters.AddWithValue("staff", staffId);
+        await start.ExecuteScalarAsync();
+        var options = await staffClient.GetFromJsonAsync<StaffPreorderOptions>($"/api/staff/tasks/{taskId}/preorders");
+        Assert.Equal(requestId, Assert.Single(options!.Preorders).RequestId);
+        Assert.Equal(f.PreorderSlotIds[0], Assert.Single(options.Slots).Id);
+        using var directFulfill = await staffClient.PostAsJsonAsync(
+            $"/api/staff/tasks/{taskId}/preorders/{requestId}/fulfill",
+            new StaffPreorderFulfillInput(f.PreorderSlotIds[0], $"QR-TEST-{requestId:N}"));
+        Assert.Equal(HttpStatusCode.NotFound, directFulfill.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadingOtp_RequiresRightKioskAndFreshPresenceBeforePickup(bool assignedStaff)
+    {
+        var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
+        var other = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
+        var pickup = DateTimeOffset.UtcNow.AddDays(1);
+        var requestId = await CreateQuotedPreorderAsync(f, pickup);
+        var slot = f.PreorderSlotIds[0];
+        var actor = assignedStaff ? Guid.NewGuid() : f.SellerUserId;
+        var task = Guid.NewGuid();
+        var kioskKey = Guid.NewGuid().ToString("N");
+        var otherKey = Guid.NewGuid().ToString("N");
+        using var services = _factory.Services.CreateScope();
+        var data = services.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        await using var connection = await data.OpenConnectionAsync();
+
+        async Task<object?> Run(string sql, params (string Name, object Value)[] args)
+        {
+            await using var command = new NpgsqlCommand(sql, connection);
+            foreach (var (name, value) in args) command.Parameters.AddWithValue(name, value);
+            return await command.ExecuteScalarAsync();
+        }
+
+        await Run("""
+            SELECT flow.web_accept(@request,@customer,50000::bigint,@pickup,'Ready for you');
+            UPDATE payment.payments SET status='SUCCEEDED',paid_at=public.app_now()
+            WHERE checkout_id=(SELECT o.checkout_id FROM ordering.orders o JOIN ordering.web_requests w ON w.order_id=o.id WHERE w.id=@request);
+            UPDATE ordering.orders SET status='PAID'
+            WHERE id=(SELECT order_id FROM ordering.web_requests WHERE id=@request);
+            UPDATE kiosk_ops.kiosks SET last_heartbeat_at=clock_timestamp(),api_key_hash=@key WHERE id=@kiosk;
+            UPDATE kiosk_ops.kiosks SET last_heartbeat_at=clock_timestamp(),api_key_hash=@otherKey WHERE id=@other;
+            INSERT INTO kiosk_ops.slot_sensor_capabilities(slot_id,kiosk_id,relay_channel,enabled,door_verified,presence_verified)
+            VALUES(@slot,@kiosk,1,true,false,true);
+            INSERT INTO kiosk_ops.flower_presence(kiosk_id,event_id,observed_at,states,received_at)
+            VALUES(@kiosk,gen_random_uuid(),(extract(epoch FROM clock_timestamp())*1000)::bigint,ARRAY[-1,0,-1,-1],clock_timestamp());
+            """, ("request", requestId), ("customer", f.CustomerUserId), ("pickup", pickup.UtcDateTime),
+            ("slot", slot), ("kiosk", f.KioskId), ("other", other.KioskId),
+            ("key", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(kioskKey)))),
+            ("otherKey", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(otherKey)))));
+        if (assignedStaff)
+        {
+            await Run("""
+                INSERT INTO identity.users(id,email,password_hash,full_name,role,status,seller_id)
+                VALUES(@actor,@actor::text || '@test.local','!hash','Loading Staff','SELLER_STAFF','ACTIVE',@seller);
+                SELECT flow.assign_preorder_staff_task(@task,@sellerUser,@actor,@request,@slot,'Load the paid bouquet');
+                SELECT flow.transition_staff_task(@task,@actor,1,'IN_PROGRESS','Started loading task');
+                """, ("actor", actor), ("seller", f.SellerId), ("task", task),
+                ("sellerUser", f.SellerUserId), ("request", requestId), ("slot", slot));
+        }
+
+        using var sellerClient = _factory.CreateClient();
+        sellerClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _factory.CreateToken("SELLER", f.SellerUserId, f.SellerId));
+        using var staffClient = _factory.CreateClient();
+        staffClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _factory.CreateToken("SELLER_STAFF", actor, f.SellerId));
+        using var kioskClient = _factory.CreateClient();
+        kioskClient.DefaultRequestHeaders.Add("X-Kiosk-Key", kioskKey);
+        using var wrongKiosk = _factory.CreateClient();
+        wrongKiosk.DefaultRequestHeaders.Add("X-Kiosk-Key", otherKey);
+
+        var loader = assignedStaff ? staffClient : sellerClient;
+        var issuePath = assignedStaff
+            ? $"/api/staff/tasks/{task}/preorders/{requestId}/loading-access"
+            : $"/api/me/preorders/{requestId}/loading-access";
+        var fulfillPath = assignedStaff
+            ? $"/api/staff/tasks/{task}/preorders/{requestId}/fulfill"
+            : $"/api/sellers/{f.SellerId}/preorders/{requestId}/fulfill";
+        var pickupPath = $"/api/me/preorders/{requestId}/pickup-otp";
+
+        using var issue = await loader.PostAsJsonAsync(issuePath, new { slotId = slot });
+        Assert.True(issue.IsSuccessStatusCode, await issue.Content.ReadAsStringAsync());
+        var issued = JsonSerializer.Deserialize<JsonElement>(await issue.Content.ReadAsStringAsync());
+        Assert.False(issued.TryGetProperty("code", out _));
+        var access = issued.GetProperty("id").GetGuid();
+        var email = _factory.Email.Messages.Last();
+        Assert.Equal((assignedStaff ? actor.ToString() : actor.ToString("N")) + "@test.local", email.Recipient);
+        var code = Regex.Match(email.Text, @"\b[0-9]{6}\b").Value;
+        Assert.NotEmpty(code);
+
+        using var resend = await loader.PostAsJsonAsync(issuePath, new { slotId = slot });
+        Assert.Equal(HttpStatusCode.TooManyRequests, resend.StatusCode);
+        var confirmPath = $"/api/kiosks/{f.KioskId}/maintenance-access/{access}/confirm";
+        using var crossKiosk = await wrongKiosk.PostAsJsonAsync(confirmPath, new { code });
+        Assert.Equal(HttpStatusCode.Forbidden, crossKiosk.StatusCode);
+        using var badCode = await kioskClient.PostAsJsonAsync(confirmPath,
+            new { code = code == "000000" ? "000001" : "000000" });
+        Assert.Equal(HttpStatusCode.BadRequest, badCode.StatusCode);
+        using var unopened = await loader.PostAsJsonAsync(fulfillPath,
+            new { slotId = slot, qrCode = $"QR-LOAD-{requestId:N}", loadingAccessId = access });
+        Assert.Equal(HttpStatusCode.NotFound, unopened.StatusCode);
+        using var earlyPickup = await sellerClient.PostAsync(pickupPath, null);
+        Assert.Equal(HttpStatusCode.Conflict, earlyPickup.StatusCode);
+
+        using var opened = await kioskClient.PostAsJsonAsync(confirmPath, new { code });
+        Assert.True(opened.IsSuccessStatusCode, await opened.Content.ReadAsStringAsync());
+        using var resumed = await loader.PostAsJsonAsync(issuePath, new { slotId = slot });
+        Assert.True(resumed.IsSuccessStatusCode, await resumed.Content.ReadAsStringAsync());
+        var resumedBody = JsonSerializer.Deserialize<JsonElement>(await resumed.Content.ReadAsStringAsync());
+        Assert.Equal(access, resumedBody.GetProperty("id").GetGuid());
+        Assert.False(resumedBody.GetProperty("requiresCode").GetBoolean());
+        if (!assignedStaff)
+        {
+            var replacementStaff = Guid.NewGuid();
+            await Run("""
+                INSERT INTO identity.users(id,email,password_hash,full_name,role,status,seller_id)
+                VALUES(@staff,@staff::text || '@test.local','!hash','Replacement Staff','SELLER_STAFF','ACTIVE',@seller)
+                """, ("staff", replacementStaff), ("seller", f.SellerId));
+            var busyAssignment = await Assert.ThrowsAsync<PostgresException>(() => Run(
+                "SELECT flow.assign_preorder_staff_task(@task,@actor,@staff,@request,@slot,'Load the paid bouquet')",
+                ("task", Guid.NewGuid()), ("actor", f.SellerUserId), ("staff", replacementStaff),
+                ("request", requestId), ("slot", slot)));
+            Assert.Equal("40001", busyAssignment.SqlState);
+        }
+        using var replayOtp = await kioskClient.PostAsJsonAsync(confirmPath, new { code });
+        Assert.Equal(HttpStatusCode.NotFound, replayOtp.StatusCode);
+
+        var commandId = (Guid)(await Run(
+            "SELECT command_id FROM kiosk_ops.preorder_loading_sessions WHERE challenge_id=@id", ("id", access)))!;
+        // Exercise signed command dispatch, durable ACK processing and signed presence without a broker.
+        var hardware = "HW-" + f.KioskId.ToString("N");
+        var deviceKey = RandomNumberGenerator.GetBytes(32);
+        var ring = new DeviceKeyRing(new Dictionary<string, byte[]> { [hardware] = deviceKey });
+        var publisher = services.ServiceProvider.GetRequiredService<ICapPublisher>();
+        var dispatcher = new DeviceCommandDispatcher(data, publisher, ring);
+        var inbox = new DeviceEventInbox(data, publisher, ring,
+            services.ServiceProvider.GetRequiredService<PortalNotifier>());
+        var prepared = await dispatcher.PrepareAsync(commandId, CancellationToken.None);
+        Assert.NotNull(prepared);
+        Assert.Equal(slot, prepared.Command.SlotId);
+        Assert.Equal(1, prepared.Command.RelayChannel);
+        var ack = DeviceProtocol.Sign(new SignedDeviceEvent(1, hardware, Guid.NewGuid(), commandId,
+            "ACK", DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ""), deviceKey);
+        Assert.Equal(DeviceReceipt.Rejected, await inbox.ReceiveAsync(hardware,
+            ack with { Signature = new string('0', 64) }, CancellationToken.None));
+        Assert.True(await dispatcher.DeliverAsync(prepared, async (_, ct) =>
+        {
+            Assert.Equal(DeviceReceipt.Stored, await inbox.ReceiveAsync(hardware, ack, ct));
+        }, CancellationToken.None));
+        Assert.True(await inbox.ProcessAsync(ack.EventId, CancellationToken.None));
+        var requestBody = new { slotId = slot, qrCode = $"QR-LOAD-{requestId:N}", loadingAccessId = access };
+        using var empty = await loader.PostAsJsonAsync(fulfillPath, requestBody);
+        Assert.Equal(HttpStatusCode.Conflict, empty.StatusCode);
+        await Run("""
+            UPDATE kiosk_ops.flower_presence SET states=ARRAY[1,0,-1,-1],
+                observed_at=(extract(epoch FROM clock_timestamp())*1000)::bigint,
+                received_at=clock_timestamp() WHERE kiosk_id=@kiosk
+            """, ("kiosk", f.KioskId));
+        using var wrongRelay = await loader.PostAsJsonAsync(fulfillPath, requestBody);
+        Assert.Equal(HttpStatusCode.Conflict, wrongRelay.StatusCode);
+        await Run("""
+            UPDATE kiosk_ops.flower_presence SET states=ARRAY[-1,1,-1,-1],
+                observed_at=(extract(epoch FROM clock_timestamp()-interval '60 seconds')*1000)::bigint,
+                received_at=clock_timestamp()-interval '60 seconds' WHERE kiosk_id=@kiosk
+            """, ("kiosk", f.KioskId));
+        using var stalePresence = await loader.PostAsJsonAsync(fulfillPath, requestBody);
+        Assert.Equal(HttpStatusCode.Conflict, stalePresence.StatusCode);
+        var presence = new FlowerPresenceReceiver(data, ring);
+        var reading = FlowerPresenceProtocol.Sign(new SignedFlowerPresence(1, hardware, Guid.NewGuid(),
+            "FLOWER_PRESENCE", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            [-1, 1, -1, -1], ""), deviceKey);
+        Assert.False(await presence.ReceiveAsync(hardware,
+            reading with { Signature = new string('0', 64) }, CancellationToken.None));
+        Assert.True(await presence.ReceiveAsync(hardware, reading, CancellationToken.None));
+        using var beforeExplicit = await sellerClient.PostAsync(pickupPath, null);
+        Assert.Equal(HttpStatusCode.Conflict, beforeExplicit.StatusCode);
+        using var loaded = await loader.PostAsJsonAsync(fulfillPath, requestBody);
+        Assert.True(loaded.IsSuccessStatusCode, await loaded.Content.ReadAsStringAsync());
+        using var replayLoad = await loader.PostAsJsonAsync(fulfillPath, requestBody);
+        Assert.Equal(await loaded.Content.ReadAsStringAsync(), await replayLoad.Content.ReadAsStringAsync());
+        using var changedQr = await loader.PostAsJsonAsync(fulfillPath,
+            new { slotId = slot, qrCode = $"DIFFERENT-{requestId:N}", loadingAccessId = access });
+        Assert.Equal(HttpStatusCode.Conflict, changedQr.StatusCode);
+        using var pickupAllowed = await sellerClient.PostAsync(pickupPath, null);
+        Assert.True(pickupAllowed.IsSuccessStatusCode, await pickupAllowed.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Fulfill_DoesNotDoubleCountStock()
     {
         var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 1);
@@ -568,11 +915,12 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
         // 4. Fulfill the order into the PREORDER slot
         await using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "SELECT flow.web_fulfill(@id, @seller, @actor, @slot, 'QR-TEST-FULFILL')";
+            cmd.CommandText = "SELECT flow.web_fulfill(@id, @seller, @actor, @slot, @qr)";
             cmd.Parameters.AddWithValue("id", reqId);
             cmd.Parameters.AddWithValue("seller", f.SellerId);
             cmd.Parameters.AddWithValue("actor", f.SellerUserId);
             cmd.Parameters.AddWithValue("slot", f.PreorderSlotIds[0]);
+            cmd.Parameters.AddWithValue("qr", $"QR-TEST-{reqId:N}");
             await cmd.ExecuteNonQueryAsync();
         }
 

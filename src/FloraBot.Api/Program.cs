@@ -380,6 +380,7 @@ app.MapSlotLayoutRequests();
 app.MapSellerSlotBouquets();
 app.MapSellerSlotMaintenance();
 app.MapMaintenanceAccess();
+app.MapPreorderLoadingAccess();
 app.MapStaffInventoryTasks();
 app.MapTechnicalRepairAccess();
 app.MapManualUnlockRetryEnrollment();

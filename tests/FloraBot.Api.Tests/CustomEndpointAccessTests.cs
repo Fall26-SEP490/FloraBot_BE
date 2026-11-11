@@ -229,7 +229,8 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["CUSTOMER"], "GET", "/api/member/preorders");
         Add(["CUSTOMER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
-        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/assignment", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", "/api/me/preorders/{requestId:guid}/loading-access");
         Add(["ADMIN"], "GET", "/api/admin/preorders");
         Add(["ADMIN"], "POST", "/api/admin/preorders/{requestId:guid}/cancel");
         Add([], "POST", "/api/receipts/{orderId:guid}/evidence");
@@ -316,7 +317,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add([], "POST", "/api/kiosk-support/{kioskId:guid}/device");
         // StaffPreorders
         Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/preorders");
-        Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/preorders/{requestId:guid}/fulfill");
+        Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/preorders/{requestId:guid}/fulfill", "/api/staff/tasks/{taskId:guid}/preorders/{requestId:guid}/loading-access");
         // SellerStaffChat
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}/chat/open");
         Add(["SELLER_STAFF"], "POST", "/api/staff/chats/open");
