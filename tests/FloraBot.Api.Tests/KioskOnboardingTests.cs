@@ -960,16 +960,8 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task LegacyMonthlyPackages_ExcludeAnnualTiers_AndSubscribeRejectsAnnualTier()
+    public async Task LegacyMonthlyEntrypoints_Retired()
     {
-        using var client = _factory.CreateClient();
-        var packages = await client.GetFromJsonAsync<List<PackageResponse>>("/api/packages");
-        Assert.NotNull(packages);
-        // GET /api/packages must only return monthly packages, never annual tiers with monthlyFee = 0
-        Assert.All(packages, p => Assert.True(p.MonthlyFee > 0));
-        Assert.DoesNotContain(packages, p => p.Name is "Trial" or "Pro" or "Max");
-
-        // Verify flow.subscribe rejects annual package
         using var scope = _factory.Services.CreateScope();
         var source = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
 
@@ -989,12 +981,16 @@ public sealed class KioskOnboardingTests : IClassFixture<ApiFactory>
         insertSeller.Parameters.AddWithValue("ue", $"aseller-{sellerId:N}@example.invalid");
         await insertSeller.ExecuteNonQueryAsync();
 
+        using var client = CreateClientForRole("SELLER", sellerId: sellerId, userId: userId);
+        var res = await client.GetAsync("/api/packages");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+
         await using var subCmd = source.CreateCommand("SELECT flow.subscribe(@sid, @uid, 1)");
         subCmd.Parameters.AddWithValue("sid", sellerId);
         subCmd.Parameters.AddWithValue("uid", userId);
         var ex = await Assert.ThrowsAsync<PostgresException>(() => subCmd.ExecuteScalarAsync());
-        Assert.Equal("P0001", ex.SqlState);
-        Assert.Contains("không thể gia hạn theo tháng", ex.MessageText);
+        Assert.Equal("0A000", ex.SqlState);
+        Assert.Contains("Monthly subscriptions are retired", ex.MessageText);
     }
 
     [Fact]

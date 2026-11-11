@@ -22,7 +22,7 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
     ];
 
     [Fact]
-    public async Task TechnicalIncidentLifecycleAndScopeEnforcement()
+    public async Task TechnicalIncidentScopeEnforcementAndUnverifiedRepairRejection()
     {
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
@@ -127,19 +127,10 @@ public sealed class SplitRoleTaskLifecycleTests(ApiFactory factory) : IClassFixt
         var mgrWithdrawals = await manager.GetAsync("/api/admin/withdrawals");
         Assert.Equal(HttpStatusCode.Forbidden, mgrWithdrawals.StatusCode);
 
-        // 9. Technician resolves incident
-        var resolveRes = await tech.PostAsJsonAsync($"/api/staff/tasks/{taskId}/resolve-incident",
+        // 9. An assigned technician still needs verified repair evidence.
+        using var resolveRes = await tech.PostAsJsonAsync($"/api/staff/tasks/{taskId}/resolve-incident",
             new StaffIncidentResolutionInput(Guid.NewGuid(), 2, "Sensor cleaned, unjammed, and door cycle verified"));
-        resolveRes.EnsureSuccessStatusCode();
-
-        // 10. Operations manager reviews and completes task
-        var reviewRes = await manager.PostAsJsonAsync($"/api/operations/staff-tasks/{taskId}/transition",
-            new TransitionStaffTask(3, "COMPLETED", "Technical report verified on site; incident closed"));
-        reviewRes.EnsureSuccessStatusCode();
-
-        var completedDetail = await manager.GetFromJsonAsync<StaffTaskDetail>($"/api/operations/staff-tasks/{taskId}");
-        Assert.NotNull(completedDetail);
-        Assert.Equal("COMPLETED", completedDetail.History[0].ToStatus);
+        Assert.Equal(HttpStatusCode.Conflict, resolveRes.StatusCode);
     }
 
     [Fact]
