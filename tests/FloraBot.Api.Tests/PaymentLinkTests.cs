@@ -101,7 +101,8 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
                 Posts++;
                 var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 var code = body.GetProperty("orderCode").GetInt64();
-                var canonical = $"amount=400000&cancelUrl=https://example.invalid/cancel&description=FloraBot {code}&orderCode={code}&returnUrl=https://example.invalid/return";
+                Assert.Equal("FloraBot", body.GetProperty("description").GetString());
+                var canonical = $"amount=400000&cancelUrl=https://example.invalid/cancel&description=FloraBot&orderCode={code}&returnUrl=https://example.invalid/return";
                 var expected = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(Settings["PAYOS_CHECKSUM_KEY"]!), Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
                 Assert.Equal(expected, body.GetProperty("signature").GetString());
                 Assert.Equal(400000, body.GetProperty("amount").GetInt64());

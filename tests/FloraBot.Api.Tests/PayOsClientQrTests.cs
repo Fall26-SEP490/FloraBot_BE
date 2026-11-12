@@ -13,6 +13,59 @@ public sealed class PayOsClientQrTests
     private const string Key = "test-only-qr-checksum-key";
     private const string Url = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07";
 
+    [Theory]
+    [InlineData(false, 123L)]
+    [InlineData(true, 123L)]
+    [InlineData(false, 9007199254740991L)]
+    [InlineData(true, 9007199254740991L)]
+    public async Task CreatesBankCompatibleLinkWithSignedShortDescription(bool seller, long orderCode)
+    {
+        using var http = new HttpClient(new ShortDescriptionBank(orderCode));
+        var gateway = seller
+            ? PayOsClient.ForChannel(http, new PayOsChannelOptions("client", "api", Key,
+                "https://example.invalid/return", "https://example.invalid/cancel",
+                "970422", "113366668888"))
+            : Client(http);
+
+        var result = await gateway.CreateAsync(orderCode, 10000, CancellationToken.None, 1800000000);
+
+        Assert.Equal(orderCode, result.OrderCode);
+        Assert.Equal(10000, result.Amount);
+        Assert.Equal(Url, result.CheckoutUrl);
+        Assert.Equal(QrPayload, result.QrCode);
+    }
+
+    private sealed class ShortDescriptionBank(long orderCode) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
+            var description = body.GetProperty("description").GetString()!;
+            // Some payOS bank channels reject descriptions longer than nine characters.
+            if (description.Length > 9)
+                return new(HttpStatusCode.BadRequest) { Content = JsonContent.Create(new { code = "400", desc = "description too long" }) };
+            Assert.Matches("^[A-Za-z0-9 ]{1,9}$", description);
+            Assert.Equal(orderCode, body.GetProperty("orderCode").GetInt64());
+            Assert.Equal(1800000000, body.GetProperty("expiredAt").GetInt64());
+            var signed = JsonSerializer.SerializeToElement(new
+            {
+                amount = body.GetProperty("amount").GetInt64(),
+                cancelUrl = body.GetProperty("cancelUrl").GetString(),
+                description,
+                orderCode,
+                returnUrl = body.GetProperty("returnUrl").GetString()
+            });
+            Assert.True(PayOsChecksum.Verify(signed, body.GetProperty("signature").GetString()!, Key));
+            var data = JsonSerializer.SerializeToElement(new
+            {
+                orderCode, amount = 10000, status = "PENDING", checkoutUrl = Url,
+                qrCode = QrPayload, bin = "970422", accountNumber = "113366668888"
+            });
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(Envelope(data)) };
+        }
+    }
+
     [Fact]
     public async Task ReturnsExactVietQrFromVerifiedCreationResponse()
     {
