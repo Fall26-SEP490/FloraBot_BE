@@ -32,6 +32,19 @@ Legacy fixed-account seller versions keep their fixed-account policy. Platform/p
 
 ## Local validation and incident limits
 
+Payment creation uses the eight-character description `FloraBot` for compatibility
+with bank channels limited to nine characters by the payOS creation API. The full
+unique `orderCode` is still sent separately and included in the request signature.
+This change applies to platform and seller links; it does not enable virtual
+accounts or change a channel version's recipient policy.
+
+After deploying the API build, verify a new unpaid checkout returns a payOS
+`checkoutUrl` and a `qrCode` starting with `000201`. Repeat before paying to check
+that the order code, URL and QR stay the same. If it still returns 502, inspect
+`Seller payOS link creation failed for checkout ...` in the API log for the exact
+failure code. A successful fake-provider test does not establish the cause of a
+live 502. Do not reset existing gateway mappings or mark payments paid to retry.
+
 Tests use fake HTTP provider responses and a disposable local PostgreSQL database, with email and MQTT simulated/disabled. They cover the fixed-account and opted-in virtual-account HTTP lifecycle, repeat links, signed callbacks, cross-key/wrong-recipient rejection, credential drift, masked output, and signed lookup with omitted or wrong account details. Payment fixtures use the existing valid paid-kiosk fixture helper; rental production rules are unchanged.
 
 This is a compatibility fix, not proof of the cause of live order 93. The original POST response was not retained; CSV shows the linked bank account and GET omitted `accountNumber`. A live unpaid checkout after an authorized deployment is still needed to confirm the actual provider response. No live payment, webhook registration, deployment or old-order repair is performed by local tests.

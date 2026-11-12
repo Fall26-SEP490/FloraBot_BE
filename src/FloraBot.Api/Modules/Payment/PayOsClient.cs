@@ -72,7 +72,9 @@ public sealed class PayOsClient
         if (amount <= 0 || orderCode is <= 0 or > 9007199254740991) throw new PaymentGatewayException("request_values_invalid");
         var returnUrl = Callback(options.ReturnUrl);
         var cancelUrl = Callback(options.CancelUrl);
-        var description = "FloraBot " + orderCode.ToString(CultureInfo.InvariantCulture);
+        // Some bank channels only accept nine characters. The separate orderCode
+        // remains the unique payment identifier; do not append it to the description.
+        const string description = "FloraBot";
         var signed = JsonSerializer.SerializeToElement(new { amount, cancelUrl, description, orderCode, returnUrl });
         using var request = Request(HttpMethod.Post, "v2/payment-requests");
         var payload = new Dictionary<string, object>
