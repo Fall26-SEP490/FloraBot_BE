@@ -20,6 +20,7 @@ public static class ManualUnlockRetryEnrollment
             HttpContext http,
             NpgsqlDataSource data,
             ICapPublisher publisher,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
@@ -42,7 +43,10 @@ public static class ManualUnlockRetryEnrollment
                 await timeoutCmd.ExecuteNonQueryAsync(ct);
 
                 // Active admin recheck
-                await using (var adminCheck = new NpgsqlCommand("SELECT 1 WHERE flow.check_active_admin(@admin) IS NOT NULL", connection, transaction))
+                await using (var adminCheck = new NpgsqlCommand("""
+                    SELECT 1 FROM identity.users WHERE id = @admin AND role = 'ADMIN' AND status = 'ACTIVE'
+                    FOR SHARE
+                    """, connection, transaction))
                 {
                     adminCheck.Parameters.AddWithValue("admin", adminId);
                     if (await adminCheck.ExecuteScalarAsync(ct) is null)
@@ -186,13 +190,20 @@ public static class ManualUnlockRetryEnrollment
             {
                 return Results.Problem(statusCode: 409, detail: "Ô đang được xử lý đồng thời. Hãy tải lại trạng thái trước khi thử lại.");
             }
+            catch (PostgresException ex) when (ex.SqlState is "42P01" or "42703" or "42883")
+            {
+                loggerFactory.CreateLogger("FloraBot.Api.ManualUnlockRetryEnrollment").LogError(
+                    "Manual unlock retry enrollment schema mismatch for kiosk {KioskId} slot {SlotId} (SQLSTATE {SqlState})",
+                    kioskId, slotId, ex.SqlState);
+                return Results.Problem(statusCode: 503, detail: "Cơ sở dữ liệu chưa tương thích với cấu hình thử mở lại. Báo đội triển khai kiểm tra migration.");
+            }
         })
         .RequireAuthorization("Admin")
         .WithTags("KioskOps")
         .WithSummary("Cấu hình quyền thử lại lệnh mở khóa thủ công (Admin)")
         .WithDescription("Bật hoặc tắt supports_manual_retry cho ô tủ sau khi xác nhận phiên bản firmware và cảm biến cửa.")
         .Produces<SlotSensorCapabilityResponse>()
-        .ProducesProblem(400).ProducesProblem(409)
+        .ProducesProblem(400).ProducesProblem(409).ProducesProblem(503)
         .Produces(401).Produces(403).Produces(404);
     }
 }

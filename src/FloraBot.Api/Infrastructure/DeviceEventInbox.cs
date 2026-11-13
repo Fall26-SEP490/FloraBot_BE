@@ -123,6 +123,10 @@ public sealed class DeviceEventInbox(NpgsqlDataSource data, ICapPublisher publis
         finish.Parameters.AddWithValue("state", disposition); finish.Parameters.AddWithValue("id", eventId);
         await finish.ExecuteNonQueryAsync(ct);
         await outbox.CommitAsync(ct);
+        if (commandId.HasValue)
+            logger?.LogInformation(
+                "MQTT device event {DeviceEvent} for command {CommandId} kiosk {KioskId} event {EventId}: {Disposition}",
+                kind, commandId, kiosk, eventId, disposition);
         await connection.CloseAsync();
         if (disposition == "APPLIED")
         {

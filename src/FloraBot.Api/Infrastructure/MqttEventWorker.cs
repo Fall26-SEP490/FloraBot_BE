@@ -109,15 +109,17 @@ public sealed class MqttEventWorker(IConfiguration configuration, IServiceScopeF
                 catch (Exception ex) { logger.LogWarning(ex, "MQTT inbox unavailable; processing will retry"); }
                 if (client.IsConnected && Volatile.Read(ref reconnect) == 0)
                 {
+                    Guid? commandId = null;
                     try
                     {
                         using var scope = scopes.CreateScope();
                         var dispatcher = scope.ServiceProvider.GetRequiredService<DeviceCommandDispatcher>();
                         foreach (var id in await dispatcher.PendingAsync(stoppingToken))
                         {
+                            commandId = id;
                             var prepared = await dispatcher.PrepareAsync(id, stoppingToken);
                             if (prepared is null) continue;
-                            await dispatcher.DeliverAsync(prepared, async (command, ct) =>
+                            var delivered = await dispatcher.DeliverAsync(prepared, async (command, ct) =>
                             {
                                 var result = await client.PublishAsync(new MqttApplicationMessageBuilder()
                                     .WithTopic($"kiosk/{command.HardwareId}/cmd")
@@ -125,10 +127,14 @@ public sealed class MqttEventWorker(IConfiguration configuration, IServiceScopeF
                                     .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build(), ct);
                                 if ((int)result.ReasonCode >= 128) throw new InvalidOperationException("MQTT command was rejected by the broker.");
                             }, stoppingToken);
+                            if (prepared.Command.Purpose == "SELLER_ACCESS")
+                                logger.LogInformation(
+                                    "MQTT seller access dispatch for command {CommandId} slot {SlotId} relay {RelayChannel}; broker PUBACK recorded {BrokerAcknowledged}",
+                                    id, prepared.Command.SlotId, prepared.Command.RelayChannel, delivered);
                         }
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                    catch (Exception ex) { logger.LogWarning(ex, "MQTT command dispatch failed; persisted retry deadline retained"); }
+                    catch (Exception ex) { logger.LogWarning(ex, "MQTT command dispatch failed for command {CommandId}; persisted retry deadline retained", commandId); }
 
                     try
                     {

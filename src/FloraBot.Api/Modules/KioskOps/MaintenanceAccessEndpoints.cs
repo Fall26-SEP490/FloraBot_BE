@@ -17,6 +17,10 @@ internal static class MaintenanceAccessEndpoints
         app.MapPost("/api/me/maintenance-access", IssueAsync)
             .RequireAuthorization("Seller").RequireRateLimiting("maintenance-code-issue").WithTags("KioskOps")
             .Produces<MaintenanceAccessIssued>().ProducesProblem(400).Produces(404);
+        app.MapPost("/api/me/maintenance-open", OpenFromWebAsync)
+            .RequireAuthorization("Seller").RequireRateLimiting("maintenance-code-issue").WithTags("KioskOps")
+            .Produces<SlotMaintenanceSessionResponse>().Produces<ManualUnlockRetryResponse>()
+            .ProducesProblem(400).Produces(404).ProducesProblem(409);
 
         app.MapGet("/api/kiosks/{kioskId:guid}/maintenance-access/pending", async (
             Guid kioskId, HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
@@ -31,6 +35,41 @@ internal static class MaintenanceAccessEndpoints
             .Produces<AcceptedMaintenanceAccess>().ProducesProblem(400).Produces(404).ProducesProblem(409);
     }
 
+    private static async Task<IResult> OpenFromWebAsync(MaintenanceAccessRequest input, HttpContext http,
+        SlotMaintenanceService service, ManualUnlockRetryService retry, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId) ||
+            !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
+            return Results.Forbid();
+        if (!IsValid(input))
+            return Results.Problem(statusCode: 400, detail: "Yêu cầu mở ô không hợp lệ.");
+        return input.Operation == "RETRY"
+            ? await retry.RequestSellerRetryAsync(input.KioskId, input.SlotId, input.SessionId,
+                new(input.RequestId!.Value), actorId, http, ct)
+            : await OpenWalkInAsync(input, actorId, sellerId, service, ct);
+    }
+
+    internal static Task<IResult> OpenWalkInAsync(MaintenanceAccessRequest input, Guid actorId, Guid sellerId,
+        SlotMaintenanceService service, CancellationToken ct,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>>? verify = null) =>
+        input.Operation switch
+        {
+            "START" => service.StartSessionAsync(input.KioskId, input.SlotId, actorId, sellerId,
+                new(input.SessionId, input.Action!, input.ExpectedBouquetId, input.ProductId, input.Reason!), ct, verify),
+            "OPEN_NEXT" => service.OpenNextAsync(input.KioskId, input.SlotId, input.SessionId, actorId, sellerId, ct, verify),
+            "OPEN_FOR_CHECK" => service.OpenForCheckAsync(input.KioskId, input.SlotId, input.SessionId,
+                actorId, sellerId, new(input.Reason!), ct, verify),
+            _ => Task.FromResult<IResult>(Results.NotFound())
+        };
+
+    private static bool IsValid(MaintenanceAccessRequest input) =>
+        input.KioskId != Guid.Empty && input.SlotId != Guid.Empty && input.SessionId != Guid.Empty
+        && input.Operation is ("START" or "OPEN_NEXT" or "OPEN_FOR_CHECK" or "RETRY")
+        && (input.Operation != "START" || input.Action is ("LOAD" or "REMOVE" or "REPLACE"))
+        && (input.Operation is not ("START" or "OPEN_FOR_CHECK") || input.Reason?.Trim().Length is >= 5 and <= 500)
+        && (input.Operation != "RETRY" || (input.RequestId is { } requestId && requestId != Guid.Empty));
+
     private static async Task<IResult> IssueAsync(MaintenanceAccessRequest input, HttpContext http,
         NpgsqlDataSource data, MaintenanceAccessStore store, CancellationToken ct)
     {
@@ -39,11 +78,7 @@ internal static class MaintenanceAccessEndpoints
             !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
             return Results.Forbid();
 
-        if (input.KioskId == Guid.Empty || input.SlotId == Guid.Empty || input.SessionId == Guid.Empty
-            || input.Operation is not ("START" or "OPEN_NEXT" or "OPEN_FOR_CHECK" or "RETRY")
-            || (input.Operation == "START" && input.Action is not ("LOAD" or "REMOVE" or "REPLACE"))
-            || (input.Operation is ("START" or "OPEN_FOR_CHECK") && input.Reason?.Trim().Length is not (>= 5 and <= 500))
-            || (input.Operation == "RETRY" && (input.RequestId is null || input.RequestId == Guid.Empty)))
+        if (!IsValid(input))
             return Results.Problem(statusCode: 400, detail: "Yêu cầu xác nhận mở ô không hợp lệ.");
 
         await using var connection = await data.OpenConnectionAsync(ct);
@@ -77,12 +112,17 @@ internal static class MaintenanceAccessEndpoints
 
     private static async Task<IResult> ConfirmAsync(Guid kioskId, Guid id, ConfirmMaintenanceAccessRequest input,
         HttpContext http, NpgsqlDataSource data, MaintenanceAccessStore store, SlotMaintenanceService service,
-        ManualUnlockRetryService retry, ICapPublisher publisher, CancellationToken ct)
+        ManualUnlockRetryService retry, ICapPublisher publisher, ILoggerFactory loggerFactory, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         if (!IsAuthenticatedKiosk(http, kioskId)) return Results.Forbid();
+        var logger = loggerFactory.CreateLogger(typeof(MaintenanceAccessEndpoints).FullName!);
         var binding = await MaintenanceAccessStore.ReadAsync(data, id, kioskId, ct);
-        if (binding is null) return Results.NotFound();
+        if (binding is null)
+        {
+            logger.LogInformation("Maintenance access challenge {ChallengeId} unavailable at kiosk {KioskId}", id, kioskId);
+            return Results.NotFound();
+        }
         if (binding.ActorRole == "TECHNICIAN" && binding.Operation == "REPAIR")
             return await TechnicalRepairAccess.ConfirmAsync(binding, id, input.Code, data, publisher, store, ct);
         if (binding.ActorRole is not ("SELLER" or "SELLER_STAFF")) return Results.NotFound();
@@ -94,21 +134,22 @@ internal static class MaintenanceAccessEndpoints
             || payload.SlotId != binding.SlotId || (binding.ActorRole == "SELLER_STAFF" && binding.TaskId != payload.SessionId)) return Results.NotFound();
 
         async Task<MaintenanceAccessVerification> Verify(
-            NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken token) =>
-            await store.VerifyAsync(connection, transaction, id, kioskId, input.Code, token);
-
-        var response = payload.Operation switch
+            NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken token)
         {
-            "START" => await service.StartSessionAsync(kioskId, binding.SlotId, binding.ActorId, binding.SellerId,
-                new(payload.SessionId, payload.Action!, payload.ExpectedBouquetId, payload.ProductId, payload.Reason!), ct, Verify),
-            "OPEN_NEXT" => await service.OpenNextAsync(kioskId, binding.SlotId, payload.SessionId,
-                binding.ActorId, binding.SellerId, ct, Verify),
-            "OPEN_FOR_CHECK" => await service.OpenForCheckAsync(kioskId, binding.SlotId, payload.SessionId,
-                binding.ActorId, binding.SellerId, new(payload.Reason!), ct, Verify),
-            "RETRY" => await retry.RequestSellerRetryAsync(kioskId, binding.SlotId, payload.SessionId,
-                new(payload.RequestId!.Value), binding.ActorId, http, ct, Verify),
-            _ => Results.NotFound()
-        };
+            var verification = await store.VerifyAsync(connection, transaction, id, kioskId, input.Code, token);
+            logger.LogInformation(
+                "Maintenance code verification {Verification} for session {SessionId} kiosk {KioskId} slot {SlotId} operation {Operation}",
+                verification, payload.SessionId, kioskId, binding.SlotId, payload.Operation);
+            return verification;
+        }
+
+        var response = payload.Operation == "RETRY"
+            ? await retry.RequestSellerRetryAsync(kioskId, binding.SlotId, payload.SessionId,
+                new(payload.RequestId!.Value), binding.ActorId, http, ct, Verify)
+            : await OpenWalkInAsync(payload, binding.ActorId, binding.SellerId, service, ct, Verify);
+        logger.LogInformation(
+            "Maintenance access confirmation for session {SessionId} kiosk {KioskId} slot {SlotId} operation {Operation} returned HTTP {StatusCode}",
+            payload.SessionId, kioskId, binding.SlotId, payload.Operation, (response as IStatusCodeHttpResult)?.StatusCode);
         return response is IStatusCodeHttpResult { StatusCode: 200 }
             ? Results.Ok(new AcceptedMaintenanceAccess())
             : response;

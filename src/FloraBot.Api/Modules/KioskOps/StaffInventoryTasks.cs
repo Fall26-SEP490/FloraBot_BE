@@ -23,6 +23,9 @@ internal static class StaffInventoryTasks
         app.MapPost("/api/staff/tasks/{taskId:guid}/inventory-maintenance/access", IssueAsync)
             .RequireAuthorization("SellerStaff").RequireRateLimiting("maintenance-code-issue").WithTags("KioskOps")
             .Produces<MaintenanceAccessIssued>();
+        app.MapPost("/api/staff/tasks/{taskId:guid}/inventory-maintenance/open", OpenFromWebAsync)
+            .RequireAuthorization("SellerStaff").RequireRateLimiting("maintenance-code-issue").WithTags("KioskOps")
+            .Produces<SlotMaintenanceSessionResponse>().Produces(400).Produces(404).ProducesProblem(409);
     }
 
     private static async Task<IResult> AssignAsync(AssignInventoryTask input, HttpContext http, NpgsqlDataSource data, CancellationToken ct)
@@ -123,6 +126,29 @@ internal static class StaffInventoryTasks
             actorId, "SELLER_STAFF", taskId, input.Operation, JsonSerializer.Serialize(request)), ct);
         await transaction.CommitAsync(ct);
         return Results.Ok(code);
+    }
+
+    private static async Task<IResult> OpenFromWebAsync(Guid taskId, StaffInventoryOperation input, HttpContext http,
+        NpgsqlDataSource data, SlotMaintenanceService service, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        if (!TryIdentity(http, out var actorId, out var sellerId)) return Results.Forbid();
+        if (input.Operation is not ("START" or "OPEN_NEXT" or "OPEN_FOR_CHECK")
+            || (input.Operation == "OPEN_FOR_CHECK" && input.Reason?.Trim().Length is not (>= 5 and <= 500)))
+            return Results.BadRequest();
+
+        StaffInventoryScope? scope;
+        await using (var connection = await data.OpenConnectionAsync(ct))
+        await using (var transaction = await connection.BeginTransactionAsync(ct))
+            scope = await LoadAsync(connection, transaction, taskId, actorId, sellerId, ct);
+
+        if (scope is null) return Results.NotFound();
+        if (scope.Status != "IN_PROGRESS") return Results.Conflict();
+        var reason = input.Operation == "OPEN_FOR_CHECK" ? input.Reason : scope.Instructions;
+        return await MaintenanceAccessEndpoints.OpenWalkInAsync(
+            new(scope.KioskId, scope.SlotId, input.Operation, taskId, scope.Action,
+                scope.ExpectedBouquetId, scope.ProductId, reason),
+            actorId, sellerId, service, ct);
     }
 
     public static async Task<StaffInventoryScope?> LoadAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

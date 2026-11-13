@@ -113,6 +113,85 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
     }
 
     [Theory]
+    [InlineData(true, "STOCKED")]
+    [InlineData(false, "RENTED_EMPTY")]
+    public async Task AssignedManagerRecoversExpiredMaintenanceAfterPhysicalCheck(bool originalRemains, string expectedStatus)
+    {
+        var f = await SetupAsync();
+        using var seller = Client(f);
+        var sessionId = Guid.NewGuid();
+        using var started = await PostMaintenanceAsync(seller, f.Kiosk, f.Slot,
+            new StartSlotMaintenanceRequest(sessionId, "REMOVE", f.Bouquet, null, "Kiểm tra hoa tại ô"));
+        started.EnsureSuccessStatusCode();
+        var session = (await started.Content.ReadFromJsonAsync<SlotMaintenanceSessionResponse>())!;
+
+        var data = factory.Services.GetRequiredService<NpgsqlDataSource>();
+        var managerId = Guid.NewGuid();
+        var outsiderId = Guid.NewGuid();
+        async Task<object?> Sql(string sql)
+        {
+            await using var command = data.CreateCommand(sql);
+            command.Parameters.AddWithValue("manager", managerId);
+            command.Parameters.AddWithValue("outsider", outsiderId);
+            command.Parameters.AddWithValue("session", sessionId);
+            command.Parameters.AddWithValue("cmd", session.CurrentCmdId!.Value);
+            command.Parameters.AddWithValue("slot", f.Slot);
+            command.Parameters.AddWithValue("kiosk", f.Kiosk);
+            command.Parameters.AddWithValue("presence", originalRemains ? 1 : 0);
+            return await command.ExecuteScalarAsync();
+        }
+
+        await Sql("""
+            INSERT INTO identity.users(id,email,full_name,password_hash,role,status) VALUES
+                (@manager,@manager::text||'@example.invalid','Recovery manager','!test','OPERATIONS_MANAGER','ACTIVE'),
+                (@outsider,@outsider::text||'@example.invalid','Other manager','!test','OPERATIONS_MANAGER','ACTIVE');
+            INSERT INTO kiosk_ops.manager_kiosks(manager_id,kiosk_id) VALUES(@manager,@kiosk);
+            UPDATE kiosk_ops.kiosks SET last_heartbeat_at=clock_timestamp() WHERE id=@kiosk;
+            INSERT INTO kiosk_ops.flower_presence(kiosk_id,event_id,observed_at,states,received_at)
+            VALUES(@kiosk,gen_random_uuid(),(extract(epoch FROM clock_timestamp())*1000)::bigint,
+                ARRAY[@presence,-1,-1,-1],clock_timestamp());
+            """);
+        using var manager = factory.CreateClient();
+        manager.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("OPERATIONS_MANAGER", userId: managerId));
+        using var outsider = factory.CreateClient();
+        outsider.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("OPERATIONS_MANAGER", userId: outsiderId));
+        var path = $"/api/operations/kiosks/{f.Kiosk}/slots/{f.Slot}/maintenance-recovery";
+        var input = new RecoverMaintenanceRequest(true, originalRemains ? "ORIGINAL_BOUQUET" : "EMPTY",
+            f.Bouquet, "Đã kiểm tra tại tủ");
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await seller.PostAsJsonAsync($"{path}/{sessionId}", input)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await outsider.PostAsJsonAsync($"{path}/{sessionId}", input)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await manager.PostAsJsonAsync($"{path}/{sessionId}", input)).StatusCode);
+        await Sql("UPDATE kiosk_ops.slot_maintenance_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=@session");
+        Assert.Equal(HttpStatusCode.Conflict, (await manager.PostAsJsonAsync($"{path}/{sessionId}", input)).StatusCode);
+        await Sql("""
+            UPDATE kiosk_ops.unlock_tokens SET issued_at=clock_timestamp()-interval '2 minutes',
+                expires_at=clock_timestamp()-interval '1 second' WHERE cmd_id=@cmd;
+            """);
+
+        using var candidate = await manager.GetAsync(path);
+        candidate.EnsureSuccessStatusCode();
+        Assert.Equal(sessionId, (await candidate.Content.ReadFromJsonAsync<MaintenanceRecoveryCandidate>())!.SessionId);
+        var mismatch = input with { ObservedContents = originalRemains ? "EMPTY" : "ORIGINAL_BOUQUET" };
+        Assert.Equal(HttpStatusCode.Conflict, (await manager.PostAsJsonAsync($"{path}/{sessionId}", mismatch)).StatusCode);
+        Assert.Equal("LOCKED", await Sql("SELECT status FROM kiosk_ops.slots WHERE id=@slot"));
+
+        using var response = await manager.PostAsJsonAsync($"{path}/{sessionId}", input);
+        response.EnsureSuccessStatusCode();
+        Assert.Equal(new MaintenanceRecoveryResult(sessionId, "Recovered", expectedStatus),
+            await response.Content.ReadFromJsonAsync<MaintenanceRecoveryResult>());
+        Assert.Equal("REVOKED", await Sql("SELECT status FROM kiosk_ops.unlock_tokens WHERE cmd_id=@cmd"));
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await manager.PostAsJsonAsync($"{path}/{sessionId}", input)).StatusCode);
+        Assert.Equal(originalRemains ? 0L : 1L, await Sql("""
+            SELECT count(*) FROM kiosk_ops.inventory_logs WHERE slot_id=@slot AND movement_type='RETURN_SELLER'
+            """));
+        Assert.Equal(1L, await Sql("""
+            SELECT count(*) FROM notify.audit_logs WHERE entity_id=@slot AND action='SLOT_MAINTENANCE_RECOVERED'
+            """));
+    }
+
+    [Theory]
     [InlineData("LOAD")]
     [InlineData("REPLACE")]
     public async Task ExhaustedLoadingRemainsRetryableAndDoesNotBlockOtherSensorSessions(string action)

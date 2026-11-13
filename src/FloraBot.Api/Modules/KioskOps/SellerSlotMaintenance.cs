@@ -87,13 +87,13 @@ internal sealed record MaintenanceLockedContext(
     MaintenanceCapabilityInfo Capability,
     MaintenanceSessionRow? Session);
 
-public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher publisher)
+public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher publisher, ILogger<SlotMaintenanceService> logger)
 {
     private static IReadOnlyList<string> ComputeAvailableActions(
         string stage, string action, string? substate, bool canOpenForCheck = false) =>
         stage switch
         {
-            "Completed" => [],
+            "Completed" or "Recovered" => [],
             "NeedsInspection" => canOpenForCheck
                 ? ["open-for-check", "check", "report-issue"]
                 : ["check", "report-issue"],
@@ -260,20 +260,22 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
     }
 
     private static async Task<bool> CanOperateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        MaintenanceLockedContext auth, Guid sessionId, string action, CancellationToken ct)
+        MaintenanceLockedContext auth, Guid sessionId, string action, CancellationToken ct,
+        StartSlotMaintenanceRequest? start = null)
     {
         if (auth.Actor.Status != "ACTIVE") return false;
         if (auth.Actor.Role == "SELLER") return true;
         if (auth.Actor.Role != "SELLER_STAFF") return false;
         var task = await StaffInventoryTasks.LoadAsync(connection, transaction, sessionId, auth.Actor.Id, auth.Seller.Id, ct);
         return task is { Status: "IN_PROGRESS" } && task.KioskId == auth.Kiosk.Id
-            && task.SlotId == auth.Slot.Id && task.Action == action;
+            && task.SlotId == auth.Slot.Id && task.Action == action
+            && (start is null || (task.ExpectedBouquetId == start.ExpectedBouquetId && task.ProductId == start.ProductId));
     }
 
     internal async Task<IResult> StartSessionAsync(
         Guid kioskId, Guid slotId, Guid actorId, Guid sellerId,
         StartSlotMaintenanceRequest input, CancellationToken ct,
-        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>>? confirmAccess = null)
     {
         if (input.Id == Guid.Empty)
             return Results.Problem(statusCode: 400, detail: "Cần Id hợp lệ cho phiên bảo trì.");
@@ -294,7 +296,8 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
-            var verified = await confirmAccess(connection, transaction, ct);
+            var verified = confirmAccess is null ? MaintenanceAccessVerification.Valid
+                : await confirmAccess(connection, transaction, ct);
             if (verified != MaintenanceAccessVerification.Valid)
             {
                 if (verified == MaintenanceAccessVerification.Invalid)
@@ -311,7 +314,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
             var isShopAuthorized = auth.Seller.CanMaintain(action == MaintenanceAction.Remove);
 
-            if (!isShopAuthorized || !await CanOperateAsync(connection, transaction, auth, input.Id, actionUpper, ct))
+            if (!isShopAuthorized || !await CanOperateAsync(connection, transaction, auth, input.Id, actionUpper, ct, input))
                 return Results.Forbid();
 
             if (!auth.AssignmentActive)
@@ -372,6 +375,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                         reader.IsDBNull(21) ? null : reader.GetDateTime(21),
                         Convert.ToInt64(reader.GetValue(22)));
 
+                    if (row.Stage == "Recovered")
+                        return Results.Problem(statusCode: 409, detail: "Phiên đã được đội vận hành kết thúc. Hãy tạo phiên mới.");
+
                     await reader.CloseAsync();
                     await outbox.CommitAsync(ct);
                     return Results.Ok(ToResponse(row));
@@ -383,7 +389,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
             // Check no active maintenance session on slot
             await using (var activeSessionCheck = new NpgsqlCommand("""
-                SELECT 1 FROM kiosk_ops.slot_maintenance_sessions WHERE slot_id = @slot AND stage <> 'Completed'
+                SELECT 1 FROM kiosk_ops.slot_maintenance_sessions WHERE slot_id = @slot AND stage NOT IN ('Completed','Recovered')
                 """, connection, transaction))
             {
                 activeSessionCheck.Parameters.AddWithValue("slot", slotId);
@@ -586,6 +592,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                 auth.Slot.Status, auth.Slot.BouquetId, input.ProductId, null, reasonTrim,
                 now.UtcDateTime, expiresAt15.UtcDateTime, cmdId, null, null, null, 0, null, 1);
 
+            logger.LogInformation(
+                "Maintenance session {SessionId} started at kiosk {KioskId} slot {SlotId}; action {Action}, slot {PreviousStatus} -> LOCKED, stage {Stage}, command {CommandId}, expires {ExpiresAt}",
+                input.Id, kioskId, slotId, actionUpper, auth.Slot.Status, stageStr, cmdId, expiresAt15);
             return Results.Ok(ToResponse(createdRow));
         }
         catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
@@ -645,7 +654,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         await using var connection = await data.OpenConnectionAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             SELECT id FROM kiosk_ops.slot_maintenance_sessions
-            WHERE kiosk_id = @kiosk AND slot_id = @slot AND seller_id = @seller AND stage <> 'Completed'
+            WHERE kiosk_id = @kiosk AND slot_id = @slot AND seller_id = @seller AND stage NOT IN ('Completed','Recovered')
             ORDER BY phase_started_at DESC LIMIT 1
             """, connection);
         cmd.Parameters.AddWithValue("kiosk", kioskId);
@@ -670,7 +679,32 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             if (auth is null || auth.Session is null) return Results.NotFound();
 
             var result = await SyncSessionInternalAsync(connection, transaction, auth, ct);
+            await using var diagnostic = new NpgsqlCommand("""
+                SELECT s.status, t.status, d.pubacked_at IS NOT NULL
+                FROM kiosk_ops.slots s
+                LEFT JOIN kiosk_ops.unlock_tokens t ON t.cmd_id = @cmd AND t.slot_id = s.id
+                LEFT JOIN kiosk_ops.mqtt_dispatches d ON d.cmd_id = t.cmd_id
+                WHERE s.id = @slot
+                """, connection, transaction);
+            diagnostic.Parameters.AddWithValue("slot", slotId);
+            diagnostic.Parameters.AddWithValue("cmd", NpgsqlDbType.Uuid, (object?)result.CurrentCmdId ?? DBNull.Value);
+            string? slotStatus = null, commandStatus = null;
+            var brokerAcknowledged = false;
+            await using (var reader = await diagnostic.ExecuteReaderAsync(ct))
+            {
+                if (await reader.ReadAsync(ct))
+                {
+                    slotStatus = reader.GetString(0);
+                    commandStatus = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    brokerAcknowledged = reader.GetBoolean(2);
+                }
+            }
             await outbox.CommitAsync(ct);
+            LogSessionChange(auth.Session, result);
+            logger.LogInformation(
+                "Maintenance check for session {SessionId} kiosk {KioskId} slot {SlotId}; stage {Stage}/{Substate}, slot status {SlotStatus}, command {CommandId} status {CommandStatus}, broker PUBACK recorded {BrokerAcknowledged}, expires {ExpiresAt}",
+                sessionId, kioskId, slotId, result.Stage, result.Substate, slotStatus,
+                result.CurrentCmdId, commandStatus, brokerAcknowledged, result.ExpiresAt);
             return Results.Ok(result);
         }
         catch (PostgresException ex) when (ex.SqlState == "40001")
@@ -685,7 +719,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
     internal async Task<IResult> OpenNextAsync(
         Guid kioskId, Guid slotId, Guid sessionId, Guid actorId, Guid sellerId, CancellationToken ct,
-        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>>? confirmAccess = null)
     {
         await using var connection = await data.OpenConnectionAsync(ct);
         using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
@@ -693,7 +727,8 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
-            var verified = await confirmAccess(connection, transaction, ct);
+            var verified = confirmAccess is null ? MaintenanceAccessVerification.Valid
+                : await confirmAccess(connection, transaction, ct);
             if (verified != MaintenanceAccessVerification.Valid)
             {
                 if (verified == MaintenanceAccessVerification.Invalid)
@@ -708,6 +743,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             if (auth is null || auth.Session is null) return Results.NotFound();
 
             var s = auth.Session;
+            if (s.ActorId != actorId) return Results.NotFound();
             if (s.Action != "REPLACE" || s.Stage != "AwaitLoading" || s.Substate != "RemovalClosedEmptyConfirmed")
                 return Results.Problem(statusCode: 409, detail: "Phiên không ở trạng thái sẵn sàng mở cửa để nạp hoa mới.");
 
@@ -811,7 +847,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                 RowVersion = s.RowVersion + 1
             };
 
-            return Results.Ok(ToResponse(updatedRow));
+            var result = ToResponse(updatedRow);
+            LogSessionChange(s, result);
+            return Results.Ok(result);
         }
         catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
         {
@@ -822,7 +860,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
     internal async Task<IResult> OpenForCheckAsync(
         Guid kioskId, Guid slotId, Guid sessionId, Guid actorId, Guid sellerId,
         OpenForCheckRequest input, CancellationToken ct,
-        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>>? confirmAccess = null)
     {
         if (string.IsNullOrWhiteSpace(input.Reason) || input.Reason.Trim().Length is < 5 or > 500)
             return Results.Problem(statusCode: 400, detail: "Lý do mở kiểm tra phải từ 5 đến 500 ký tự.");
@@ -836,7 +874,8 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
 
         try
         {
-            var verified = await confirmAccess(connection, transaction, ct);
+            var verified = confirmAccess is null ? MaintenanceAccessVerification.Valid
+                : await confirmAccess(connection, transaction, ct);
             if (verified != MaintenanceAccessVerification.Valid)
             {
                 if (verified == MaintenanceAccessVerification.Invalid)
@@ -851,6 +890,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             if (auth is null || auth.Session is null) return Results.NotFound();
 
             var s = auth.Session;
+            if (s.ActorId != actorId) return Results.NotFound();
             if (s.Stage != "NeedsInspection")
                 return Results.Problem(statusCode: 409, detail: "Chỉ phiên đang ở trạng thái NeedsInspection mới được mở kiểm tra.");
 
@@ -1001,7 +1041,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                 RowVersion = s.RowVersion + 1
             };
 
-            return Results.Ok(ToResponse(updatedRow, canOpenForCheck: false));
+            var result = ToResponse(updatedRow, canOpenForCheck: false);
+            LogSessionChange(s, result);
+            return Results.Ok(result);
         }
         catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
         {
@@ -1026,7 +1068,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
             if (auth is null || auth.Session is null) return Results.NotFound();
 
             var s = auth.Session;
-            if (s.Stage == "Completed")
+            if (s.Stage is "Completed" or "Recovered")
                 return Results.Problem(statusCode: 409, detail: "Phiên bảo trì đã hoàn tất, không thể báo lỗi.");
 
             var reasonTrim = reason.Trim();
@@ -1193,7 +1235,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         var sessionList = new List<(Guid SessionId, Guid SlotId, Guid SellerId)>();
         await using (var listCmd = new NpgsqlCommand("""
             SELECT id, slot_id, seller_id FROM kiosk_ops.slot_maintenance_sessions
-            WHERE kiosk_id = @kiosk AND stage <> 'Completed'
+            WHERE kiosk_id = @kiosk AND stage NOT IN ('Completed','Recovered')
             """, connection))
         {
             listCmd.Parameters.AddWithValue("kiosk", kioskId);
@@ -1212,8 +1254,9 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
                 var auth = await LoadAndLockContextAsync(txConn, transaction, kioskId, sId, selId, actorId: null, sessionId: sessId, ct);
                 if (auth is not null && auth.Session is not null)
                 {
-                    await SyncSessionInternalAsync(txConn, transaction, auth, ct);
+                    var result = await SyncSessionInternalAsync(txConn, transaction, auth, ct);
                     await outbox.CommitAsync(ct);
+                    LogSessionChange(auth.Session, result);
                 }
             }
             catch (PostgresException ex) when (ex.SqlState == "40001")
@@ -1225,6 +1268,18 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         }
     }
 
+    private void LogSessionChange(MaintenanceSessionRow before, SlotMaintenanceSessionResponse after)
+    {
+        if (before.Stage == after.Stage && before.Substate == after.Substate &&
+            before.CurrentCmdId == after.CurrentCmdId && before.LatestInspectionReason == after.InspectionReason)
+            return;
+
+        logger.LogInformation(
+            "Maintenance session {SessionId} at kiosk {KioskId} slot {SlotId} changed from {PreviousStage}/{PreviousSubstate} to {Stage}/{Substate}; command {CommandId}, expires {ExpiresAt}, expired during check {SessionExpired}",
+            after.Id, after.KioskId, after.SlotId, before.Stage, before.Substate, after.Stage, after.Substate,
+            after.CurrentCmdId, after.ExpiresAt, after.InspectionReason == "SessionExpired");
+    }
+
     private async Task<SlotMaintenanceSessionResponse> SyncSessionInternalAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -1234,7 +1289,7 @@ public sealed class SlotMaintenanceService(NpgsqlDataSource data, ICapPublisher 
         var s = auth.Session!;
         var now = DateTimeOffset.UtcNow;
 
-        if (s.Stage == "Completed")
+        if (s.Stage is "Completed" or "Recovered")
             return ToResponse(s);
 
         var isShopAuthorized = auth.Seller.CanMaintain(s.Action == "REMOVE");
@@ -1659,6 +1714,7 @@ public static class SellerSlotMaintenanceEndpoints
 {
     public static void MapSellerSlotMaintenance(this WebApplication app)
     {
+        app.MapSlotMaintenanceRecovery();
         app.MapPost("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-sessions", (Guid kioskId, Guid slotId) => Results.Problem(statusCode: 409, detail: "Hãy xác nhận mã mở ô tại kiosk."))
             .RequireAuthorization("Seller").WithTags("KioskOps").ProducesProblem(409);
 

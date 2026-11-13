@@ -136,7 +136,7 @@ public sealed class ManualUnlockRetryService(NpgsqlDataSource data, ICapPublishe
     internal async Task<IResult> RequestSellerRetryAsync(
         Guid kioskId, Guid slotId, Guid sessionId, ManualUnlockRetryRequest input,
         Guid actorId, HttpContext http, CancellationToken ct,
-        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>> confirmAccess)
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<MaintenanceAccessVerification>>? confirmAccess = null)
     {
         http.Response.Headers.CacheControl = "no-store";
 
@@ -151,7 +151,8 @@ public sealed class ManualUnlockRetryService(NpgsqlDataSource data, ICapPublishe
             await using var connection = await data.OpenConnectionAsync(ct);
             using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
             var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
-            var verified = await confirmAccess(connection, transaction, ct);
+            var verified = confirmAccess is null ? MaintenanceAccessVerification.Valid
+                : await confirmAccess(connection, transaction, ct);
             if (verified != MaintenanceAccessVerification.Valid)
             {
                 if (verified == MaintenanceAccessVerification.Invalid)
