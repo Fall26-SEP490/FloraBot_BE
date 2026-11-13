@@ -8,7 +8,7 @@ using Npgsql;
 namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record StaffTaskHistoryItem(string Id, string ActorName, string Action, string? FromStatus, string? ToStatus, string? Report, DateTime CreatedAt);
-public sealed record StaffTaskDetail(string KioskStatus, DateTime? LastHeartbeatAt, StaffIncidentInfo? Incident, string? SlotCode, string? SlotStatus, List<StaffTaskHistoryItem> History, int Page, bool HasMore);
+public sealed record StaffTaskDetail(string KioskStatus, DateTime? LastHeartbeatAt, StaffIncidentInfo? Incident, string? SlotCode, string? SlotStatus, List<StaffTaskHistoryItem> History, int Page, bool HasMore, int? Version = null, string? Status = null);
 public static class StaffTaskDetails
 {
     public static void MapStaffTaskDetails(this WebApplication app)
@@ -27,9 +27,9 @@ public static class StaffTaskDetails
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         if (await StaffTaskAccess.Lock(connection, transaction, taskId, http, ct, readOnly: true) is null)
             return Results.NotFound();
-        Guid kiosk; Guid? incidentId; string status; DateTime? heartbeat;
+        Guid kiosk; Guid? incidentId; string status, taskStatus; int version; DateTime? heartbeat;
         await using (var command = new NpgsqlCommand("""
-            SELECT t.kiosk_id,t.incident_id,k.status,k.last_heartbeat_at FROM kiosk_ops.staff_tasks t
+            SELECT t.kiosk_id,t.incident_id,k.status,k.last_heartbeat_at,t.version,t.status FROM kiosk_ops.staff_tasks t
             JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
             WHERE t.id=@id FOR SHARE OF t
             """, connection, transaction))
@@ -39,6 +39,7 @@ public static class StaffTaskDetails
             if (!await reader.ReadAsync(ct)) return Results.NotFound();
             kiosk = reader.GetGuid(0); incidentId = reader.IsDBNull(1) ? null : reader.GetGuid(1);
             status = reader.GetString(2); heartbeat = reader.IsDBNull(3) ? null : reader.GetDateTime(3);
+            version = reader.GetInt32(4); taskStatus = reader.GetString(5);
         }
         var incident = incidentId is Guid id ? await StaffIncidentContext.Read(connection, transaction, id, kiosk, ct) : null;
         string? slotCode = null, slotStatus = null;
@@ -53,6 +54,6 @@ public static class StaffTaskDetails
         var users = await StaffIdentityRead.Users(data, events.Where(x => x.ActorId.HasValue).Select(x => x.ActorId!.Value).Distinct().ToArray(), ct);
         var history = events.Take(25).Select(x => new StaffTaskHistoryItem(x.Id, x.ActorId is Guid actor ? users.GetValueOrDefault(actor, "Tài khoản không còn hiển thị") : "Hệ thống", x.Action, x.FromStatus, x.ToStatus, x.Report, x.CreatedAt)).ToList();
         await transaction.CommitAsync(ct);
-        return Results.Ok(new StaffTaskDetail(status, heartbeat, incident, slotCode, slotStatus, history, number, events.Count > 25));
+        return Results.Ok(new StaffTaskDetail(status, heartbeat, incident, slotCode, slotStatus, history, number, events.Count > 25, version, taskStatus));
     }
 }
