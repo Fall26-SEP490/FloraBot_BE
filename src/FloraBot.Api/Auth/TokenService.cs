@@ -35,5 +35,19 @@ public sealed class TokenService(IConfiguration configuration, IConnectionMultip
         var parts = value.ToString().Split(':');
         return parts.Length == 2 && Guid.TryParse(parts[0], out var id) ? (id, parts[1]) : null;
     }
+    // Native sessions never share refresh credentials with browser cookies.
+    public async Task<string> CreateMobileRefresh(User user)
+    {
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        await redis.GetDatabase().StringSetAsync("mobile:" + Key(token), user.Id + ":" + CredentialVersion(user), TimeSpan.FromDays(7));
+        return token;
+    }
+    public async Task<(Guid Id, string Version)?> ConsumeMobileRefresh(string token)
+    {
+        if (!MobileAuthPolicy.ValidRefresh(token)) return null;
+        var value = await redis.GetDatabase().StringGetDeleteAsync("mobile:" + Key(token));
+        var parts = value.ToString().Split(':');
+        return parts.Length == 2 && Guid.TryParse(parts[0], out var id) ? (id, parts[1]) : null;
+    }
     private static string Key(string token) => "refresh:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 }

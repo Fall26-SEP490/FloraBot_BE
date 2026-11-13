@@ -327,6 +327,7 @@ if (app.Environment.IsDevelopment() || publicSwaggerEnabled)
 else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
+app.MapMobileAuth();
 app.MapAccountHierarchy();
 app.MapAdminAccounts();
 app.MapOperationsSellers();
