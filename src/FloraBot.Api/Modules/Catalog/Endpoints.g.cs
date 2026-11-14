@@ -27,7 +27,7 @@ public static class CatalogEndpoints
     {
         app.MapPost("/api/me/flows/set_product_status", async (SetProductStatusRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("set_product_status", "sellerMe", JsonSerializer.SerializeToElement(new { p_product = input.ProductId, p_status = input.Status }), http, ct))
-            .WithName("set_product_status").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant");
+            .WithName("set_product_status").WithTags("Catalog").Produces<FlowResult>().ProducesProblem(StatusCodes.Status409Conflict).RequireAuthorization("Merchant");
         app.MapPost("/api/sellers/{sellerId:guid}/flows/update_product_price", async (Guid sellerId, UpdateProductPriceRequest input, HttpContext http, FlowExecutor executor, CancellationToken ct) =>
             await executor.ExecuteAsync("update_product_price", "seller", JsonSerializer.SerializeToElement(input), http, ct))
             .WithName("update_product_price").WithTags("Catalog").Produces<FlowResult>().RequireAuthorization("Merchant", "SameSeller");
