@@ -21,6 +21,22 @@ Native access stays in memory and refresh in OS secure storage. No device apiKey
 
 Temporary network/5xx failure during refresh does not prove revocation and must not clear the app session. A consumed refresh whose response is lost cannot be recovered by replay: the next use will fail. If recovery without re-login is required, design a separate bounded, securely bound idempotency/grace mechanism; do not make refresh tokens reusable without controls.
 
+## Flutter Web preview and CORS
+
+Flutter Web runs in a browser and needs an exact allowed origin even though Android/iOS native apps do not use browser CORS. Start the preview with a fixed origin:
+
+```powershell
+flutter run -d chrome --web-hostname=localhost --web-port=57466
+```
+
+The running FloraBot.Api process reads the comma-separated `ALLOWED_ORIGINS` configuration in Program.cs. Preserve the currently configured portal/kiosk origins and append `http://localhost:57466` for this development preview. Configure this on the API environment that the app actually calls, then restart that API process/recycle its IIS application pool. Changing the developer machine or `.env.example` does not change a deployed API. No code change to the CORS middleware is required for an explicitly configured origin.
+
+Use the exact scheme, host and port without a trailing slash. `http://127.0.0.1:57466` is different from `http://localhost:57466`; add only origins actually used by the team. Keep the existing exact allowlist and cookie-origin checks. Do not use AllowAnyOrigin, reflect arbitrary Origin headers, disable browser security, or use no-cors to hide an error.
+
+The sibling Mobile repository includes `scripts/check-web-cors.ps1`, which sends credential-free OPTIONS for login and registration. Expected: a successful status plus `Access-Control-Allow-Origin: http://localhost:57466`, method POST and requested content-type/authorization headers. OPTIONS 204 without these headers still fails browser preflight. Passing preflight does not prove that a particular endpoint is deployed; verify the deployed OpenAPI and then exercise the legitimate login separately.
+
+Source: [ASP.NET Core CORS documentation](https://learn.microsoft.com/en-us/aspnet/core/security/cors?view=aspnetcore-10.0).
+
 ## Task detail addition
 
 StaffTaskDetail adds nullable version/status at the end of the response. Existing history/evidence consumers keep working; Mobile uses the current server version for transitions/evidence. No database migration is needed.
