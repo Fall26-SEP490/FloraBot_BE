@@ -11,12 +11,14 @@ public sealed record AdminIncidentResponse(Guid Id, string Kind, string Status, 
     DateTime? ResolvedAt, string? Decision, Guid? OrderId, Guid KioskId, Guid? SlotId,
     IncidentLocation? Location, IncidentSlot? Slot);
 public sealed record AdminIncidentPage(List<AdminIncidentResponse> Items, int Page, bool HasMore);
-public sealed record AdminIncidentDetail(AdminIncidentResponse Incident, IncidentEvidenceResponse Evidence);
+public sealed record AdminIncidentDetail(AdminIncidentResponse Incident, AdminIncidentEvidencePage Evidence);
 
 public static class AdminIncidentsRead
 {
     public static void MapAdminIncidentsRead(this WebApplication app)
     {
+        app.MapAdminIncidentTaskEvidenceRead();
+
         app.MapGet("/api/admin/incidents", async (string? status, int? page, Guid? kioskId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
@@ -51,15 +53,20 @@ public static class AdminIncidentsRead
             return Results.Ok(new AdminIncidentPage(rows.Take(25).Select(x => Map(x, locations, slots)).ToList(), number, rows.Count > 25));
         }).RequireAuthorization("OperationsManager").Produces<AdminIncidentPage>();
 
-        app.MapGet("/api/admin/incidents/{incidentId:guid}", async (Guid incidentId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
+        app.MapGet("/api/admin/incidents/{incidentId:guid}", async (Guid incidentId, int? evidencePage,
+            FloraDbContext db, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
+            var page = evidencePage ?? 1;
+            if (page is < 1 or > 100000) return Results.BadRequest();
             var row = await db.Disputes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == incidentId && (x.Kind == "DEVICE_FAULT" || x.Kind == "DISPENSE_FAILED"), ct);
             if (row is null) return Results.NotFound();
             var locations = await IncidentLocations.KiosksAsync(db, [row.KioskId], ct);
             var slots = await IncidentLocations.SlotsAsync(db, row.SlotId.HasValue ? [row.SlotId.Value] : [], ct);
-            return Results.Ok(new AdminIncidentDetail(Map(row, locations, slots), await IncidentEvidence.ReadAsync(db, row.Id, ct)));
-        }).RequireAuthorization("Admin").Produces<AdminIncidentDetail>();
+            return Results.Ok(new AdminIncidentDetail(Map(row, locations, slots),
+                await IncidentEvidence.ReadForAdminIncidentAsync(data, row.Id, page, ct)));
+        }).RequireAuthorization("Admin").Produces<AdminIncidentDetail>().ProducesProblem(400)
+            .WithDescription("Returns incident and task evidence together. Use evidencePage (default 1) to load 20 evidence items per page.");
     }
 
     private static AdminIncidentResponse Map(Data.Entities.Dispute row, List<IncidentLocation> locations, List<IncidentSlot> slots) =>

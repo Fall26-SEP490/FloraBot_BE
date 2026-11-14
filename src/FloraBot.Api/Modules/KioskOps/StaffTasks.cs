@@ -9,7 +9,7 @@ namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record AssignStaffTask(Guid Id, Guid AssigneeId, string Kind, Guid KioskId, Guid? SellerId, Guid? IncidentId, string Instructions);
 public sealed record CreateSellerDeliveryTask(Guid AssigneeId, Guid KioskId, string Instructions);
-public sealed record TransitionStaffTask(int Version, string Status, string Report);
+public sealed record TransitionStaffTask(int Version, string Status, string? Report);
 public sealed record ReassignStaffTask(int Version, Guid AssigneeId, string Reason);
 public sealed record EditStaffTaskInstructions(int Version, string Instructions);
 public sealed record StaffTaskResult(Guid Id, int? Version = null);
@@ -194,7 +194,9 @@ public static class StaffTasks
 
     private static async Task<IResult> Transition(Guid taskId, TransitionStaffTask input, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
     {
-        if (input.Version < 1 || !ValidReport(input.Report) || input.Status is not ("IN_PROGRESS" or "SUBMITTED" or "COMPLETED" or "CANCELLED")) return Results.BadRequest();
+        if (input.Version < 1 ||
+            (!string.IsNullOrWhiteSpace(input.Report) && !ValidReport(input.Report)) ||
+            input.Status is not ("IN_PROGRESS" or "SUBMITTED" or "COMPLETED" or "CANCELLED")) return Results.BadRequest();
         await using var command = data.CreateCommand("""
             SELECT CASE WHEN @status='COMPLETED' AND EXISTS (
                 SELECT 1 FROM kiosk_ops.technical_repair_access g WHERE g.task_id=@id)
@@ -211,7 +213,7 @@ public static class StaffTasks
             """);
         command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("actor", Actor(http));
         command.Parameters.AddWithValue("version", input.Version); command.Parameters.AddWithValue("status", input.Status);
-        command.Parameters.AddWithValue("report", input.Report.Trim());
+        command.Parameters.AddWithValue("report", NpgsqlDbType.Text, (object?)input.Report?.Trim() ?? DBNull.Value);
         try { return await command.ExecuteScalarAsync(ct) is int version ? Results.Ok(new StaffTaskResult(taskId, version)) : Results.Conflict(); }
         catch (PostgresException ex) when (Handled(ex)) { return Problem(ex); }
     }
@@ -239,7 +241,7 @@ public static class StaffTasks
         }
         else if (mode == "operations")
         {
-            sql += " AND t.kind='INCIDENT' AND t.kiosk_id IN (SELECT kiosk_id FROM kiosk_ops.manager_kiosks WHERE manager_id=@actor)";
+            sql += " AND t.kind IN ('INCIDENT','KIOSK_REMOVAL') AND t.kiosk_id IN (SELECT kiosk_id FROM kiosk_ops.manager_kiosks WHERE manager_id=@actor)";
         }
         else if (mode == "seller")
         {
@@ -249,7 +251,7 @@ public static class StaffTasks
         {
             if (role == "TECHNICIAN")
             {
-                sql += " AND t.kind='INCIDENT' AND t.assignee_id=@actor";
+                sql += " AND t.kind IN ('INCIDENT','KIOSK_REMOVAL') AND t.assignee_id=@actor";
             }
             else if (role == "SELLER_STAFF")
             {

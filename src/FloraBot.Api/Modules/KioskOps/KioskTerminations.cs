@@ -13,6 +13,7 @@ public sealed record CreateKioskTerminationRequest(string Reason);
 public sealed record WithdrawKioskTerminationRequest(int Version, string Reason);
 
 public sealed record ReviewKioskTerminationRequest(string Action, string Reason);
+public sealed record AssignKioskDismantlingTaskRequest(Guid AssigneeId, string Instructions);
 
 public sealed record CompleteKioskTerminationRequest(string? Notes, string? EvidenceReference);
 
@@ -32,6 +33,8 @@ public sealed record KioskTerminationResponse(
     DateTime? ReviewedAt,
     Guid? ReviewedBy,
     Guid? CorrelatedTaskId,
+    string? RemovalTaskStatus,
+    string LifecycleStatus,
     DateTime? CompletedAt,
     Guid? CompletedBy,
     string? CompletionNotes,
@@ -271,12 +274,14 @@ public static class KioskTerminations
 
             await using var cmd = new NpgsqlCommand("""
                 SELECT
-                  id, kiosk_id, kiosk_code, kiosk_name, seller_id, shop_name,
-                  status, reason, requested_at, requested_by,
-                  review_action, review_reason, reviewed_at, reviewed_by,
-                  correlated_task_id, completed_at, completed_by, completion_notes,
-                  version, created_at, updated_at
-                FROM kiosk_ops.v2_term_list_requests(@status, @take, @skip)
+                  r.id, r.kiosk_id, r.kiosk_code, r.kiosk_name, r.seller_id, r.shop_name,
+                  r.status, r.reason, r.requested_at, r.requested_by,
+                  r.review_action, r.review_reason, r.reviewed_at, r.reviewed_by,
+                  r.correlated_task_id, removal.status,
+                  r.completed_at, r.completed_by, r.completion_notes,
+                  r.version, r.created_at, r.updated_at
+                FROM kiosk_ops.v2_term_list_requests(@status, @take, @skip) r
+                LEFT JOIN kiosk_ops.staff_tasks removal ON removal.id = r.correlated_task_id
                 """, connection);
 
             cmd.Parameters.AddWithValue("status", NpgsqlDbType.Text, (object?)status ?? DBNull.Value);
@@ -398,7 +403,55 @@ public static class KioskTerminations
             return record is not null ? Results.Ok(record) : Results.NotFound();
         }).RequireAuthorization("OperationsManager").WithTags("KioskTermination").Produces<KioskTerminationResponse>();
 
-        // 6. Operations Manager: Complete termination request (fail closed, same-transaction attachment save, consistent lock order)
+        // 6. Operations Manager: assign an explicit dismantling task after accepting the request.
+        app.MapPost("/api/operations/kiosk-termination-requests/{id:guid}/assign", async (
+            Guid id,
+            AssignKioskDismantlingTaskRequest input,
+            HttpContext http,
+            NpgsqlDataSource data,
+            CancellationToken ct) =>
+        {
+            var actor = Actor(http);
+            if (actor == Guid.Empty) return Results.Unauthorized();
+            if (input.AssigneeId == Guid.Empty || string.IsNullOrWhiteSpace(input.Instructions) ||
+                input.Instructions.Trim().Length is < 10 or > 2000 ||
+                input.Instructions.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t')))
+                return Results.ValidationProblem(new Dictionary<string, string[]> {
+                    ["assigneeId"] = input.AssigneeId == Guid.Empty ? ["Cần chọn kỹ thuật viên."] : [],
+                    ["instructions"] = string.IsNullOrWhiteSpace(input.Instructions) || input.Instructions.Trim().Length is < 10 or > 2000
+                        ? ["Hướng dẫn tháo dỡ từ 10 đến 2000 ký tự."] : ["Hướng dẫn không được chứa ký tự điều khiển không hợp lệ."]
+                });
+
+            var taskId = Guid.CreateVersion7();
+            await using var connection = await data.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            await using var command = new NpgsqlCommand(
+                "SELECT flow.assign_kiosk_removal_task(@id, @manager, @staff, @task, @instructions)",
+                connection, transaction);
+            command.Parameters.AddWithValue("id", id);
+            command.Parameters.AddWithValue("manager", actor);
+            command.Parameters.AddWithValue("staff", input.AssigneeId);
+            command.Parameters.AddWithValue("task", taskId);
+            command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
+            try
+            {
+                var assignedTaskId = (Guid)(await command.ExecuteScalarAsync(ct))!;
+                await transaction.CommitAsync(ct);
+                return Results.Ok(new StaffTaskResult(assignedTaskId));
+            }
+            catch (PostgresException ex) when (ex.SqlState is "42501" or "P0002" or "40001" or "22023" or "23505" or "23503" or "23514")
+            {
+                return ex.SqlState switch
+                {
+                    "42501" => Results.Problem(statusCode: 403, detail: "Bạn không có quyền phân công công việc cho kiosk này."),
+                    "P0002" => Results.NotFound(),
+                    "40001" or "23505" => Results.Problem(statusCode: 409, detail: ex.MessageText),
+                    _ => Results.Problem(statusCode: 400, detail: ex.MessageText)
+                };
+            }
+        }).RequireAuthorization("OperationsManager").WithTags("KioskTermination").Produces<StaffTaskResult>();
+
+        // 7. Operations Manager: verify the submitted dismantling task and complete termination.
         app.MapPost("/api/operations/kiosk-termination-requests/{id:guid}/complete", async (
             Guid id,
             CompleteKioskTerminationRequest input,
@@ -583,12 +636,14 @@ public static class KioskTerminations
     {
         await using var cmd = new NpgsqlCommand("""
             SELECT
-              id, kiosk_id, kiosk_code, kiosk_name, seller_id, shop_name,
-              status, reason, requested_at, requested_by,
-              review_action, review_reason, reviewed_at, reviewed_by,
-              correlated_task_id, completed_at, completed_by, completion_notes,
-              version, created_at, updated_at
-            FROM kiosk_ops.v2_term_get_request(@id)
+              r.id, r.kiosk_id, r.kiosk_code, r.kiosk_name, r.seller_id, r.shop_name,
+              r.status, r.reason, r.requested_at, r.requested_by,
+              r.review_action, r.review_reason, r.reviewed_at, r.reviewed_by,
+              r.correlated_task_id, removal.status,
+              r.completed_at, r.completed_by, r.completion_notes,
+              r.version, r.created_at, r.updated_at
+            FROM kiosk_ops.v2_term_get_request(@id) r
+            LEFT JOIN kiosk_ops.staff_tasks removal ON removal.id = r.correlated_task_id
             """, connection, tx);
         cmd.Parameters.AddWithValue("id", id);
 
@@ -617,11 +672,23 @@ public static class KioskTerminations
             ReviewedAt: reader.IsDBNull(12) ? null : reader.GetDateTime(12),
             ReviewedBy: reader.IsDBNull(13) ? null : reader.GetGuid(13),
             CorrelatedTaskId: reader.IsDBNull(14) ? null : reader.GetGuid(14),
-            CompletedAt: reader.IsDBNull(15) ? null : reader.GetDateTime(15),
-            CompletedBy: reader.IsDBNull(16) ? null : reader.GetGuid(16),
-            CompletionNotes: reader.IsDBNull(17) ? null : reader.GetString(17),
-            Version: reader.GetInt32(18),
-            CreatedAt: reader.GetDateTime(19),
-            UpdatedAt: reader.GetDateTime(20)
+            RemovalTaskStatus: reader.IsDBNull(15) ? null : reader.GetString(15),
+            LifecycleStatus: LifecycleStatus(reader.GetString(6), reader.IsDBNull(15) ? null : reader.GetString(15)),
+            CompletedAt: reader.IsDBNull(16) ? null : reader.GetDateTime(16),
+            CompletedBy: reader.IsDBNull(17) ? null : reader.GetGuid(17),
+            CompletionNotes: reader.IsDBNull(18) ? null : reader.GetString(18),
+            Version: reader.GetInt32(19),
+            CreatedAt: reader.GetDateTime(20),
+            UpdatedAt: reader.GetDateTime(21)
         );
+
+    private static string LifecycleStatus(string terminationStatus, string? taskStatus) => terminationStatus switch
+    {
+        "REQUESTED" => "TERMINATION_REQUESTED",
+        "ACCEPTED" when taskStatus is "ASSIGNED" or "IN_PROGRESS" => "DISMANTLING",
+        "ACCEPTED" when taskStatus == "SUBMITTED" => "AWAITING_MANAGER_CONFIRMATION",
+        "ACCEPTED" => "DISMANTLING_PENDING_ASSIGNMENT",
+        "COMPLETED" => "TERMINATION_COMPLETED",
+        _ => "NORMAL"
+    };
 }

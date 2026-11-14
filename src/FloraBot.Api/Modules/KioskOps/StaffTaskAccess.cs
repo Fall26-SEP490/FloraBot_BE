@@ -32,7 +32,7 @@ public static class StaffTaskAccess
 
         if (role == "OPERATIONS_MANAGER")
         {
-            if (kind != "INCIDENT") return null;
+            if (kind is not ("INCIDENT" or "KIOSK_REMOVAL")) return null;
             await using var check = new NpgsqlCommand(
                 "SELECT 1 FROM kiosk_ops.manager_kiosks WHERE manager_id=@mgr AND kiosk_id=@kiosk",
                 connection, transaction);
@@ -49,7 +49,7 @@ public static class StaffTaskAccess
 
         if (role == "TECHNICIAN")
         {
-            if (kind != "INCIDENT" || assigneeId != actor) return null;
+            if (kind is not ("INCIDENT" or "KIOSK_REMOVAL") || assigneeId != actor) return null;
             return new(status, version);
         }
 
