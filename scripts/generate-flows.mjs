@@ -50,7 +50,8 @@ for (const [module, roles] of Object.entries(groups)) {
       : ['shopping', 'kiosk', 'customer'].includes(scope)
         ? 'Guid kioskId, '
         : '';
-    routes += `        app.MapPost("/api${path}/flows/${name}", async (${routeId}${typeName} input, HttpContext http, FlowExecutor executor, ${name === "ai_suggest" ? "AiAdvisor advisor, " : ""}CancellationToken ct) =>\n            ${name === "ai_suggest" ? "await advisor.SuggestAsync(input, http, executor, ct)" : `await executor.ExecuteAsync("${name}", "${scope}", ${serializedInput}, http, ct)`})\n            .WithName("${name}").WithTags("${module}").Produces<${responseType}>()${authorization};\n`;
+    const problemResponses = name === 'set_product_status' ? '.ProducesProblem(StatusCodes.Status409Conflict)' : '';
+    routes += `        app.MapPost("/api${path}/flows/${name}", async (${routeId}${typeName} input, HttpContext http, FlowExecutor executor, ${name === "ai_suggest" ? "AiAdvisor advisor, " : ""}CancellationToken ct) =>\n            ${name === "ai_suggest" ? "await advisor.SuggestAsync(input, http, executor, ct)" : `await executor.ExecuteAsync("${name}", "${scope}", ${serializedInput}, http, ct)`})\n            .WithName("${name}").WithTags("${module}").Produces<${responseType}>()${problemResponses}${authorization};\n`;
     const setReturning = ['TABLE', 'SETOF'].includes(signatures.get(name).returns);
     catalog.push({ name, module, scope, params, setReturning });
   }
