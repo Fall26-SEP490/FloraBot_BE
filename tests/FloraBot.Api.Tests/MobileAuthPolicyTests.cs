@@ -5,6 +5,20 @@ namespace FloraBot.Api.Tests;
 public sealed class MobileAuthPolicyTests
 {
     [Theory]
+    [InlineData("CUSTOMER", true, false)]
+    [InlineData("SELLER", true, false)]
+    [InlineData("SELLER_STAFF", true, false)]
+    [InlineData("TECHNICIAN", false, true)]
+    [InlineData("ADMIN", false, false)]
+    [InlineData("OPERATIONS_MANAGER", false, false)]
+    public void StoredRoleDeterminesWhichLoginCanIssueASession(string role, bool member, bool technician)
+    {
+        Assert.True(MobileAuthPolicy.ValidLogin(new("member@example.invalid", "a password")));
+        Assert.Equal(member, MobileAuthPolicy.AllowedLoginRole(role, technician: false));
+        Assert.Equal(technician, MobileAuthPolicy.AllowedLoginRole(role, technician: true));
+    }
+
+    [Theory]
     [InlineData("TECHNICIAN")]
     [InlineData("SELLER_STAFF")]
     [InlineData("SELLER")]

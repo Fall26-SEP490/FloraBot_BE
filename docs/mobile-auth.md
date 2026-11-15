@@ -8,12 +8,13 @@ All paths below start with /api/mobile/auth and use JSON over HTTPS. Responses a
 
 | POST path | Body | Result |
 |---|---|---|
-| /login | email, password, role | accessToken, refreshToken, expiresAt, user (existing SessionResponse shape) |
+| /login | email, password | Native session for CUSTOMER, SELLER or SELLER_STAFF |
+| /admin/login | email, password | Native session for TECHNICIAN |
 | /refresh | refreshToken | same response; previous refresh consumed atomically |
 | /logout | refreshToken | 204; consumes only native refresh |
 | /password | currentPassword, newPassword | Account-authorized, current password checked; 204 then re-login |
 
-Role is an explicit login constraint, not an authority granted by the request. Active identity and exact DB role must match. Seller/Staff require an existing seller association. JWTs bind credential_version and use existing tenant/authorization checks. Password changes compare-and-swap the old hash; previous access and refresh fail the existing credential-version check.
+Both login routes return accessToken, refreshToken, expiresAt and user (the existing SessionResponse shape). The account's stored role determines access and the app workspace. An optional role sent by an older client can only narrow the allowed account. Technician login uses the new route, so deploy this API with the updated Mobile app. The app tries the technician route only after a 401 from ordinary login. Seller/Staff require an existing seller association. JWTs bind credential_version and use existing tenant/authorization checks. Password changes compare-and-swap the old hash; previous access and refresh fail the existing credential-version check.
 
 Refresh credentials are cryptographically random 32 bytes, 64 hex characters, stored for seven days in Redis using mobile:refresh:SHA256(token). Browser refresh keys remain refresh:SHA256(token). Neither realm can consume the other. StringGetDeleteAsync provides one-time consumption; this implementation needs the same Redis/Valkey GETDEL support already required by browser refresh. CUSTOMER access expires after 10 minutes, the other supported actors after 15 minutes.
 

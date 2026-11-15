@@ -7,14 +7,17 @@ using Npgsql;
 
 namespace FloraBot.Api.Auth;
 
-public sealed record MobileLoginRequest(string Email, string Password, string Role);
+public sealed record MobileLoginRequest(string Email, string Password, string? Role = null);
 public sealed record MobileRefreshRequest(string RefreshToken);
 public sealed record MobileSessionResponse(string AccessToken, string RefreshToken, DateTimeOffset ExpiresAt, SessionResponse User);
 
 public static class MobileAuthPolicy
 {
-    public static bool AllowedRole(string? role) => role is "TECHNICIAN" or "SELLER_STAFF" or "SELLER" or "CUSTOMER";
-    public static bool ValidLogin(MobileLoginRequest input) => AllowedRole(input.Role)
+    public static bool AllowedRole(string? role) => role == "TECHNICIAN" || AllowedMemberRole(role);
+    private static bool AllowedMemberRole(string? role) => role is "SELLER_STAFF" or "SELLER" or "CUSTOMER";
+    public static bool AllowedLoginRole(string? role, bool technician) =>
+        technician ? role == "TECHNICIAN" : AllowedMemberRole(role);
+    public static bool ValidLogin(MobileLoginRequest input) => (input.Role is null || AllowedRole(input.Role))
         && !string.IsNullOrWhiteSpace(input.Email) && input.Email.Length <= 254
         && !string.IsNullOrEmpty(input.Password) && Encoding.UTF8.GetByteCount(input.Password) <= 72;
     public static bool ValidRefresh(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
@@ -31,17 +34,12 @@ public static class MobileAuthEndpoints
             context.HttpContext.Response.Headers.Pragma = "no-cache";
             return await next(context);
         });
-        group.MapPost("/login", async (MobileLoginRequest input, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
-        {
-            if (!MobileAuthPolicy.ValidLogin(input)) return Results.BadRequest();
-            var email = input.Email.Trim().ToLowerInvariant();
-            var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Email == email && x.Status == "ACTIVE" && x.Role == input.Role, ct);
-            var valid = false;
-            try { valid = BCrypt.Net.BCrypt.Verify(input.Password, user?.PasswordHash ?? "$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"); }
-            catch (BCrypt.Net.SaltParseException) { }
-            if (!valid || user is null) return Results.Unauthorized();
-            return await IssueAsync(user, db, tokens, ct);
-        }).AllowAnonymous().Produces<MobileSessionResponse>().Produces(401).Produces(400);
+        group.MapPost("/login", (MobileLoginRequest input, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
+            LoginAsync(input, technician: false, db, tokens, ct))
+            .AllowAnonymous().Produces<MobileSessionResponse>().Produces(401).Produces(400);
+        group.MapPost("/admin/login", (MobileLoginRequest input, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
+            LoginAsync(input, technician: true, db, tokens, ct))
+            .AllowAnonymous().Produces<MobileSessionResponse>().Produces(401).Produces(400);
         group.MapPost("/refresh", async (MobileRefreshRequest input, FloraDbContext db, TokenService tokens, CancellationToken ct) =>
         {
             if (!MobileAuthPolicy.ValidRefresh(input.RefreshToken)) return Results.Unauthorized();
@@ -79,6 +77,24 @@ public static class MobileAuthEndpoints
             command.Parameters.AddWithValue("hash", BCrypt.Net.BCrypt.HashPassword(input.NewPassword, workFactor: 12));
             return await command.ExecuteNonQueryAsync(ct) == 1 ? Results.NoContent() : Results.Conflict();
         }).RequireAuthorization("Account").Produces(204).Produces(400).Produces(409);
+    }
+
+    private static async Task<IResult> LoginAsync(MobileLoginRequest input, bool technician,
+        FloraDbContext db, TokenService tokens, CancellationToken ct)
+    {
+        if (!MobileAuthPolicy.ValidLogin(input)) return Results.BadRequest();
+        var email = input.Email.Trim().ToLowerInvariant();
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Email == email && x.Status == "ACTIVE", ct);
+        if (user is not null && (
+            !MobileAuthPolicy.AllowedLoginRole(user.Role, technician)
+            || (input.Role is not null && user.Role != input.Role)))
+            user = null;
+
+        var valid = false;
+        try { valid = BCrypt.Net.BCrypt.Verify(input.Password, user?.PasswordHash ?? "$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"); }
+        catch (BCrypt.Net.SaltParseException) { }
+        if (!valid || user?.PasswordHash is null) return Results.Unauthorized();
+        return await IssueAsync(user, db, tokens, ct);
     }
 
     private static async Task<IResult> IssueAsync(User user, FloraDbContext db, TokenService tokens, CancellationToken ct)
