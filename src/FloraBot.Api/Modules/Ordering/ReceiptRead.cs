@@ -46,6 +46,25 @@ public static class ReceiptRead
             lines.Parameters.AddWithValue("id", input.OrderId);
             await using (var reader = await lines.ExecuteReaderAsync(ct))
                 while (await reader.ReadAsync(ct)) items.Add(new(reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetString(4)));
+            await using (var preorderFlower = new NpgsqlCommand("""
+                SELECT r.display_snapshot->>'product',coalesce(r.quoted_flower_price,r.quoted_price),
+                  CASE WHEN o.status IN ('CANCELLED','EXPIRED') THEN 'CANCELLED'
+                       WHEN o.status IN ('DISPENSE_FAILED','REFUNDED') THEN 'REFUNDED'
+                       ELSE 'ACTIVE' END
+                FROM ordering.web_requests r
+                JOIN ordering.orders o ON o.id=r.order_id
+                WHERE r.order_id=@id AND r.kind='CUSTOM'
+                  AND NOT EXISTS (SELECT 1 FROM ordering.order_items i
+                    WHERE i.order_id=o.id AND i.item_type='BOUQUET')
+                LIMIT 1
+                """, connection, transaction))
+            {
+                preorderFlower.Parameters.AddWithValue("id", input.OrderId);
+                await using var reader = await preorderFlower.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct) && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                    items.Insert(0, new($"Hoa đặt riêng: {reader.GetString(0)}", 1,
+                        reader.GetInt64(1), reader.GetInt64(1), reader.GetString(2)));
+            }
             var refunds = await ReceiptRefunds.ReadAsync(connection, transaction, input.OrderId, ct);
             await transaction.CommitAsync(ct);
             return Results.Ok(new ReceiptResponse(input.OrderId, code, status, created, subtotal, discount, total, completed, deadline,

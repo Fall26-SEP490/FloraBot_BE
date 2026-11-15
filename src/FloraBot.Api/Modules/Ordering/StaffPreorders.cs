@@ -10,7 +10,9 @@ using NpgsqlTypes;
 
 namespace FloraBot.Api.Modules.Ordering;
 
-public sealed record StaffPreorderCandidate(Guid RequestId, Guid OrderId, string OrderCode, Guid ProductId, string ProductName, long Amount, DateTimeOffset PickupAt, DateTimeOffset PickupBefore);
+public sealed record StaffPreorderCandidate(Guid RequestId, Guid OrderId, string OrderCode, Guid ProductId,
+    string ProductName, long Amount, DateTimeOffset PickupAt, DateTimeOffset PickupBefore,
+    List<QuotedPreorderAccessory> Accessories);
 public sealed record StaffPreorderSlot(Guid Id, string SlotCode, string? Zone);
 public sealed record StaffPreorderOptions(List<StaffPreorderCandidate> Preorders, List<StaffPreorderSlot> Slots);
 public sealed record AssignStaffPreorderInput(Guid Id, Guid AssigneeId, Guid SlotId, string Instructions);
@@ -176,7 +178,11 @@ public static class StaffPreorders
             }
 
             await using (var command = data.CreateCommand("""
-                SELECT r.id,o.id,o.order_code,r.product_id,p.name,o.total_amount,r.pickup_at,r.pickup_before
+                SELECT r.id,o.id,o.order_code,r.product_id,p.name,o.total_amount,r.pickup_at,r.pickup_before,
+                  coalesce((SELECT jsonb_agg(jsonb_build_object('accessoryId',i.accessory_id,
+                    'name',i.name_snapshot,'quantity',i.quantity,'unitPrice',i.unit_price,'lineTotal',i.line_total)
+                    ORDER BY i.name_snapshot,i.accessory_id)
+                    FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='ACCESSORY' AND i.line_status='ACTIVE'),'[]'::jsonb)
                 FROM ordering.web_requests r
                 JOIN ordering.orders o ON o.id=r.order_id
                 JOIN catalog.flower_products p ON p.id=r.product_id
@@ -198,7 +204,9 @@ public static class StaffPreorders
                 while (await reader.ReadAsync(ct))
                     preorders.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetGuid(3),
                         reader.GetString(4), reader.GetInt64(5), reader.GetFieldValue<DateTimeOffset>(6),
-                        reader.GetFieldValue<DateTimeOffset>(7)));
+                        reader.GetFieldValue<DateTimeOffset>(7),
+                        JsonSerializer.Deserialize<List<QuotedPreorderAccessory>>(reader.GetString(8),
+                            new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? []));
             }
         }
 
