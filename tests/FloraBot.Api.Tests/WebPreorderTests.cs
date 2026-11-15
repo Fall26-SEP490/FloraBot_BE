@@ -130,8 +130,8 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         {
             (await shop.PostAsJsonAsync(sellerPath + "/quote", new { price = 350000, pickupAt = pickup, note = "Pink bouquet confirmed", reject = false })).EnsureSuccessStatusCode();
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(path + "/accept", new { price = 340000, pickupAt = pickup, note = "Pink bouquet confirmed" })).StatusCode);
-            (await client.PostAsJsonAsync(path + "/accept", new { price = 350000, pickupAt = pickup, note = "Pink bouquet confirmed" })).EnsureSuccessStatusCode();
-            (await client.PostAsJsonAsync(path + "/accept", new { price = 350000, pickupAt = pickup, note = "Pink bouquet confirmed" })).EnsureSuccessStatusCode();
+            (await client.PostAsJsonAsync(path + "/accept", new { price = 350000, pickupAt = pickup, note = "Pink bouquet confirmed", quoteVersion = 1 })).EnsureSuccessStatusCode();
+            (await client.PostAsJsonAsync(path + "/accept", new { price = 350000, pickupAt = pickup, note = "Pink bouquet confirmed", quoteVersion = 1 })).EnsureSuccessStatusCode();
         }
         var list = await client.GetFromJsonAsync<WebRequestPage>("/api/member/preorders");
         var row = Assert.Single(list!.Items);
@@ -185,8 +185,8 @@ public sealed class WebPreorderTests(ApiFactory factory) : IClassFixture<ApiFact
         if (kind == "CUSTOM")
         {
             await Sql("UPDATE ordering.web_requests SET pickup_at=public.app_now()+interval '1 hour',pickup_before=public.app_now()+interval '3 hours' WHERE id=@id", ("id", id));
-            (await shop.PostAsJsonAsync(sellerPath + "/fulfill", new { slotId = slot, qrCode = "custom-" + id })).EnsureSuccessStatusCode();
-            (await shop.PostAsJsonAsync(sellerPath + "/fulfill", new { slotId = slot, qrCode = "custom-" + id })).EnsureSuccessStatusCode();
+            await PreorderLoadingTestFlow.LoadAsync(source, factory, shop, device, id, kiosk, slot, user, 1,
+                $"/api/me/preorders/{id}/loading-access", sellerPath + "/fulfill");
 
             // Receipt tracking token lookup must not bypass email OTP for preorders
             Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(pickupPath, new { p_order = row.OrderId, p_tracking = row.TrackingToken })).StatusCode);

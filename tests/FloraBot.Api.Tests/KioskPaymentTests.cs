@@ -507,7 +507,7 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
         return events;
     }
 
-    internal sealed class SellerGateway : HttpMessageHandler
+    internal sealed class SellerGateway(long expectedAmount = 350000) : HttpMessageHandler
     {
         internal const string ClientId = "test-seller-client";
         internal const string ChecksumKey = "test-seller-checksum-key";
@@ -518,10 +518,10 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             Calls++;
             Assert.Equal(ClientId, Assert.Single(request.Headers.GetValues("x-client-id")));
             var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            Assert.Equal(350000, body.GetProperty("amount").GetInt64());
+            Assert.Equal(expectedAmount, body.GetProperty("amount").GetInt64());
             Deadline = body.GetProperty("expiredAt").GetInt64();
             Assert.InRange(Deadline, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), DateTimeOffset.UtcNow.AddMinutes(8).ToUnixTimeSeconds());
-            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = 350000, status = "PENDING", bin = "970415", accountNumber = "1010099887766", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07", qrCode = "000201-signed-test-payload" });
+            var data = JsonSerializer.SerializeToElement(new { orderCode = body.GetProperty("orderCode").GetInt64(), amount = expectedAmount, status = "PENDING", bin = "970415", accountNumber = "1010099887766", checkoutUrl = "https://pay.payos.vn/web/124c33293c934a85be5b7f8761a27a07", qrCode = "000201-signed-test-payload" });
             return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { code = "00", data, signature = PayOsChecksum.Sign(data, ChecksumKey) }) };
         }
     }

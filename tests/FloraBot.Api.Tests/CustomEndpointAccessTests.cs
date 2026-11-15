@@ -226,7 +226,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history");
-        Add(["CUSTOMER"], "GET", "/api/member/preorders");
+        Add(["CUSTOMER"], "GET", "/api/member/preorders", "/api/member/kiosks/{kioskId:guid}/catalog/accessories");
         Add(["CUSTOMER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
