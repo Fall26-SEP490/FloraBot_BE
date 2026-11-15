@@ -335,6 +335,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         // OperationsSellerEndpoints
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/sellers", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/status-history", "/api/operations/sellers/{sellerId:guid}/accounts");
         Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/accounts/{userId:guid}");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/sellers/{sellerId:guid}/kiosks");
         Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/sellers/{sellerId:guid}/status");
         // Flower presence is a portal Account read, not a kiosk-scoped customer session.
         Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/kiosks/{id:guid}/flower-presence");

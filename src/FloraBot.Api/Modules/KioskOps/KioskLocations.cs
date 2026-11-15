@@ -212,6 +212,17 @@ public static class KioskLocations
         .WithSummary("Tương thích cũ: danh sách kiosk thuộc seller; dùng GET /api/me/kiosks cho route tự nhận seller từ token")
         .Produces<List<SellerKioskDto>>();
 
+        app.MapGet("/api/operations/sellers/{sellerId:guid}/kiosks", async (
+            Guid sellerId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
+        {
+            if (GetActorId(http.User) is not Guid manager) return Results.Forbid();
+            return await ReadSellerKiosksAsync(sellerId, db, http, ct, manager);
+        })
+        .RequireAuthorization("OperationsManager")
+        .WithTags("KioskOps")
+        .WithSummary("Danh sách kiosk của shop thuộc phạm vi quản lý")
+        .Produces<List<SellerKioskDto>>().Produces(404);
+
         // Seller submits a location change request; only the assigned Operations Manager applies it.
         app.MapPut("/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location", KioskLocationChange.SubmitAsync)
             .RequireAuthorization("Seller", "SameSeller")
@@ -265,14 +276,25 @@ public static class KioskLocations
         Guid sellerId,
         FloraDbContext db,
         HttpContext http,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? manager = null)
     {
         http.Response.Headers.CacheControl = "no-store";
-        var kiosks = await db.Kiosks.AsNoTracking()
-            .Where(k => k.SellerId == sellerId)
+        var query = db.Kiosks.AsNoTracking().Where(k => k.SellerId == sellerId);
+        if (manager is Guid managerId)
+        {
+            var managedShops = db.Database.SqlQuery<Guid>($"""
+                SELECT k.seller_id AS "Value" FROM kiosk_ops.manager_kiosks m
+                JOIN kiosk_ops.kiosks k ON k.id=m.kiosk_id
+                WHERE m.manager_id={managerId} AND k.seller_id IS NOT NULL
+                """);
+            query = query.Where(k => k.SellerId.HasValue && managedShops.Contains(k.SellerId.Value));
+        }
+        var kiosks = await query
             .OrderBy(k => k.Code)
             .ThenBy(k => k.Id)
             .ToListAsync(ct);
+        if (manager.HasValue && kiosks.Count == 0) return Results.NotFound();
 
         var result = kiosks.Select(k =>
         {

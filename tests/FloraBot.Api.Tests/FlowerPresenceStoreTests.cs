@@ -54,6 +54,18 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
     {
         var f = await Create();
         await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message, default);
+        await using (var history = Data.CreateCommand("""
+            INSERT INTO kiosk_ops.unlock_tokens(kiosk_id,slot_id,purpose,issued_to_user_id,token_hash,
+                status,issued_at,expires_at,door_opened_at,door_closed_at)
+            SELECT kiosk_id,id,'SELLER_ACCESS',gen_random_uuid(),gen_random_uuid()::text,
+                'CLOSED',now()-interval '5 minutes',now()-interval '4 minutes',
+                now()-interval '5 minutes'+interval '1 second',now()-interval '5 minutes'+interval '5 seconds'
+            FROM kiosk_ops.slots WHERE kiosk_id=@id AND relay_channel=0
+            """))
+        {
+            history.Parameters.AddWithValue("id", f.Kiosk);
+            Assert.Equal(1, await history.ExecuteNonQueryAsync());
+        }
         using var admin = factory.CreateClient();
         admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
         var route = $"/api/kiosks/{f.Kiosk}/flower-presence";
@@ -86,5 +98,35 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
         var staleView = (await admin.GetFromJsonAsync<FlowerPresenceResponse>(route))!;
         Assert.False(staleView.IsFresh);
         Assert.All(staleView.Slots, s => Assert.Null(s.HasFlowers));
+        Assert.Equal("CLOSED", staleView.Slots[0].LatestUnlock?.Status);
+        Assert.NotNull(staleView.Slots[0].LatestUnlock?.DoorClosedAt);
+        Assert.All(staleView.Slots.Skip(1), s => Assert.Null(s.LatestUnlock));
+
+        var managed = await Create();
+        var sibling = await Create();
+        var managerId = Guid.NewGuid();
+        await using (var setupManager = Data.CreateCommand("""
+            INSERT INTO identity.users(id,email,full_name,password_hash,role,status)
+            VALUES(@manager,@manager::text||'@example.invalid','Device manager','!test','OPERATIONS_MANAGER','ACTIVE');
+            UPDATE kiosk_ops.kiosks SET seller_id=@seller WHERE id IN (@managed,@sibling);
+            INSERT INTO kiosk_ops.manager_kiosks(manager_id,kiosk_id) VALUES(@manager,@managed);
+            """))
+        {
+            setupManager.Parameters.AddWithValue("manager", managerId);
+            setupManager.Parameters.AddWithValue("seller", foreignSeller);
+            setupManager.Parameters.AddWithValue("managed", managed.Kiosk);
+            setupManager.Parameters.AddWithValue("sibling", sibling.Kiosk);
+            await setupManager.ExecuteNonQueryAsync();
+        }
+        using var manager = factory.CreateClient();
+        manager.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("OPERATIONS_MANAGER", userId: managerId));
+        var shopKiosks = await manager.GetFromJsonAsync<List<SellerKioskDto>>($"/api/operations/sellers/{foreignSeller}/kiosks");
+        Assert.Equal(new[] { managed.Kiosk, sibling.Kiosk }.Order(), shopKiosks!.Select(k => k.Id).Order());
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.GetAsync($"/api/operations/sellers/{Guid.NewGuid()}/kiosks")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await foreign.GetAsync($"/api/operations/sellers/{foreignSeller}/kiosks")).StatusCode);
+        await sibling.Receiver.ReceiveAsync(sibling.Message.HardwareId, sibling.Message, default);
+        var observations = await manager.GetFromJsonAsync<FlowerPresenceResponse>($"/api/kiosks/{sibling.Kiosk}/flower-presence");
+        Assert.Equal(new bool?[] { true, false, null, true }, observations!.Slots.Select(s => s.HasFlowers));
     }
 }

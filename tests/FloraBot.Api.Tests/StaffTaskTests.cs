@@ -146,15 +146,19 @@ public sealed class StaffTaskTests
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
         var adminId = Guid.NewGuid(); var staffId = Guid.NewGuid(); var otherId = Guid.NewGuid(); var incident = Guid.NewGuid(); var taskId = Guid.NewGuid();
+        var managerId = Guid.NewGuid();
         var kiosk = Guid.Parse("40000000-0000-0000-0000-000000000001");
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
               (@admin,@admin::text||'@example.invalid','Task admin','!unprovisioned','ADMIN'),
               (@staff,@staff::text||'@example.invalid','Task staff','!unprovisioned','TECHNICIAN'),
-              (@other,@other::text||'@example.invalid','Other staff','!unprovisioned','TECHNICIAN');
+              (@other,@other::text||'@example.invalid','Other staff','!unprovisioned','TECHNICIAN'),
+              (@manager,@manager::text||'@example.invalid','Task manager','!unprovisioned','OPERATIONS_MANAGER');
+            INSERT INTO kiosk_ops.manager_kiosks(manager_id,kiosk_id) VALUES(@manager,@kiosk);
             INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@incident,'DEVICE_FAULT',@kiosk,'Door stuck test');
             """);
         setup.Parameters.AddWithValue("admin", adminId); setup.Parameters.AddWithValue("staff", staffId);
+        setup.Parameters.AddWithValue("manager", managerId);
         setup.Parameters.AddWithValue("other", otherId); setup.Parameters.AddWithValue("incident", incident); setup.Parameters.AddWithValue("kiosk", kiosk);
         await setup.ExecuteNonQueryAsync();
         HttpClient Client(Guid id, string role)
@@ -164,10 +168,11 @@ public sealed class StaffTaskTests
             return client;
         }
         using var admin = Client(adminId, "ADMIN"); using var staff = Client(staffId, "TECHNICIAN"); using var other = Client(otherId, "TECHNICIAN");
+        using var manager = Client(managerId, "OPERATIONS_MANAGER");
         var input = new AssignStaffTask(taskId, staffId, "INCIDENT", kiosk, null, incident, "Inspect the door and report findings");
         Assert.Equal(HttpStatusCode.Forbidden, (await staff.PostAsJsonAsync("/api/admin/staff-tasks", input)).StatusCode);
-        (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input)).EnsureSuccessStatusCode();
-        (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input)).EnsureSuccessStatusCode();
+        (await manager.PostAsJsonAsync("/api/operations/staff-tasks", input)).EnsureSuccessStatusCode();
+        (await manager.PostAsJsonAsync("/api/operations/staff-tasks", input)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input with { Instructions = "Different task instructions" })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsJsonAsync("/api/admin/staff-tasks", input with { Id = Guid.NewGuid() })).StatusCode);
         Assert.Single((await staff.GetFromJsonAsync<StaffTaskPage>("/api/staff/tasks"))!.Items);
@@ -178,6 +183,9 @@ public sealed class StaffTaskTests
         Assert.Equal(HttpStatusCode.NotFound, (await staff.GetAsync($"/api/staff/tasks/{Guid.NewGuid()}")).StatusCode);
         var initial = (await staff.GetFromJsonAsync<StaffTaskDetail>(detailsPath))!;
         Assert.Equal("Door stuck test", initial.Incident!.Reason);
+        Assert.Equal(kiosk, initial.KioskId);
+        Assert.NotEmpty(initial.KioskSlots!);
+        Assert.All(initial.KioskSlots!, slot => Assert.Null(slot.HasFlowers));
         Assert.Equal("OPEN", initial.Incident.Status);
         Assert.Equal("STAFF_TASK_ASSIGNED", Assert.Single(initial.History).Action);
         Assert.False(initial.HasMore);

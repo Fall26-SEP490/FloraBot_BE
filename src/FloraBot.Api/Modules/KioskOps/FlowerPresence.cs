@@ -90,7 +90,24 @@ public sealed class FlowerPresenceReceiver(
     }
 }
 
-public sealed record FlowerSlotPresence(Guid SlotId, string SlotCode, int RelayChannel, bool? HasFlowers);
+public sealed record SlotUnlockObservation(string Status, DateTime IssuedAt, DateTime? DoorOpenedAt, DateTime? DoorClosedAt)
+{
+    internal const string LatestJoin = """
+        LEFT JOIN LATERAL (
+            SELECT status,issued_at,door_opened_at,door_closed_at
+            FROM kiosk_ops.unlock_tokens WHERE slot_id=s.id AND kiosk_id=s.kiosk_id
+            ORDER BY issued_at DESC,id DESC LIMIT 1
+        ) u ON true
+        """;
+
+    internal static SlotUnlockObservation? Read(NpgsqlDataReader reader, int offset) =>
+        reader.IsDBNull(offset) ? null : new(reader.GetString(offset), reader.GetDateTime(offset + 1),
+            reader.IsDBNull(offset + 2) ? null : reader.GetDateTime(offset + 2),
+            reader.IsDBNull(offset + 3) ? null : reader.GetDateTime(offset + 3));
+}
+
+public sealed record FlowerSlotPresence(Guid SlotId, string SlotCode, int RelayChannel, bool? HasFlowers,
+    SlotUnlockObservation? LatestUnlock = null);
 public sealed record FlowerPresenceResponse(Guid KioskId, DateTimeOffset? ObservedAt, DateTime? ReceivedAt,
     bool IsFresh, List<FlowerSlotPresence> Slots);
 
@@ -102,22 +119,28 @@ public static class FlowerPresenceEndpoints
         {
             http.Response.Headers.CacheControl = "no-store";
             if (http.User.HasClaim(c => c.Type == "kiosk_id")) return Results.Forbid();
-            var privileged = http.User.IsInRole("ADMIN") || http.User.IsInRole("OPERATIONS_MANAGER");
+            var privileged = http.User.IsInRole("ADMIN");
             var seller = http.User.IsInRole("SELLER") && Guid.TryParse(http.User.FindFirstValue("seller_id"), out _)
                 ? Guid.Parse(http.User.FindFirstValue("seller_id")!) : Guid.Empty;
             var actor = Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? http.User.FindFirstValue("sub"), out var user) ? user : Guid.Empty;
-            await using var command = data.CreateCommand("""
+            await using var command = data.CreateCommand($$"""
                 SELECT s.id,s.slot_code,s.relay_channel,p.observed_at,p.received_at,p.states,
                   k.status='ONLINE' AND p.received_at>CURRENT_TIMESTAMP-interval '45 seconds'
-                    AND p.observed_at>extract(epoch FROM CURRENT_TIMESTAMP)*1000-45000 AS fresh
+                    AND p.observed_at>extract(epoch FROM CURRENT_TIMESTAMP)*1000-45000 AS fresh,
+                  u.status,u.issued_at,u.door_opened_at,u.door_closed_at
                 FROM kiosk_ops.kiosks k JOIN kiosk_ops.slots s ON s.kiosk_id=k.id
                 LEFT JOIN kiosk_ops.flower_presence p ON p.kiosk_id=k.id
-                WHERE k.id=@id AND (@privileged OR k.seller_id=@seller OR (@technician AND EXISTS (
+                {{SlotUnlockObservation.LatestJoin}}
+                WHERE k.id=@id AND (@privileged OR k.seller_id=@seller OR (@manager AND EXISTS (
+                  SELECT 1 FROM kiosk_ops.manager_kiosks m JOIN kiosk_ops.kiosks managed ON managed.id=m.kiosk_id
+                  WHERE m.manager_id=@actor AND managed.seller_id=k.seller_id
+                )) OR (@technician AND EXISTS (
                   SELECT 1 FROM kiosk_ops.kiosk_applications a WHERE a.assigned_kiosk_id=k.id AND a.assigned_technician_id=@actor)))
                 ORDER BY s.relay_channel,s.slot_code
                 """);
             command.Parameters.AddWithValue("id", id); command.Parameters.AddWithValue("privileged", privileged);
             command.Parameters.AddWithValue("seller", seller); command.Parameters.AddWithValue("actor", actor);
+            command.Parameters.AddWithValue("manager", http.User.IsInRole("OPERATIONS_MANAGER"));
             command.Parameters.AddWithValue("technician", http.User.IsInRole("TECHNICIAN"));
             await using var reader = await command.ExecuteReaderAsync(ct);
             var slots = new List<FlowerSlotPresence>();
@@ -130,7 +153,8 @@ public static class FlowerPresenceEndpoints
                 fresh = !reader.IsDBNull(6) && reader.GetBoolean(6);
                 var states = reader.IsDBNull(5) ? [] : reader.GetFieldValue<int[]>(5);
                 bool? hasFlowers = fresh && relay >= 0 && relay < states.Length && states[relay] != -1 ? states[relay] == 1 : null;
-                slots.Add(new(reader.GetGuid(0), reader.GetString(1), relay, hasFlowers));
+                var latestUnlock = http.User.IsInRole("TECHNICIAN") ? null : SlotUnlockObservation.Read(reader, 7);
+                slots.Add(new(reader.GetGuid(0), reader.GetString(1), relay, hasFlowers, latestUnlock));
             }
             return slots.Count == 0 ? Results.NotFound() : Results.Ok(new FlowerPresenceResponse(id,
                 observed.HasValue ? DateTimeOffset.FromUnixTimeMilliseconds(observed.Value) : null, received, fresh, slots));
