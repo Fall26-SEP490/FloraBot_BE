@@ -5,9 +5,11 @@ using Npgsql;
 
 namespace FloraBot.Api.Modules.Ai;
 
-public sealed record FlowerChatInput(string Question, string? Mode = null, long? Budget = null, Guid? KioskId = null);
+public sealed record FlowerChatInput(string Question, string? Mode = null, long? Budget = null, Guid? KioskId = null,
+    double? Latitude = null, double? Longitude = null);
 public sealed record FlowerChatSuggestion(Guid Id, Guid ProductId, Guid KioskId, string Name, long Price, string Mode, string Reason,
-    string? Photo, decimal? ProductRating, long ProductReviews, decimal? ShopRating, long ShopReviews);
+    string? Photo, decimal? ProductRating, long ProductReviews, decimal? ShopRating, long ShopReviews,
+    string? ShopName, string? KioskName, double? DistanceKm);
 public sealed record FlowerChatResponse(string Intent, string Message, IReadOnlyList<FlowerChatSuggestion> Suggestions);
 
 public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlDataSource data)
@@ -19,7 +21,7 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
     private sealed record Candidate(Guid Id, Guid ProductId, Guid KioskId, string Name, string Description,
         long Price, string[] Tags, string Mode, string? Photo, decimal? ProductRating, long ProductReviews,
-        decimal? ShopRating, long ShopReviews);
+        decimal? ShopRating, long ShopReviews, string? ShopName, string? KioskName, double? DistanceKm);
     private sealed record ModelSuggestion(Guid Id, string? Reason);
     private sealed record ModelAnswer(string? Intent, string? Message, ModelSuggestion[]? Suggestions);
 
@@ -33,7 +35,9 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         http.Response.Headers.CacheControl = "no-store";
         var question = input.Question?.Trim();
         if (question is null || question.Length is 0 or > 500 || input.Mode is not (null or "WALK_IN" or "PREORDER")
-            || input.Budget is < 1 or > 1_000_000_000)
+            || input.Budget is < 1 or > 1_000_000_000
+            || input.Latitude.HasValue != input.Longitude.HasValue
+            || input.Latitude is < -90 or > 90 || input.Longitude is < -180 or > 180)
             return Results.BadRequest();
 
         var seller = http.User.IsInRole("SELLER");
@@ -59,8 +63,11 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         {
             var c = byId[m.Id];
             return new FlowerChatSuggestion(c.Id, c.ProductId, c.KioskId, c.Name, c.Price, c.Mode, m.Reason!,
-                c.Photo, c.ProductRating, c.ProductReviews, c.ShopRating, c.ShopReviews);
+                c.Photo, c.ProductRating, c.ProductReviews, c.ShopRating, c.ShopReviews,
+                c.ShopName, c.KioskName, c.DistanceKm);
         }).ToArray();
+        if (input.Mode == "PREORDER" && input.Latitude.HasValue)
+            suggestions = suggestions.OrderBy(s => s.DistanceKm ?? double.PositiveInfinity).ToArray();
         return Results.Ok(new FlowerChatResponse("FLOWERS", answer.Message!, suggestions));
     }
 
@@ -99,11 +106,20 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
             ), shop_reviews AS (
                 SELECT seller_id,sum(total)/sum(votes) AS rating,sum(votes)::bigint AS votes
                 FROM product_reviews GROUP BY seller_id
+            ), kiosk_distances AS (
+                SELECT k.id, CASE WHEN @latitude IS NOT NULL AND k.latitude IS NOT NULL AND k.longitude IS NOT NULL
+                    THEN 6371.0 * acos(least(1.0, greatest(-1.0,
+                        sin(radians(@latitude)) * sin(radians(k.latitude::double precision)) +
+                        cos(radians(@latitude)) * cos(radians(k.latitude::double precision)) *
+                        cos(radians(k.longitude::double precision - @longitude))
+                    ))) END AS distance_km
+                FROM kiosk_ops.kiosks k WHERE @mode='PREORDER'
             ), offers AS (
                 SELECT c.bouquet_id AS id,c.product_id,c.kiosk_id,c.name,coalesce(p.description,'') AS description,
                        c.gia AS price,p.tags,'WALK_IN' AS mode,NULL::text AS photo,
                        NULL::numeric AS product_rating,0::bigint AS product_votes,
-                       NULL::numeric AS shop_rating,0::bigint AS shop_votes
+                       NULL::numeric AS shop_rating,0::bigint AS shop_votes,
+                       NULL::text AS shop_name,NULL::text AS kiosk_name,NULL::double precision AS distance_km
                 FROM screen.v_kiosk_catalog c JOIN catalog.flower_products p ON p.id=c.product_id
                 JOIN kiosk_ops.kiosks k ON k.id=c.kiosk_id
                 WHERE @mode='WALK_IN' AND c.kiosk_id=@kiosk AND k.status='ONLINE' AND p.inventory_kind='ARTIFICIAL'
@@ -111,19 +127,23 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
                 UNION ALL
                 (SELECT DISTINCT ON (v.product_id) v.product_id,v.product_id,v.kiosk_id,v.name,
                        coalesce(v.description,''),v.price,p.tags,'PREORDER',v.photo,
-                       r.total::numeric/r.votes,coalesce(r.votes,0),s.rating,coalesce(s.votes,0)
+                       r.total::numeric/r.votes,coalesce(r.votes,0),s.rating,coalesce(s.votes,0),
+                       v.shop_name,v.kiosk_name,d.distance_km
                 FROM screen.v_web_catalog v JOIN catalog.flower_products p ON p.id=v.product_id
+                JOIN kiosk_distances d ON d.id=v.kiosk_id
                 LEFT JOIN product_reviews r ON r.product_id=v.product_id
                 LEFT JOIN shop_reviews s ON s.seller_id=v.seller_id
                 WHERE @mode='PREORDER' AND p.inventory_kind='ARTIFICIAL' AND p.quantity>0 AND v.price<=@budget
                   AND EXISTS (SELECT 1 FROM flow.get_kiosk_preorder_availability(v.kiosk_id) a WHERE a.is_available)
-                 ORDER BY v.product_id,v.kiosk_id)
+                 ORDER BY v.product_id,d.distance_km NULLS LAST,v.kiosk_id)
             )
             SELECT id,product_id,kiosk_id,name,description,price,tags,mode,photo,
-                   round(product_rating,2),product_votes,round(shop_rating,2),shop_votes
+                   round(product_rating,2),product_votes,round(shop_rating,2),shop_votes,
+                   shop_name,kiosk_name,distance_km
             FROM offers
             ORDER BY (SELECT count(*) FROM unnest(@terms) AS token
                       WHERE strpos(lower(name || ' ' || description || ' ' || array_to_string(tags,' ')),token)>0) DESC,
+                     distance_km NULLS LAST,
                      (coalesce(product_rating*product_votes/(product_votes+5),0)
                       + coalesce(shop_rating*shop_votes/(shop_votes+10),0)) DESC,
                      price,id
@@ -131,6 +151,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
             """);
         command.Parameters.AddWithValue("mode", input.Mode ?? "");
         command.Parameters.AddWithValue("kiosk", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)input.KioskId ?? DBNull.Value);
+        command.Parameters.AddWithValue("latitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Latitude ?? DBNull.Value);
+        command.Parameters.AddWithValue("longitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Longitude ?? DBNull.Value);
         command.Parameters.AddWithValue("budget", input.Budget ?? 1_000_000_000L);
         command.Parameters.AddWithValue("terms", question.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Where(word => word.Length >= 3).Distinct().Take(20).ToArray());
@@ -140,7 +162,9 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
             candidates.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetString(3),
                 reader.GetString(4), reader.GetInt64(5), reader.GetFieldValue<string[]>(6), reader.GetString(7),
                 reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetDecimal(9),
-                reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDecimal(11), reader.GetInt64(12)));
+                reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDecimal(11), reader.GetInt64(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13), reader.IsDBNull(14) ? null : reader.GetString(14),
+                reader.IsDBNull(15) ? null : reader.GetDouble(15)));
         return candidates.ToArray();
     }
 

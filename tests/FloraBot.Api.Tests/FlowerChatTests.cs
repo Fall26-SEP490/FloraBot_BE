@@ -64,7 +64,8 @@ public sealed class FlowerChatTests(ApiFactory factory) : IClassFixture<ApiFacto
         Assert.Empty(answer.Suggestions);
         Assert.Equal(1, transport.Calls);
         transport.Expected = mode == "WALK_IN" ? bouquet : product;
-        using var grounded = await client.PostAsJsonAsync(path, new FlowerChatInput($"Tìm {name} dưới 300k", mode, KioskId: kiosk));
+        using var grounded = await client.PostAsJsonAsync(path,
+            new FlowerChatInput($"Tìm {name} dưới 300k", mode, KioskId: kiosk, Latitude: 10.9, Longitude: 106.6));
         Assert.True(grounded.IsSuccessStatusCode, await grounded.Content.ReadAsStringAsync());
         var result = await grounded.Content.ReadFromJsonAsync<FlowerChatResponse>();
         var card = Assert.Single(result!.Suggestions);
@@ -72,6 +73,17 @@ public sealed class FlowerChatTests(ApiFactory factory) : IClassFixture<ApiFacto
         Assert.Equal(kiosk, card.KioskId);
         Assert.Equal(250000, card.Price);
         Assert.Equal(mode, card.Mode);
+        if (mode == "PREORDER")
+        {
+            Assert.Equal("Flower chat shop", card.ShopName);
+            Assert.Equal("Chat kiosk", card.KioskName);
+            Assert.NotNull(card.DistanceKm);
+            Assert.InRange(card.DistanceKm.Value, 11.0, 11.2);
+        }
+        else
+        {
+            Assert.Null(card.DistanceKm);
+        }
         using var invalid = await client.PostAsJsonAsync(path, new FlowerChatInput("Hoa", "OTHER", 1));
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
         Assert.Equal(2, transport.Calls);
