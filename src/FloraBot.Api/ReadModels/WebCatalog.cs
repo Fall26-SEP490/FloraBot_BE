@@ -2,7 +2,7 @@ using Npgsql;
 
 namespace FloraBot.Api.ReadModels;
 
-public sealed record WebCatalogItem(Guid ProductId, Guid SellerId, string ShopName, string Name, string? Description, long Price, Guid KioskId, string KioskName, string Address, string? Zone, string? Photo, Guid[] Bouquets, bool PreorderAvailable);
+public sealed record WebCatalogItem(Guid ProductId, Guid SellerId, string ShopName, string Name, string? Description, long Price, Guid KioskId, string KioskName, string Address, string? Zone, string? Photo, Guid[] Bouquets, bool PreorderAvailable, string[]? Tags = null);
 public sealed record WebCatalogPage(List<WebCatalogItem> Items, int Page, bool HasMore);
 public static class WebCatalog
 {
@@ -26,7 +26,8 @@ public static class WebCatalog
                         FROM kiosk_ops.slots sl
                         WHERE sl.kiosk_id = v.kiosk_id AND sl.current_seller_id = v.seller_id
                           AND flow.slot_sellable(sl.id, v.seller_id) AND (sl.zone IS NULL OR sl.zone = 'PREORDER')),
-                       v.photo, v.bouquets, COALESCE(fp.quantity > 0, false)
+                       v.photo, v.bouquets, COALESCE(fp.quantity > 0, false),
+                       COALESCE(fp.tags, ARRAY[]::text[])
                 FROM screen.v_web_catalog v
                 LEFT JOIN catalog.flower_products fp ON fp.id = v.product_id AND fp.seller_id = v.seller_id
                 WHERE (v.name ILIKE @search OR v.shop_name ILIKE @search OR v.kiosk_name ILIKE @search)
@@ -40,7 +41,7 @@ public static class WebCatalog
             command.Parameters.AddWithValue("available_preorder_only", availablePreorderOnly == true);
             command.Parameters.AddWithValue("search", "%" + (search?.Trim() ?? "") + "%"); command.Parameters.AddWithValue("offset", (number - 1) * 25);
             await using var reader = await command.ExecuteReaderAsync(ct); var items = new List<WebCatalogItem>();
-            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5), reader.GetGuid(6), reader.GetString(7), reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.GetFieldValue<Guid[]>(11), reader.GetBoolean(12)));
+            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5), reader.GetGuid(6), reader.GetString(7), reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.GetFieldValue<Guid[]>(11), reader.GetBoolean(12), reader.GetFieldValue<string[]>(13)));
             return Results.Ok(new WebCatalogPage(items.Take(25).ToList(), number, items.Count > 25));
         }).AllowAnonymous().Produces<WebCatalogPage>()
           .WithDescription("preorderAvailable cho biết mẫu còn hàng tại shop. availablePreorderOnly lọc thêm theo sức chứa của kiosk.");

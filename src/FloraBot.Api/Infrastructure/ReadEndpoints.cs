@@ -27,7 +27,7 @@ public sealed record SellerPackageResponse(string Name, long AnnualFee, int MaxS
     public long MonthlyFee => AnnualFee;
 }
 public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions);
-public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName, string? ImageUrl = null);
+public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName, string? ImageUrl = null, string[]? Tags = null);
 public sealed record AdminSellerResponse(Guid Id, string ShopName, string Status, Guid? PackageId, DateOnly? PackageExpiresAt, string Phone, string? Address);
 // Legacy type retained for source compatibility. The monthly /api/packages route is retired.
 public sealed record PackageResponse(Guid Id, string Name, long MonthlyFee, int MaxSlots);
