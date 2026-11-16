@@ -6,8 +6,11 @@ using Npgsql;
 namespace FloraBot.Api.Modules.KioskOps;
 
 public sealed record SellerAccessoryResponse(Guid Id, string Name, long Price, int StockQuantity, string Status,
-    Guid KioskId, string KioskCode, string KioskName, string KioskAddress, string KioskStatus);
-public sealed record CreateSellerAccessory(Guid KioskId, string Name, long Price);
+    Guid? KioskId, string? KioskCode, string? KioskName, string? KioskAddress, string? KioskStatus)
+{
+    public string Scope => KioskId.HasValue ? "KIOSK" : "SHOP";
+}
+public sealed record CreateSellerAccessory(string Name, long Price, Guid? KioskId = null);
 public sealed record UpdateSellerAccessory(string Name, long Price);
 public sealed record ChangeAccessoryStatus(string Status);
 
@@ -15,14 +18,18 @@ public static class SellerAccessories
 {
     public static void MapSellerAccessories(this WebApplication app)
     {
-        app.MapGet("/api/sellers/{sellerId:guid}/accessories", async (Guid sellerId, FloraDbContext db, HttpContext http, CancellationToken ct) =>
+        app.MapGet("/api/sellers/{sellerId:guid}/accessories", async (Guid sellerId, string? scope, FloraDbContext db, HttpContext http, CancellationToken ct) =>
         {
             http.Response.Headers.CacheControl = "no-store";
+            if (scope is not (null or "SHOP" or "KIOSK" or "ALL")) return Results.BadRequest();
             return Results.Ok(await db.Accessories.AsNoTracking().Where(x => x.SellerId == sellerId)
-                .OrderBy(x => x.Kiosk.Code).ThenBy(x => x.Name).ThenBy(x => x.Id)
+                .Where(x => scope == null || scope == "ALL" || (scope == "SHOP" ? x.KioskId == null : x.KioskId != null))
+                .OrderBy(x => x.Name).ThenBy(x => x.Id)
                 .Select(x => new SellerAccessoryResponse(x.Id, x.Name, x.Price, x.StockQuantity, x.Status,
-                    x.KioskId, x.Kiosk.Code, x.Kiosk.Name, x.Kiosk.Address, x.Kiosk.Status)).ToListAsync(ct));
-        }).RequireAuthorization("Merchant", "SameSeller").WithTags("KioskOps").Produces<List<SellerAccessoryResponse>>();
+                    x.KioskId, x.Kiosk == null ? null : x.Kiosk.Code, x.Kiosk == null ? null : x.Kiosk.Name,
+                    x.Kiosk == null ? null : x.Kiosk.Address, x.Kiosk == null ? null : x.Kiosk.Status)).ToListAsync(ct));
+        }).RequireAuthorization("Merchant", "SameSeller").WithTags("KioskOps").Produces<List<SellerAccessoryResponse>>()
+          .WithDescription("Use scope=SHOP for Seller's shared preorder accessory inventory. KIOSK and ALL retain access to existing physical kiosk inventory; omitted scope returns ALL for compatibility.");
 
         app.MapGet("/api/sellers/{sellerId:guid}/accessories/{id:guid}", async (
             Guid sellerId, Guid id, FloraDbContext db, HttpContext http, CancellationToken ct) =>
@@ -30,7 +37,8 @@ public static class SellerAccessories
             http.Response.Headers.CacheControl = "no-store";
             var item = await db.Accessories.AsNoTracking().Where(x => x.SellerId == sellerId && x.Id == id)
                 .Select(x => new SellerAccessoryResponse(x.Id, x.Name, x.Price, x.StockQuantity, x.Status,
-                    x.KioskId, x.Kiosk.Code, x.Kiosk.Name, x.Kiosk.Address, x.Kiosk.Status)).SingleOrDefaultAsync(ct);
+                    x.KioskId, x.Kiosk == null ? null : x.Kiosk.Code, x.Kiosk == null ? null : x.Kiosk.Name,
+                    x.Kiosk == null ? null : x.Kiosk.Address, x.Kiosk == null ? null : x.Kiosk.Status)).SingleOrDefaultAsync(ct);
             return item is null ? Results.NotFound() : Results.Ok(item);
         }).RequireAuthorization("Seller", "SameSeller").WithTags("KioskOps").Produces<SellerAccessoryResponse>();
 
@@ -43,7 +51,7 @@ public static class SellerAccessories
             await using var conn = await data.OpenConnectionAsync(ct);
             await using var tx = await conn.BeginTransactionAsync(ct);
             if (!await ActiveSeller(conn, tx, actor, sellerId, ct)) return Results.Forbid();
-            if (!await OwnsKiosk(conn, tx, sellerId, input.KioskId, ct)) return Results.NotFound();
+            if (input.KioskId is Guid kiosk && !await OwnsKiosk(conn, tx, sellerId, kiosk, ct)) return Results.NotFound();
             var id = Guid.CreateVersion7();
             try
             {
@@ -53,17 +61,18 @@ public static class SellerAccessories
                     """, conn, tx);
                 insert.Parameters.AddWithValue("id", id);
                 insert.Parameters.AddWithValue("seller", sellerId);
-                insert.Parameters.AddWithValue("kiosk", input.KioskId);
+                insert.Parameters.AddWithValue("kiosk", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)input.KioskId ?? DBNull.Value);
                 insert.Parameters.AddWithValue("name", input.Name.Trim());
                 insert.Parameters.AddWithValue("price", input.Price);
                 await insert.ExecuteNonQueryAsync(ct);
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
-            { return Results.Problem(statusCode: 409, detail: "Kiosk đã có phụ kiện cùng tên."); }
+            { return Results.Problem(statusCode: 409, detail: "Kho đã có phụ kiện cùng tên."); }
             await Audit(conn, tx, actor, id, "ACCESSORY_CREATED", ct);
             await tx.CommitAsync(ct);
             return Results.Created($"/api/sellers/{sellerId}/accessories/{id}", new { id });
-        }).RequireAuthorization("Seller", "SameSeller").WithTags("KioskOps");
+        }).RequireAuthorization("Seller", "SameSeller").WithTags("KioskOps")
+          .WithDescription("Create a shared SHOP accessory using Name and Price; no kiosk selection is required. Stock starts at zero and is increased via restock_accessory. Optional KioskId is for legacy physical kiosk inventory.");
 
         app.MapPut("/api/sellers/{sellerId:guid}/accessories/{id:guid}", async (
             Guid sellerId, Guid id, UpdateSellerAccessory input, NpgsqlDataSource data, HttpContext http, CancellationToken ct) =>
@@ -115,16 +124,16 @@ public static class SellerAccessories
         await using var conn = await data.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         if (!await ActiveSeller(conn, tx, actor, sellerId, ct)) return Results.Forbid();
-        Guid kioskId;
+        Guid? kioskId;
         await using (var lookup = new NpgsqlCommand("SELECT kiosk_id FROM kiosk_ops.accessories WHERE id=@id AND seller_id=@seller", conn, tx))
         {
             lookup.Parameters.AddWithValue("id", id);
             lookup.Parameters.AddWithValue("seller", sellerId);
             var value = await lookup.ExecuteScalarAsync(ct);
-            if (value is not Guid parsed) return Results.NotFound();
-            kioskId = parsed;
+            if (value is null) return Results.NotFound();
+            kioskId = value is Guid parsed ? parsed : null;
         }
-        if (!await OwnsKiosk(conn, tx, sellerId, kioskId, ct)) return Results.Problem(statusCode: 409, detail: "Kiosk chưa có kỳ thuê hợp lệ.");
+        if (kioskId is Guid ownedKiosk && !await OwnsKiosk(conn, tx, sellerId, ownedKiosk, ct)) return Results.Problem(statusCode: 409, detail: "Kiosk chưa có kỳ thuê hợp lệ.");
         try
         {
             await using var update = new NpgsqlCommand(status is null ? """
@@ -145,7 +154,7 @@ public static class SellerAccessories
             await update.ExecuteNonQueryAsync(ct);
         }
         catch (PostgresException ex) when (ex.SqlState == "23505")
-        { return Results.Problem(statusCode: 409, detail: "Kiosk đã có phụ kiện cùng tên."); }
+        { return Results.Problem(statusCode: 409, detail: "Kho đã có phụ kiện cùng tên."); }
         await Audit(conn, tx, actor, id, status is null ? "ACCESSORY_UPDATED" : "ACCESSORY_STATUS_CHANGED", ct);
         await tx.CommitAsync(ct);
         return Results.NoContent();

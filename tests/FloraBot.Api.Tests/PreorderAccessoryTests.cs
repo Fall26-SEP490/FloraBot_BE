@@ -163,21 +163,28 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
     {
         using var f = await Setup();
         await Sql(f, "UPDATE kiosk_ops.accessories SET stock_quantity=2 WHERE id=@accessory");
-        var first = await Request(f); var second = await Request(f);
+        var otherKiosk = Guid.NewGuid();
+        await Sql(f, """
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,last_heartbeat_at,latitude,longitude)
+              VALUES(@other,@other::text,'Other pickup kiosk','Other address','HCM',@other::text,@other::text,'ONLINE',public.app_now(),10.78,106.70);
+            INSERT INTO kiosk_ops.slots(kiosk_id,slot_code,relay_channel,zone) VALUES(@other,'S01',0,'PREORDER');
+            """, ("other", otherKiosk));
+        await CurrentMainKioskFixture.AssignKioskWithLeaseAsync(f.Data, otherKiosk, f.Seller);
+        var first = await Request(f); var second = await Request(f, kiosk: otherKiosk);
         await Quote(f, first); await Quote(f, second);
         var responses = await Task.WhenAll(Accept(f, await Row(f, first)), Accept(f, await Row(f, second)));
         Assert.Single(responses, x => x.StatusCode == HttpStatusCode.OK);
         Assert.Single(responses, x => x.StatusCode == HttpStatusCode.Conflict);
         Assert.Equal(0, await Stock(f));
-        Assert.Equal(1L, await Sql(f, "SELECT count(*) FROM ordering.orders WHERE kiosk_id=@kiosk"));
-        Assert.Equal(2L, await Sql(f, "SELECT sum(i.quantity)::bigint FROM ordering.order_items i JOIN ordering.orders o ON o.id=i.order_id WHERE o.kiosk_id=@kiosk"));
+        Assert.Equal(1L, await Sql(f, "SELECT count(*) FROM ordering.orders WHERE seller_id=@seller"));
+        Assert.Equal(2L, await Sql(f, "SELECT sum(i.quantity)::bigint FROM ordering.order_items i JOIN ordering.orders o ON o.id=i.order_id WHERE o.seller_id=@seller"));
     }
 
     [Fact]
     public async Task CatalogAndSelectionRespectCustomerRoleKioskTenantAndRequestedQuantities()
     {
         using var f = await Setup();
-        var path = $"/api/member/kiosks/{f.Kiosk}/catalog/accessories";
+        var path = $"/api/member/sellers/{f.Seller}/catalog/accessories";
         using var anonymous = factory.CreateClient();
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await f.SellerClient.GetAsync(path)).StatusCode);
@@ -186,6 +193,8 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
         var catalog = (await response.Content.ReadFromJsonAsync<List<PreorderAccessoryCatalogItem>>())!;
         Assert.Equal(2, catalog.Count);
         Assert.DoesNotContain(catalog, x => x.Name is "Inactive" or "Empty" or "Wrong tenant");
+        var compatibility = (await f.CustomerClient.GetFromJsonAsync<List<PreorderAccessoryCatalogItem>>($"/api/member/kiosks/{f.Kiosk}/catalog/accessories"))!;
+        Assert.Equal(catalog.Select(x => x.Id), compatibility.Select(x => x.Id));
 
         var wrongTenant = await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, Guid.NewGuid(), new[] { new { accessoryId = f.ForeignAccessory, quantity = 1 } }));
         Assert.Equal(HttpStatusCode.Conflict, wrongTenant.StatusCode);
@@ -198,6 +207,79 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
         var excess = await f.SellerClient.PostAsJsonAsync($"/api/sellers/{f.Seller}/preorders/{request}/quote", new { price = 100000, pickupAt = f.Pickup, note = "Confirmed with accessories", accessories = new[] { new { accessoryId = f.Accessory, quantity = 3 } } });
         Assert.Equal(HttpStatusCode.Conflict, excess.StatusCode);
         Assert.Equal(5, await Stock(f));
+    }
+
+    [Fact]
+    public async Task SellerCreatesPricesAndRestocksShopAccessoryWithoutChoosingAKiosk()
+    {
+        using var f = await Setup();
+        var path = $"/api/sellers/{f.Seller}/accessories";
+        var response = await f.SellerClient.PostAsJsonAsync(path, new { name = "Bow priced by Seller", price = 10000 });
+        await Success(response);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var id = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var created = (await f.SellerClient.GetFromJsonAsync<SellerAccessoryResponse>($"{path}/{id}"))!;
+        Assert.Equal("SHOP", created.Scope); Assert.Null(created.KioskId); Assert.Null(created.KioskName);
+        Assert.Equal(0, created.StockQuantity);
+        var stockPath = $"/api/sellers/{f.Seller}/flows/restock_accessory";
+        Assert.Equal(HttpStatusCode.NotFound, (await f.SellerClient.PostAsJsonAsync(stockPath, new { p_accessory = f.ForeignAccessory, p_qty = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await f.SellerClient.PostAsJsonAsync(stockPath, new { p_accessory = id, p_qty = 0 })).StatusCode);
+        await Success(await f.SellerClient.PostAsJsonAsync($"/api/sellers/{f.Seller}/flows/restock_accessory", new { p_accessory = id, p_qty = 5 }));
+        f.Accessory = id;
+        var request = await Request(f); await Quote(f, request);
+        var quote = await Row(f, request);
+        Assert.Equal(20000, quote.QuotedAccessoryTotal); Assert.Equal(120000, quote.QuotedPrice);
+        Assert.Equal(5, await Stock(f));
+        await Success(await Accept(f, quote)); Assert.Equal(3, await Stock(f));
+        Assert.Equal(HttpStatusCode.Conflict, (await f.SellerClient.PostAsJsonAsync(stockPath, new { p_accessory = id, p_qty = int.MaxValue })).StatusCode);
+        Assert.Equal(3, await Stock(f));
+        var duplicate = await f.SellerClient.PostAsJsonAsync(path, new { name = "bow PRICED by seller", price = 5000 });
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        var inventory = (await f.SellerClient.GetFromJsonAsync<List<SellerAccessoryResponse>>(path + "?scope=SHOP"))!;
+        Assert.All(inventory, x => { Assert.Equal("SHOP", x.Scope); Assert.Null(x.KioskId); });
+        var changed = await f.SellerClient.PutAsJsonAsync($"{path}/{id}", new { name = "Bow priced by Seller", price = 15000 });
+        await Success(changed);
+        Assert.Equal(10000, Assert.Single((await Row(f, request)).QuotedAccessories).UnitPrice);
+        await Success(await f.SellerClient.PatchAsJsonAsync($"{path}/{id}/status", new { status = "INACTIVE" }));
+        var catalog = (await f.CustomerClient.GetFromJsonAsync<List<PreorderAccessoryCatalogItem>>($"/api/member/sellers/{f.Seller}/catalog/accessories"))!;
+        Assert.DoesNotContain(catalog, x => x.Id == id);
+    }
+
+    [Fact]
+    public async Task AccessoriesAreOptionalAndShopStockCannotBeBoughtAsKioskStock()
+    {
+        using var f = await Setup();
+        var request = await Request(f, Array.Empty<object>()); await Quote(f, request, Array.Empty<object>());
+        var quote = await Row(f, request);
+        Assert.Empty(quote.QuotedAccessories); Assert.Equal(100000, quote.QuotedPrice);
+        await Success(await Accept(f, quote)); Assert.Equal(5, await Stock(f));
+        using var device = factory.CreateClient(); device.DefaultRequestHeaders.Add("X-Kiosk-Key", "test-preorder-" + f.Kiosk);
+        var physicalCatalog = (await device.GetFromJsonAsync<List<KioskAccessoryResponse>>($"/api/kiosks/{f.Kiosk}/catalog/accessories"))!;
+        Assert.Empty(physicalCatalog);
+        var checkout = await device.PostAsJsonAsync($"/api/kiosks/{f.Kiosk}/flows/kiosk_checkout", new { p_bouquets = Array.Empty<Guid>(), p_accessories = new[] { new { id = f.Accessory, qty = 1 } } });
+        Assert.Equal(HttpStatusCode.Conflict, checkout.StatusCode); Assert.Equal(5, await Stock(f));
+    }
+
+    [Fact]
+    public async Task OldKioskAccessoryQuotesRemainAcceptableButNewRequestsUseShopInventory()
+    {
+        using var f = await Setup();
+        var legacy = Guid.NewGuid();
+        await Sql(f, "INSERT INTO kiosk_ops.accessories(id,seller_id,kiosk_id,name,price,stock_quantity) VALUES(@legacy,@seller,@kiosk,'Legacy kiosk bow',10000,5)", ("legacy", legacy));
+        var selection = new[] { new { accessoryId = legacy, quantity = 2 } };
+        var rejected = await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, Guid.NewGuid(), selection));
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Contains("PREORDER_ACCESSORY_NOT_IN_SHOP", await rejected.Content.ReadAsStringAsync());
+        var request = await Request(f, Array.Empty<object>());
+        // Reconstruct a request stored by the preceding API version, retaining its accessory IDs.
+        await Sql(f, """
+            UPDATE ordering.web_requests SET requested_accessories=jsonb_build_array(jsonb_build_object(
+              'accessoryId',@legacy,'name','Legacy kiosk bow','quantity',2)) WHERE id=@request;
+            """, ("legacy", legacy), ("request", request));
+        await Quote(f, request, selection); await Success(await Accept(f, await Row(f, request)));
+        Assert.Equal(3, await Sql(f, "SELECT stock_quantity FROM kiosk_ops.accessories WHERE id=@legacy", ("legacy", legacy)));
+        await Success(await f.CustomerClient.PostAsJsonAsync($"/api/member/preorders/{request}/cancel", new { reason = "Cancel the historical quote safely" }));
+        Assert.Equal(5, await Sql(f, "SELECT stock_quantity FROM kiosk_ops.accessories WHERE id=@legacy", ("legacy", legacy)));
     }
 
     [Fact]
@@ -271,10 +353,10 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
             INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel,zone)
               VALUES(@slot,@kiosk,'S01',0,'PREORDER'),(public.uuid_v7(),@kiosk,'S02',1,'PREORDER'),(public.uuid_v7(),@kiosk,'S03',2,'PREORDER');
             """ + CurrentMainKioskFixture.AssignKioskWithLeaseSql + """
-            INSERT INTO kiosk_ops.accessories(id,seller_id,kiosk_id,name,price,stock_quantity,status)
-              VALUES(@accessory,@seller,@kiosk,'Ribbon',20000,5,'ACTIVE'),(@second,@seller,@kiosk,'Card',5000,5,'ACTIVE'),
-                (@foreignAccessory,@foreignSeller,@kiosk,'Wrong tenant',5000,5,'ACTIVE'),
-                (public.uuid_v7(),@seller,@kiosk,'Inactive',1000,5,'INACTIVE'),(public.uuid_v7(),@seller,@kiosk,'Empty',1000,0,'ACTIVE');
+            INSERT INTO kiosk_ops.accessories(id,seller_id,name,price,stock_quantity,status)
+              VALUES(@accessory,@seller,'Ribbon',20000,5,'ACTIVE'),(@second,@seller,'Card',5000,5,'ACTIVE'),
+                (@foreignAccessory,@foreignSeller,'Wrong tenant',5000,5,'ACTIVE'),
+                (public.uuid_v7(),@seller,'Inactive',1000,5,'INACTIVE'),(public.uuid_v7(),@seller,'Empty',1000,0,'ACTIVE');
             INSERT INTO payment.payment_channel_versions(id,seller_id,version,secret_ref,expected_bank_bin,expected_bank_account,expected_bank_name,state,verified_at)
               VALUES(public.uuid_v7(),@seller,1,'test-accessory-channel','970415','1010099887766','TIEM HOA TEST','ACTIVE',public.app_now());
             """, ("staff", f.Staff), ("otherCustomer", f.OtherCustomer), ("foreignSeller", f.ForeignSeller), ("second", f.SecondAccessory), ("foreignAccessory", f.ForeignAccessory), ("slot", f.Slot));
@@ -282,12 +364,12 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
     }
 
     private static object Selection(Fixture f) => new[] { new { accessoryId = f.Accessory, quantity = 2 } };
-    private static object RequestBody(Fixture f, Guid id, object selection) => new { id, kind = "CUSTOM", productId = f.Product, kioskId = f.Kiosk, pickupAt = f.Pickup, instructions = "Birthday bouquet with requested accessories", accessories = selection };
-    private static async Task<Guid> Request(Fixture f, object? selection = null)
+    private static object RequestBody(Fixture f, Guid id, object selection, Guid? kiosk = null) => new { id, kind = "CUSTOM", productId = f.Product, kioskId = kiosk ?? f.Kiosk, pickupAt = f.Pickup, instructions = "Birthday bouquet with requested accessories", accessories = selection };
+    private static async Task<Guid> Request(Fixture f, object? selection = null, Guid? kiosk = null)
     {
         var id = Guid.NewGuid();
-        await Success(await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, id, selection ?? Selection(f))));
-        await Success(await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, id, selection ?? Selection(f))));
+        await Success(await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, id, selection ?? Selection(f), kiosk)));
+        await Success(await f.CustomerClient.PostAsJsonAsync("/api/member/preorders", RequestBody(f, id, selection ?? Selection(f), kiosk)));
         return id;
     }
     private static async Task Quote(Fixture f, Guid request, object? selection = null) => await Success(await f.SellerClient.PostAsJsonAsync($"/api/sellers/{f.Seller}/preorders/{request}/quote", new { price = 100000, pickupAt = f.Pickup, note = "Confirmed with accessories", accessories = selection ?? Selection(f) }));
