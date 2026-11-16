@@ -47,7 +47,7 @@ public sealed class AdminComplaintsTests(ApiFactory factory) : IClassFixture<Api
         Assert.Equal("https://example.invalid/complaint.jpg", Assert.Single(detail.Evidence.Items).Url);
         Assert.Single((await admin.GetFromJsonAsync<AdminComplaintPage>(path))!.Items);
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.GetAsync(path + "&page=0")).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await admin.GetAsync(path + "&status=RESOLVED_FIXED")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.GetAsync(path + "&status=INVALID_STATUS")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync($"/api/admin/complaints/{Guid.NewGuid()}")).StatusCode);
         var body = new { p_dispute = id, p_refund = refund, p_decision = "Reviewed the customer evidence" };
         const string resolve = "/api/admin/flows/resolve_dispute";

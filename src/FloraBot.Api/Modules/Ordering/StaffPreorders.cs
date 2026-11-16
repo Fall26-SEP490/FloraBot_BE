@@ -137,7 +137,7 @@ public static class StaffPreorders
             JOIN identity.users u ON u.id=t.assignee_id AND u.seller_id=t.seller_id
                 AND u.role='SELLER_STAFF' AND u.status='ACTIVE'
             WHERE t.id=@task AND t.assignee_id=@actor AND t.seller_id=@seller AND t.kind='DELIVERY'
-              AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task)
+              AND NOT EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks WHERE task_id=@task) AND NOT EXISTS(SELECT 1 FROM kiosk_ops.staff_quality_tasks WHERE task_id=@task)
             """))
         {
             task.Parameters.AddWithValue("task", taskId);

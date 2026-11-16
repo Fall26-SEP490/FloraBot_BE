@@ -163,6 +163,7 @@ internal static class StaffInventoryTasks
             LEFT JOIN kiosk_ops.slot_maintenance_sessions ms ON ms.id=t.id AND ms.actor_id=u.id
             WHERE t.id=@task AND t.kind='DELIVERY' AND t.assignee_id=@actor AND t.seller_id=@seller
               AND u.role='SELLER_STAFF' AND u.status='ACTIVE'
+              AND flow.quality_task_live(t.id)
             FOR SHARE OF t,i,u
             """, connection, transaction);
         command.Parameters.AddWithValue("task", taskId);

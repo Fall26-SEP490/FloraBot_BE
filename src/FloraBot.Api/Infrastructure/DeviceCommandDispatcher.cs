@@ -14,7 +14,9 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         AND k.status='ONLINE' AND k.last_heartbeat_at>CURRENT_TIMESTAMP-make_interval(secs=>flow.cfg('heartbeat_offline_seconds'))
         AND k.hardware_id=ANY(@hardware)
         AND (
-            (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP)
+            (s.status='HELD' AND s.hold_order_id=t.order_id AND s.hold_until>CURRENT_TIMESTAMP
+                AND (NOT EXISTS(SELECT 1 FROM kiosk_ops.quality_pickup_commands qc WHERE qc.cmd_id=t.cmd_id)
+                    OR flow.quality_pickup_allowed(t.cmd_id)))
             OR (t.purpose='SELLER_ACCESS'
                 AND NOT EXISTS (SELECT 1 FROM kiosk_ops.slot_maintenance_sessions sms WHERE sms.current_cmd_id=t.cmd_id)
                 AND NOT EXISTS (SELECT 1 FROM kiosk_ops.technical_repair_commands repair WHERE repair.cmd_id=t.cmd_id)
@@ -46,6 +48,7 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
                   AND s.status='LOCKED' AND s.hold_order_id IS NULL AND s.hold_until IS NULL
                   AND cap.enabled=true AND cap.door_verified=true AND cap.presence_verified=true
                   AND sms.stage IN ('AwaitRemoval','AwaitLoading','NeedsInspection') AND sms.expires_at>CURRENT_TIMESTAMP
+                  AND flow.quality_task_live(sms.id)
                   AND (sms.intended_stage<>'AwaitLoading' OR flow.slot_sellable(s.id, sms.seller_id))
                   AND NOT EXISTS (
                       SELECT 1 FROM ordering.order_items i
