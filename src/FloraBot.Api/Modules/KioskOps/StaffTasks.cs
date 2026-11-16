@@ -16,7 +16,8 @@ public sealed record StaffTaskResult(Guid Id, int? Version = null);
 public sealed record StaffDeliveryScope(Guid SellerId, string ShopName, Guid KioskId, string KioskName, string Address);
 public sealed record StaffTaskRow(Guid Id, string Kind, string Status, int Version, Guid AssigneeId, string AssigneeName,
     Guid KioskId, string KioskName, string Address, Guid? SellerId, string? ShopName, Guid? IncidentId,
-    string Instructions, string? Report, DateTime CreatedAt, DateTime UpdatedAt);
+    string Instructions, string? Report, DateTime CreatedAt, DateTime UpdatedAt,
+    string? WorkType = null, Guid? ComplaintId = null);
 public sealed record StaffTaskPage(List<StaffTaskRow> Items, int Page, bool HasMore);
 
 public static class StaffTasks
@@ -207,6 +208,8 @@ public static class StaffTasks
                 SELECT 1 FROM kiosk_ops.staff_inventory_tasks inventory
                 LEFT JOIN kiosk_ops.slot_maintenance_sessions session ON session.id=inventory.task_id
                 WHERE inventory.task_id=@id AND session.stage IS DISTINCT FROM 'Completed'
+                  AND NOT EXISTS(SELECT 1 FROM kiosk_ops.quality_replacements qr WHERE qr.task_id=@id
+                    AND qr.state IN ('CANCELLED','EXPIRED') AND (session.id IS NULL OR session.stage='Recovered'))
             )) AND (@status<>'SUBMITTED' OR NOT EXISTS (
                 SELECT 1 FROM kiosk_ops.staff_tasks task JOIN ordering.disputes incident ON incident.id=task.incident_id
                 WHERE task.id=@id AND task.kind='INCIDENT' AND incident.slot_id IS NOT NULL))
@@ -229,9 +232,11 @@ public static class StaffTasks
 
         var sql = """
             SELECT t.id,t.kind,t.status,t.version,t.assignee_id,''::text,t.kiosk_id,k.name,k.address,
-              t.seller_id,NULL::text,t.incident_id,t.instructions,t.report,t.created_at,t.updated_at
+              t.seller_id,NULL::text,t.incident_id,t.instructions,t.report,t.created_at,t.updated_at,
+              CASE WHEN q.task_id IS NOT NULL THEN 'FLOWER_QUALITY' ELSE t.kind END,q.complaint_id
             FROM kiosk_ops.staff_tasks t
             JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
+            LEFT JOIN kiosk_ops.staff_quality_tasks q ON q.task_id=t.id
             WHERE (@status IS NULL OR t.status=@status)
             """;
 
@@ -276,7 +281,8 @@ public static class StaffTasks
         await using var reader = await command.ExecuteReaderAsync(ct);
         var items = new List<StaffTaskRow>();
         while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetGuid(4), reader.GetString(5), reader.GetGuid(6), reader.GetString(7), reader.GetString(8),
-            reader.IsDBNull(9) ? null : reader.GetGuid(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetGuid(11), reader.GetString(12), reader.IsDBNull(13) ? null : reader.GetString(13), reader.GetDateTime(14), reader.GetDateTime(15)));
+            reader.IsDBNull(9) ? null : reader.GetGuid(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetGuid(11), reader.GetString(12), reader.IsDBNull(13) ? null : reader.GetString(13), reader.GetDateTime(14), reader.GetDateTime(15),
+            reader.GetString(16),reader.IsDBNull(17) ? null : reader.GetGuid(17)));
         await reader.DisposeAsync();
         var users = await StaffIdentityRead.Users(data, items.Select(x => x.AssigneeId).Distinct().ToArray(), ct);
         var shops = await StaffIdentityRead.Sellers(data, items.Where(x => x.SellerId.HasValue).Select(x => x.SellerId!.Value).Distinct().ToArray(), ct);

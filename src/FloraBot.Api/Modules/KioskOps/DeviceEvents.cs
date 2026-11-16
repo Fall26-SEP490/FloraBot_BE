@@ -32,6 +32,10 @@ public static class DeviceEvents
         ICapPublisher publisher, DeviceSnapshot before, CancellationToken ct)
     {
         if (before.OrderId is not { } orderId) return;
+        // Quality replacements have a separate collection confirmation and no second sale event.
+        await using var quality = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.quality_pickup_commands WHERE cmd_id=@id", connection, transaction);
+        quality.Parameters.AddWithValue("id", before.CommandId);
+        if (await quality.ExecuteScalarAsync(ct) is not null) return;
         await using var command = new NpgsqlCommand("SELECT status,door_closed_at FROM kiosk_ops.unlock_tokens WHERE cmd_id=@id", connection, transaction);
         command.Parameters.AddWithValue("id", before.CommandId);
         string status; DateTime? closed;

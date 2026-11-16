@@ -359,6 +359,7 @@ app.MapStaffTaskDetails();
 app.MapStaffEvidence();
 app.MapStaffIncidentResolution();
 app.MapAdminComplaintsRead();
+app.MapQualityComplaints();
 app.MapAdminWithdrawalsRead();
 app.MapAdminRefundsRead();
 app.MapReceiptRead();
