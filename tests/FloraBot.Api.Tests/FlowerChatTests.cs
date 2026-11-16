@@ -130,6 +130,9 @@ public sealed class FlowerChatTests(ApiFactory factory) : IClassFixture<ApiFacto
             var payload = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
             Assert.Equal("customer", payload.GetProperty("audience").GetString());
             var candidates = payload.GetProperty("candidates");
+            var kiosks = payload.GetProperty("kiosks");
+            Assert.InRange(kiosks.GetArrayLength(), 0, 8);
+            Assert.False(payload.TryGetProperty("latitude", out _));
             if (ExpectEmpty) Assert.Equal(0, candidates.GetArrayLength());
             Assert.True(candidates.GetArrayLength() <= 30);
             foreach (var item in candidates.EnumerateArray())
@@ -142,6 +145,9 @@ public sealed class FlowerChatTests(ApiFactory factory) : IClassFixture<ApiFacto
             if (Expected is Guid id)
             {
                 var candidate = Assert.Single(candidates.EnumerateArray(), c => c.GetProperty("id").GetGuid() == id);
+                Assert.Contains(kiosks.EnumerateArray(), k => k.GetProperty("name").GetString() == "Chat kiosk"
+                    && k.GetProperty("address").GetString() == "Test address"
+                    && k.GetProperty("preorderAvailable").GetBoolean());
                 Assert.Equal("Hoa lụa màu hồng", candidate.GetProperty("description").GetString());
                 Assert.Contains("flower:rose", candidate.GetProperty("tags").EnumerateArray().Select(t => t.GetString()));
                 return new(HttpStatusCode.OK)

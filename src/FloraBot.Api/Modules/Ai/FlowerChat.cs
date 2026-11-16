@@ -33,6 +33,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         decimal? ShopRating, long ShopReviews, string? ShopName, string? KioskName, double? DistanceKm);
     private sealed record ModelSuggestion(Guid Id, string? Reason);
     private sealed record ModelAnswer(string? Intent, string? Message, ModelSuggestion[]? Suggestions);
+    private sealed record KioskContext(string Code, string Name, string? ShopName, string? Address, string Status,
+        bool PreorderAvailable, double? DistanceKm);
 
     public static void Map(WebApplication app) =>
         app.MapPost("/api/shop/flower-chat", (FlowerChatInput input, HttpContext http, FlowerChat chat, CancellationToken ct) =>
@@ -58,7 +60,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         if (!seller && input.Mode == "WALK_IN" && input.KioskId is null)
             return Results.Ok(new FlowerChatResponse("FLOWERS", "Bạn chọn kiosk để FloraBot xem hoa đang có tại tủ nhé.", []));
         var candidates = seller ? [] : await CandidatesAsync(input, question, ct);
-        var answer = await AskAsync(question, seller, candidates, ct);
+        var kiosks = seller ? [] : await RelatedKiosksAsync(input, question, ct);
+        var answer = await AskAsync(question, seller, candidates, kiosks, ct);
         if (answer?.Intent == "OFF_TOPIC")
             return Results.Ok(new FlowerChatResponse("OFF_TOPIC", Redirect, []));
         if (answer?.Intent != "FLOWERS" || !AdvisorClient.SafeText(answer.Message, 1000)
@@ -222,7 +225,7 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
                    shop_name,kiosk_name,distance_km
             FROM offers
             ORDER BY (SELECT count(*) FROM unnest(@terms) AS token
-                      WHERE strpos(lower(name || ' ' || description || ' ' || array_to_string(tags,' ')),token)>0) DESC,
+                      WHERE strpos(lower(concat_ws(' ',name,description,array_to_string(tags,' '),shop_name,kiosk_name)),token)>0) DESC,
                      distance_km NULLS LAST,
                      (coalesce(product_rating*product_votes/(product_votes+5),0)
                       + coalesce(shop_rating*shop_votes/(shop_votes+10),0)) DESC,
@@ -253,7 +256,46 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         command.Parameters.AddWithValue("longitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Longitude ?? DBNull.Value);
     }
 
-    private async Task<ModelAnswer?> AskAsync(string question, bool seller, Candidate[] candidates, CancellationToken ct)
+    private async Task<KioskContext[]> RelatedKiosksAsync(FlowerChatInput input, string question, CancellationToken ct)
+    {
+        await using var command = data.CreateCommand($"""
+            WITH kiosk_distances AS ({KioskDistanceSql}), relevant AS (
+                SELECT k.id,k.code,k.name,s.shop_name,k.address,k.status,d.distance_km
+                FROM kiosk_ops.kiosks k
+                LEFT JOIN identity.sellers s ON s.id=k.seller_id AND s.status='ACTIVE'
+                LEFT JOIN kiosk_distances d ON d.id=k.id
+                WHERE k.status<>'DISABLED' AND (@mode='PREORDER' OR k.id=@kiosk)
+                ORDER BY (k.id IS NOT DISTINCT FROM @kiosk) DESC,
+                         (SELECT count(*) FROM unnest(@terms) AS token
+                          WHERE strpos(lower(concat_ws(' ',k.code,k.name,k.address,k.region,s.shop_name)),token)>0) DESC,
+                         d.distance_km NULLS LAST,k.id
+                LIMIT 8
+            )
+            SELECT k.code,k.name,k.shop_name,k.address,k.status,
+                   EXISTS(SELECT 1 FROM flow.get_kiosk_preorder_availability(k.id) a WHERE a.is_available),
+                   k.distance_km
+            FROM relevant k
+            """);
+        AddLocationParameters(command, input);
+        command.Parameters.AddWithValue("kiosk", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)input.KioskId ?? DBNull.Value);
+        command.Parameters.AddWithValue("terms", Regex.Split(question.ToLowerInvariant(), @"[^\p{L}\p{N}-]+")
+            .Where(term => term.Length >= 3).Distinct().Take(20).ToArray());
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var rows = new List<KioskContext>();
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(new(
+                reader.GetString(0), reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetString(4), reader.GetBoolean(5),
+                reader.IsDBNull(6) ? null : Math.Round(reader.GetDouble(6), 1)));
+        }
+        return rows.ToArray();
+    }
+
+    private async Task<ModelAnswer?> AskAsync(string question, bool seller, Candidate[] candidates,
+        KioskContext[] kiosks, CancellationToken ct)
     {
         if (config["AI_SERVICE_TOKEN"] is not { Length: >= 32 } token
             || !Uri.TryCreate(config["AI_SERVICE_URL"], UriKind.Absolute, out var uri)
@@ -267,10 +309,18 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         {
             question,
             audience = seller ? "seller" : "customer",
+            kiosks = kiosks.Select(k => new
+            {
+                Code = LimitText(k.Code, 64), Name = LimitText(k.Name, 160),
+                ShopName = LimitText(k.ShopName, 160), Address = LimitText(k.Address, 300),
+                k.Status, k.PreorderAvailable, k.DistanceKm
+            }),
             candidates = candidates.Select(c => new { c.Id, c.Name,
                 Description = c.Description[..Math.Min(600, c.Description.Length)],
                 c.Price, Tags = c.Tags.Where(t => t.Length <= 64).Take(20), c.Mode,
-                c.ProductRating, c.ProductReviews, c.ShopRating, c.ShopReviews })
+                c.ProductRating, c.ProductReviews, c.ShopRating, c.ShopReviews,
+                ShopName = LimitText(c.ShopName, 160), KioskName = LimitText(c.KioskName, 160),
+                DistanceKm = c.DistanceKm is { } km ? Math.Round(km, 1) : (double?)null })
         });
         try
         {
@@ -284,4 +334,7 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         catch (JsonException) { return null; }
         catch (IOException) { return null; }
     }
+
+    private static string? LimitText(string? value, int max) =>
+        value is null ? null : value[..Math.Min(value.Length, max)];
 }
