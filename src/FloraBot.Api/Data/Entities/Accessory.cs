@@ -9,7 +9,7 @@ public partial class Accessory
 
     public Guid SellerId { get; set; }
 
-    public Guid KioskId { get; set; }
+    public Guid? KioskId { get; set; }
 
     public string Name { get; set; } = null!;
 
@@ -23,5 +23,5 @@ public partial class Accessory
 
     public DateTime UpdatedAt { get; set; }
 
-    public virtual Kiosk Kiosk { get; set; } = null!;
+    public virtual Kiosk? Kiosk { get; set; }
 }

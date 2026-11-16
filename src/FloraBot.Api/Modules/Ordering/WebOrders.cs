@@ -79,7 +79,7 @@ public static class WebOrders
             }, ct);
         }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth").Produces<FlowResult>()
           .ProducesProblem(StatusCodes.Status409Conflict)
-          .WithDescription("Tạo yêu cầu preorder CUSTOM. Accessories chỉ ghi nhận mong muốn của khách, chưa giữ tồn; giá và tồn được xác nhận trong báo giá. Phụ kiện được giao cùng bó hoa trong một ô kiosk.");
+          .WithDescription("Tạo yêu cầu preorder CUSTOM với phụ kiện tùy chọn từ kho SHOP của Seller mẫu hoa. Accessories chỉ ghi nhận mong muốn, chưa giữ tồn; BE nhân đơn giá với số lượng trong báo giá và trừ tồn khi khách accept. Phụ kiện được giao cùng bó hoa trong một ô kiosk, không chọn kiosk hoặc ô riêng cho phụ kiện.");
         app.MapPost("/api/member/preorders/{requestId:guid}/accept", async (Guid requestId, WebAcceptInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (!await Owns(source, requestId, User(http), null, ct)) return Results.NotFound();
