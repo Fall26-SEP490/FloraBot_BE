@@ -79,6 +79,19 @@ public sealed class FlowerChatTests(ApiFactory factory) : IClassFixture<ApiFacto
             Assert.Equal("Chat kiosk", card.KioskName);
             Assert.NotNull(card.DistanceKm);
             Assert.InRange(card.DistanceKm.Value, 11.0, 11.2);
+
+            using var noLocation = await client.PostAsJsonAsync(path, new FlowerChatInput("kiosk nào gần tui nhất"));
+            var locationPrompt = await noLocation.Content.ReadFromJsonAsync<FlowerChatResponse>();
+            Assert.Contains("Dùng vị trí của tôi", locationPrompt!.Message);
+
+            using var nearest = await client.PostAsJsonAsync(path,
+                new FlowerChatInput("kiosk nào gần tui nhất", Latitude: 10.8, Longitude: 106.6));
+            nearest.EnsureSuccessStatusCode();
+            var closest = await nearest.Content.ReadFromJsonAsync<FlowerChatResponse>();
+            Assert.Equal("FLOWERS", closest!.Intent);
+            Assert.Contains("cách khoảng 0 km", closest.Message);
+            Assert.Contains("Địa chỉ:", closest.Message);
+            Assert.Equal(2, transport.Calls);
         }
         else
         {

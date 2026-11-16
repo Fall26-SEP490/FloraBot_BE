@@ -16,6 +16,15 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
 {
     private const string Redirect = "FloraBot có thể giúp bạn chọn hoa, tìm mẫu theo dịp hoặc hướng dẫn đặt hoa. Bạn muốn mình gợi ý theo dịp hay ngân sách ạ?";
     private const string Unavailable = "FloraBot chưa thể tư vấn ngay lúc này. Bạn thử lại hoặc xem danh mục hoa nhé.";
+    private const string KioskDistanceSql = """
+        SELECT k.id, CASE WHEN @latitude IS NOT NULL AND k.latitude IS NOT NULL AND k.longitude IS NOT NULL
+            THEN 6371.0 * acos(least(1.0, greatest(-1.0,
+                sin(radians(@latitude)) * sin(radians(k.latitude::double precision)) +
+                cos(radians(@latitude)) * cos(radians(k.latitude::double precision)) *
+                cos(radians(k.longitude::double precision - @longitude))
+            ))) END AS distance_km
+        FROM kiosk_ops.kiosks k WHERE @mode='PREORDER'
+        """;
     private static readonly Regex BudgetText = new(
         @"(?:dưới|tối đa|không quá|ngân sách)\s*:?\s*(?<amount>\d{1,9}(?:[.,]\d{3}){0,2})\s*(?<unit>nghìn|ngàn|k|triệu|tr|đồng|đ|vnd)?(?![\d.,])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
@@ -42,6 +51,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
 
         var seller = http.User.IsInRole("SELLER");
         input = ApplyQuestionConstraints(input, question);
+        if (!seller && input.Mode == "PREORDER" && IsNearestKioskQuestion(question))
+            return Results.Ok(await NearestPreorderKioskAsync(input, ct));
         if (!seller && input.Mode == "WALK_IN" && input.KioskId is null)
             return Results.Ok(new FlowerChatResponse("FLOWERS", "Bạn chọn kiosk để FloraBot xem hoa đang có tại tủ nhé.", []));
         var candidates = seller ? [] : await CandidatesAsync(input, question, ct);
@@ -71,6 +82,45 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         return Results.Ok(new FlowerChatResponse("FLOWERS", answer.Message!, suggestions));
     }
 
+    private static bool IsNearestKioskQuestion(string question) =>
+        (question.Contains("kiosk", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("tủ", StringComparison.OrdinalIgnoreCase))
+        && (question.Contains("gần nhất", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("gần tôi", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("gần tui", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("gần mình", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<FlowerChatResponse> NearestPreorderKioskAsync(FlowerChatInput input, CancellationToken ct)
+    {
+        if (input.Latitude is null)
+            return new("FLOWERS", "Bạn bấm Dùng vị trí của tôi, cho phép truy cập vị trí rồi gửi lại câu hỏi để FloraBot tìm kiosk nhận hoa gần bạn nhé.", []);
+
+        await using var command = data.CreateCommand($"""
+            WITH kiosk_distances AS ({KioskDistanceSql}),
+            eligible_kiosks AS (
+                SELECT DISTINCT v.kiosk_id, v.kiosk_name, v.shop_name, v.address
+                FROM screen.v_web_catalog v
+                JOIN catalog.flower_products p ON p.id=v.product_id
+                WHERE p.inventory_kind='ARTIFICIAL' AND p.quantity>0 AND p.price<=@budget
+            )
+            SELECT k.kiosk_name,k.shop_name,k.address,d.distance_km
+            FROM eligible_kiosks k JOIN kiosk_distances d ON d.id=k.kiosk_id
+            WHERE d.distance_km IS NOT NULL
+              AND EXISTS (SELECT 1 FROM flow.get_kiosk_preorder_availability(k.kiosk_id) a WHERE a.is_available)
+            ORDER BY d.distance_km,k.kiosk_id,k.shop_name
+            LIMIT 1
+            """);
+        AddLocationParameters(command, input);
+        command.Parameters.AddWithValue("budget", input.Budget ?? 1_000_000_000L);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return new("FLOWERS", "Hiện FloraBot chưa tìm thấy kiosk còn nhận đặt trước phù hợp.", []);
+
+        var distance = reader.GetDouble(3).ToString("0.#", System.Globalization.CultureInfo.GetCultureInfo("vi-VN"));
+        return new("FLOWERS",
+            $"Kiosk nhận hoa đặt trước gần bạn nhất là {reader.GetString(0)} của {reader.GetString(1)}, cách khoảng {distance} km theo đường chim bay. Địa chỉ: {reader.GetString(2)}.", []);
+    }
+
     private static FlowerChatInput ApplyQuestionConstraints(FlowerChatInput input, string question)
     {
         var text = question.ToLowerInvariant();
@@ -97,7 +147,7 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
 
     private async Task<Candidate[]> CandidatesAsync(FlowerChatInput input, string question, CancellationToken ct)
     {
-        await using var command = data.CreateCommand("""
+        await using var command = data.CreateCommand($"""
             WITH product_reviews AS (
                 SELECT p.seller_id, r.product_id, sum(r.stars) AS total, count(*) AS votes
                 FROM catalog.flower_product_reviews r JOIN catalog.flower_products p ON p.id=r.product_id
@@ -106,15 +156,7 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
             ), shop_reviews AS (
                 SELECT seller_id,sum(total)/sum(votes) AS rating,sum(votes)::bigint AS votes
                 FROM product_reviews GROUP BY seller_id
-            ), kiosk_distances AS (
-                SELECT k.id, CASE WHEN @latitude IS NOT NULL AND k.latitude IS NOT NULL AND k.longitude IS NOT NULL
-                    THEN 6371.0 * acos(least(1.0, greatest(-1.0,
-                        sin(radians(@latitude)) * sin(radians(k.latitude::double precision)) +
-                        cos(radians(@latitude)) * cos(radians(k.latitude::double precision)) *
-                        cos(radians(k.longitude::double precision - @longitude))
-                    ))) END AS distance_km
-                FROM kiosk_ops.kiosks k WHERE @mode='PREORDER'
-            ), offers AS (
+            ), kiosk_distances AS ({KioskDistanceSql}), offers AS (
                 SELECT c.bouquet_id AS id,c.product_id,c.kiosk_id,c.name,coalesce(p.description,'') AS description,
                        c.gia AS price,p.tags,'WALK_IN' AS mode,NULL::text AS photo,
                        NULL::numeric AS product_rating,0::bigint AS product_votes,
@@ -149,10 +191,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
                      price,id
             LIMIT 30
             """);
-        command.Parameters.AddWithValue("mode", input.Mode ?? "");
+        AddLocationParameters(command, input);
         command.Parameters.AddWithValue("kiosk", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)input.KioskId ?? DBNull.Value);
-        command.Parameters.AddWithValue("latitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Latitude ?? DBNull.Value);
-        command.Parameters.AddWithValue("longitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Longitude ?? DBNull.Value);
         command.Parameters.AddWithValue("budget", input.Budget ?? 1_000_000_000L);
         command.Parameters.AddWithValue("terms", question.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Where(word => word.Length >= 3).Distinct().Take(20).ToArray());
@@ -166,6 +206,13 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
                 reader.IsDBNull(13) ? null : reader.GetString(13), reader.IsDBNull(14) ? null : reader.GetString(14),
                 reader.IsDBNull(15) ? null : reader.GetDouble(15)));
         return candidates.ToArray();
+    }
+
+    private static void AddLocationParameters(NpgsqlCommand command, FlowerChatInput input)
+    {
+        command.Parameters.AddWithValue("mode", input.Mode ?? "");
+        command.Parameters.AddWithValue("latitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Latitude ?? DBNull.Value);
+        command.Parameters.AddWithValue("longitude", NpgsqlTypes.NpgsqlDbType.Double, (object?)input.Longitude ?? DBNull.Value);
     }
 
     private async Task<ModelAnswer?> AskAsync(string question, bool seller, Candidate[] candidates, CancellationToken ct)
