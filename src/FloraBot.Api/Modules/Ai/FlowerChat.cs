@@ -51,6 +51,8 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
 
         var seller = http.User.IsInRole("SELLER");
         input = ApplyQuestionConstraints(input, question);
+        if (!seller && input.Mode == "PREORDER" && IsPopularShopQuestion(question))
+            return Results.Ok(await PopularPreorderShopAsync(ct));
         if (!seller && input.Mode == "PREORDER" && IsNearestKioskQuestion(question))
             return Results.Ok(await NearestPreorderKioskAsync(input, ct));
         if (!seller && input.Mode == "WALK_IN" && input.KioskId is null)
@@ -80,6 +82,42 @@ public sealed class FlowerChat(HttpClient client, IConfiguration config, NpgsqlD
         if (input.Mode == "PREORDER" && input.Latitude.HasValue)
             suggestions = suggestions.OrderBy(s => s.DistanceKm ?? double.PositiveInfinity).ToArray();
         return Results.Ok(new FlowerChatResponse("FLOWERS", answer.Message!, suggestions));
+    }
+
+    private static bool IsPopularShopQuestion(string question) =>
+        (question.Contains("shop", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("cửa hàng", StringComparison.OrdinalIgnoreCase))
+        && (question.Contains("nhiều đơn", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("đơn nhiều nhất", StringComparison.OrdinalIgnoreCase)
+            || question.Contains("bán chạy nhất", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<FlowerChatResponse> PopularPreorderShopAsync(CancellationToken ct)
+    {
+        await using var command = data.CreateCommand("""
+            SELECT s.shop_name, count(*) AS completed_orders
+            FROM ordering.orders o
+            JOIN identity.sellers s ON s.id=o.seller_id
+            WHERE s.status='ACTIVE' AND o.status='COMPLETED'
+              AND EXISTS (
+                  SELECT 1 FROM ordering.web_requests w
+                  WHERE w.order_id=o.id AND w.seller_id=o.seller_id
+                    AND w.customer_id=o.customer_id AND w.state='ORDERED'
+              )
+            GROUP BY s.id,s.shop_name
+            ORDER BY completed_orders DESC,s.id
+            LIMIT 2
+            """);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return new("FLOWERS", "FloraBot chưa có đơn đặt trước đã hoàn tất để xếp hạng shop.", []);
+
+        var name = reader.GetString(0);
+        var completedOrders = reader.GetInt64(1);
+        var tied = await reader.ReadAsync(ct) && reader.GetInt64(1) == completedOrders;
+        var message = tied
+            ? $"{name} là một trong các shop đồng hạng dẫn đầu về số đơn đặt trước đã hoàn tất trên FloraBot."
+            : $"{name} đang dẫn đầu về số đơn đặt trước đã hoàn tất trên FloraBot.";
+        return new("FLOWERS", message, []);
     }
 
     private static bool IsNearestKioskQuestion(string question) =>

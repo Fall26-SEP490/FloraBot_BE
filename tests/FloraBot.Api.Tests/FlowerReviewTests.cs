@@ -49,6 +49,13 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
         await seed.ExecuteNonQueryAsync();
 
         using var anonymous = factory.CreateClient();
+        using var popularShop = await anonymous.PostAsJsonAsync("/api/shop/flower-chat",
+            new { question = "shop nào bán dc nhiều đơn nhỉ" });
+        popularShop.EnsureSuccessStatusCode();
+        var shopAnswer = await popularShop.Content.ReadFromJsonAsync<FloraBot.Api.Modules.Ai.FlowerChatResponse>();
+        Assert.Equal("FLOWERS", shopAnswer!.Intent);
+        Assert.Contains("dẫn đầu về số đơn đặt trước đã hoàn tất", shopAnswer.Message);
+        Assert.Empty(shopAnswer.Suggestions);
         using var buyer = Member(ids["buyer"]);
         using var firstReviewer = Member(ids["firstReviewer"]);
         using var preorder = Member(ids["preorder"]);
