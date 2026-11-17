@@ -43,17 +43,11 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             using var client = factory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
-            var kiosk = Guid.NewGuid();
             var invalidBody = new CreateProductRequest(
-                kiosk, name, "Desc", price, [tag], length, width, height);
+                name, "Desc", price, [tag], length, width, height);
 
             var response = await client.PostAsJsonAsync("/api/me/products", invalidBody);
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
-            var emptyKioskBody = new CreateProductRequest(
-                Guid.Empty, "Valid Flower", "Desc", 100000, ["tag1"], 10, 10, 10);
-            var emptyKioskResponse = await client.PostAsJsonAsync("/api/me/products", emptyKioskBody);
-            Assert.Equal(HttpStatusCode.BadRequest, emptyKioskResponse.StatusCode);
         }
         finally
         {
@@ -138,15 +132,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
     }
 
     [Fact]
-    public async Task NullDescriptionRoundtripsSuccessfullyOnBothPostAndPut()
+    public async Task SellerWithoutKioskCanCreateAndEditDraft()
     {
         using var scope = factory.Services.CreateScope();
         var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
 
         var seller = Guid.NewGuid();
         var user = Guid.NewGuid();
-        var kiosk = Guid.NewGuid();
-        var slot = Guid.NewGuid();
         var productId = Guid.Empty;
 
         await using var setup = data.CreateCommand("""
@@ -154,16 +146,9 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             VALUES(@seller,'Null Desc Shop','0901234570','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Null Desc Seller','SELLER',@seller,'ACTIVE');
-            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
-            VALUES(@kiosk,@kiosk::text,'Null Desc Kiosk','123 St','HCM',@kiosk::text,@kiosk::text,'ONLINE');
-            INSERT INTO kiosk_ops.slots(id,kiosk_id,slot_code,relay_channel)
-            VALUES(@slot,@kiosk,'A01',0);
-            SELECT flow.assign_kiosk(@kiosk,@seller,'10000000-0000-0000-0000-000000000001');
             """);
         setup.Parameters.AddWithValue("seller", seller);
         setup.Parameters.AddWithValue("user", user);
-        setup.Parameters.AddWithValue("kiosk", kiosk);
-        setup.Parameters.AddWithValue("slot", slot);
         await setup.ExecuteNonQueryAsync();
 
         try
@@ -172,8 +157,11 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
             // POST with null description
-            var postBody = new CreateProductRequest(
-                kiosk, "Hoa Không Mô Tả", null, 200000, ["TAG1"], 15, 15, 20);
+            var postBody = new
+            {
+                name = "Hoa Không Mô Tả", description = (string?)null, price = 200000,
+                tags = new[] { "TAG1" }, lengthCm = 15, widthCm = 15, heightCm = 20
+            };
             var postRes = await client.PostAsJsonAsync("/api/me/products", postBody);
             Assert.Equal(HttpStatusCode.Created, postRes.StatusCode);
             var createdResult = await postRes.Content.ReadFromJsonAsync<ProductIdResponse>();
@@ -186,6 +174,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             var items1 = await getRes1.Content.ReadFromJsonAsync<List<ProductResponse>>();
             var created = Assert.Single(items1!, p => p.Id == productId);
             Assert.Null(created.Description);
+            Assert.Equal("DRAFT", created.Status);
 
             // PUT updating while keeping null description
             var putBody = new UpdateProductRequest(
@@ -205,15 +194,10 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         {
             await using var cleanup = data.CreateCommand("""
                 DELETE FROM catalog.flower_products WHERE id=@product;
-                DELETE FROM kiosk_ops.slot_assignments WHERE slot_id=@slot;
-                DELETE FROM kiosk_ops.slots WHERE kiosk_id=@kiosk;
-                DELETE FROM kiosk_ops.kiosks WHERE id=@kiosk;
                 DELETE FROM identity.users WHERE id=@user;
                 DELETE FROM identity.sellers WHERE id=@seller;
                 """);
             cleanup.Parameters.AddWithValue("product", productId);
-            cleanup.Parameters.AddWithValue("slot", slot);
-            cleanup.Parameters.AddWithValue("kiosk", kiosk);
             cleanup.Parameters.AddWithValue("user", user);
             cleanup.Parameters.AddWithValue("seller", seller);
             await cleanup.ExecuteNonQueryAsync();
@@ -331,19 +315,15 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         {
             using var client = factory.CreateClient();
 
-            // Foreign kiosk write returns 404 (tenant isolation: seller does not own kiosk)
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: ownUser, sellerId: ownSeller));
-            var foreignKioskBody = new CreateProductRequest(foreignKiosk, "Flower", "Desc", 50000, ["rose"], 10, 10, 10);
-            var foreignResponse = await client.PostAsJsonAsync("/api/me/products", foreignKioskBody);
-            Assert.Equal(HttpStatusCode.NotFound, foreignResponse.StatusCode);
+            var ownBody = new CreateProductRequest("Flower", "Desc", 50000, ["rose"], 10, 10, 10);
 
             // Legacy seller path is no longer available (returns 404)
-            var legacyResponse = await client.PostAsJsonAsync($"/api/sellers/{foreignSeller}/products", foreignKioskBody);
+            var legacyResponse = await client.PostAsJsonAsync($"/api/sellers/{foreignSeller}/products", ownBody);
             Assert.Equal(HttpStatusCode.NotFound, legacyResponse.StatusCode);
 
             // Admin cannot use seller product write API (policy requires Seller role)
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: adminUser, role: "ADMIN"));
-            var ownBody = new CreateProductRequest(ownKiosk, "Flower", "Desc", 50000, ["rose"], 10, 10, 10);
             var adminResponse = await client.PostAsJsonAsync("/api/me/products", ownBody);
             Assert.Equal(HttpStatusCode.Forbidden, adminResponse.StatusCode);
 
@@ -408,7 +388,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: user, sellerId: seller));
 
             var createBody = new CreateProductRequest(
-                kiosk, "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
+                "Hoa Hồng Giả", "Hoa lụa cao cấp", 250000, ["HONG", "LUA"], 25.5m, 15.0m, 30.0m);
 
             var createResponse = await client.PostAsJsonAsync("/api/me/products", createBody);
             Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
@@ -633,13 +613,13 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
             // 4. Inactive seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: inactiveUser, sellerId: inactiveSeller));
             var postInactive = await client.PostAsJsonAsync("/api/me/products",
-                new CreateProductRequest(inactiveKiosk, "Name", null, 100000, ["TAG"], 10, 10, 10));
+                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postInactive.StatusCode);
 
             // 5. Expired subscription seller attempting POST -> 403
             client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(userId: expiredUser, sellerId: expiredSeller));
             var postExpired = await client.PostAsJsonAsync("/api/me/products",
-                new CreateProductRequest(expiredKiosk, "Name", null, 100000, ["TAG"], 10, 10, 10));
+                new CreateProductRequest("Name", null, 100000, ["TAG"], 10, 10, 10));
             Assert.Equal(HttpStatusCode.Forbidden, postExpired.StatusCode);
 
             // 6. Anonymous attempting GET /api/me/products -> 401

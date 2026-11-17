@@ -8,7 +8,6 @@ namespace FloraBot.Api.Modules.Catalog;
 public sealed record ProductIdResponse(Guid Id);
 
 public sealed record CreateProductRequest(
-    Guid KioskId,
     string Name,
     string? Description,
     long Price,
@@ -16,7 +15,9 @@ public sealed record CreateProductRequest(
     decimal LengthCm,
     decimal WidthCm,
     decimal HeightCm,
-    [property: Range(0, int.MaxValue)] int Quantity = 0);
+    [property: Range(0, int.MaxValue)] int Quantity = 0,
+    // Accepted for existing clients; product ownership always comes from the seller claim.
+    Guid? KioskId = null);
 
 public sealed record UpdateProductRequest(
     string Name,
@@ -36,7 +37,7 @@ public static class Products
             .RequireAuthorization("Seller")
             .WithTags("Catalog")
             .WithSummary("Tạo mẫu hoa và khai báo tồn bó tại shop")
-            .WithDescription("quantity là số bó còn tại shop, số nguyên không âm; bỏ qua mặc định 0. Nạp thành công vào kiosk hoặc fulfill preorder trừ một bó. Thu hồi không tự cộng lại.")
+            .WithDescription("Mẫu hoa thuộc shop của tài khoản Seller. kioskId chỉ được chấp nhận để tương thích với ứng dụng cũ và không được sử dụng. quantity là số bó còn tại shop, số nguyên không âm; bỏ qua mặc định 0. Chọn kiosk khi nạp hoa hoặc đặt trước. Nạp thành công vào kiosk hoặc fulfill preorder trừ một bó. Thu hồi không tự cộng lại.")
             .Produces<ProductIdResponse>(StatusCodes.Status201Created)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -59,7 +60,6 @@ public static class Products
     {
         http.Response.Headers.CacheControl = "no-store";
         if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
-        if (request.KioskId == Guid.Empty) return Results.BadRequest();
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120) return Results.BadRequest();
         if (request.Description is not null && request.Description.Length > 2000) return Results.BadRequest();
         if (request.Price <= 0) return Results.BadRequest();
@@ -78,13 +78,6 @@ public static class Products
         await using var transaction = await connection.BeginTransactionAsync(ct);
         try
         {
-            await using (var kiosk = new NpgsqlCommand("SELECT id FROM kiosk_ops.kiosks WHERE id = @kiosk AND seller_id = @seller FOR SHARE", connection, transaction))
-            {
-                kiosk.Parameters.Add("kiosk", NpgsqlDbType.Uuid).Value = request.KioskId;
-                kiosk.Parameters.Add("seller", NpgsqlDbType.Uuid).Value = sellerId;
-                if (await kiosk.ExecuteScalarAsync(ct) is null) return Results.NotFound();
-            }
-
             await using var command = new NpgsqlCommand("SELECT flow.create_artificial_product(@id, @seller, @actor, @name, @desc, @price, @tags, @length, @width, @height)", connection, transaction);
             command.Parameters.Add("id", NpgsqlDbType.Uuid).Value = productId;
             command.Parameters.Add("seller", NpgsqlDbType.Uuid).Value = sellerId;

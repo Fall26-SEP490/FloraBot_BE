@@ -22,9 +22,11 @@ Không tạo route riêng cho quantity. Các route và quyền hiện tại đư
 
 `POST /api/me/products`
 
+Mẫu hoa thuộc shop của seller đăng nhập. Không cần gửi `kioskId`; ứng dụng cũ
+vẫn có thể gửi trường này nhưng API không dùng nó để gắn mẫu với tủ.
+
 ```json
 {
-  "kioskId": "<kiosk UUID của Seller>",
   "name": "Hoa hồng đỏ",
   "description": "Mẫu hoa hồng đỏ",
   "price": 350000,

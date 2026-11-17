@@ -748,7 +748,7 @@ public sealed class ManagerSellerModerationTests(ApiFactory factory) : IClassFix
 
             // 3. New catalog create blocked (403/409)
             var createNewResp = await sellerClient.PostAsJsonAsync("/api/me/products",
-                new Modules.Catalog.CreateProductRequest(kioskId, "Bó hoa lụa hồng", null, 200000L, ["PINK"], 10m, 10m, 20m));
+                new Modules.Catalog.CreateProductRequest("Bó hoa lụa hồng", null, 200000L, ["PINK"], 10m, 10m, 20m));
             Assert.True(createNewResp.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Conflict);
 
             // 4. Existing catalog update blocked (403/409)
@@ -778,7 +778,7 @@ public sealed class ManagerSellerModerationTests(ApiFactory factory) : IClassFix
 
             // 8. New catalog create now succeeds
             var resumeCreateResp = await sellerClient.PostAsJsonAsync("/api/me/products",
-                new Modules.Catalog.CreateProductRequest(kioskId, "Bó hoa lụa hồng", null, 200000L, ["PINK"], 10m, 10m, 20m));
+                new Modules.Catalog.CreateProductRequest("Bó hoa lụa hồng", null, 200000L, ["PINK"], 10m, 10m, 20m));
             Assert.Equal(HttpStatusCode.Created, resumeCreateResp.StatusCode);
             var createdProductId = (await resumeCreateResp.Content.ReadFromJsonAsync<Modules.Catalog.ProductIdResponse>())!.Id;
 
