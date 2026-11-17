@@ -83,6 +83,16 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
         Assert.Equal("OPEN_TIMEOUT", slot.LastCycle);
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(at), slot.LastCycleAt);
 
+        const string kioskList = "/api/staff/kiosk-health";
+        var kioskEndpoint = $"{kioskList}/{f.Kiosk}";
+        Assert.Equal(f.Kiosk, Assert.Single((await tech.GetFromJsonAsync<List<TechnicianKioskHealthSummary>>(kioskList))!).Id);
+        Assert.Empty((await unassigned.GetFromJsonAsync<List<TechnicianKioskHealthSummary>>(kioskList))!);
+        Assert.Equal(HttpStatusCode.NotFound, (await unassigned.GetAsync(kioskEndpoint)).StatusCode);
+        var kioskHealth = (await tech.GetFromJsonAsync<TechnicianTaskTelemetry>(kioskEndpoint))!;
+        Assert.Equal(new[] { "A01", "A02", "A03", "A04" }, kioskHealth.Slots.Select(s => s.SlotCode));
+        Assert.Equal(new bool?[] { true, false, true, false }, kioskHealth.Slots.Select(s => s.DoorClosed));
+        Assert.Equal("OPEN_TIMEOUT", kioskHealth.Slots[0].LastCycle);
+
         await using var stale = Data.CreateCommand("UPDATE kiosk_ops.flower_presence SET received_at=CURRENT_TIMESTAMP-interval '46 seconds' WHERE kiosk_id=@id");
         stale.Parameters.AddWithValue("id", f.Kiosk); await stale.ExecuteNonQueryAsync();
         var expired = (await tech.GetFromJsonAsync<TechnicianTaskTelemetry>(endpoint))!;
