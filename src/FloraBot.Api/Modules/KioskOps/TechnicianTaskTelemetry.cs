@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Claims;
 using FloraBot.Api.Modules.Ordering;
 using Npgsql;
 using NpgsqlTypes;
@@ -11,14 +12,69 @@ public sealed record TechnicianSlotTelemetry(string SlotCode, bool? FlowerDetect
 public sealed record TechnicianTaskTelemetry(string KioskStatus, DateTime? LastHeartbeatAt,
     DateTimeOffset? ObservedAt, bool IsFresh, List<TechnicianSlotTelemetry> Slots);
 
+public sealed record TechnicianKioskHealthSummary(Guid Id, string Code, string Name, string Status);
+
 public static class TechnicianTaskTelemetryEndpoints
 {
-    public static void MapTechnicianTaskTelemetry(this WebApplication app) => app
-        .MapGet("/api/staff/tasks/{taskId:guid}/iot-health", Read)
-        .RequireAuthorization("Technician").WithTags("KioskOps").Produces<TechnicianTaskTelemetry>()
-        .WithSummary("Latest hardware signals for the technician's assigned work");
+    private const string AssignedKiosk = """
+        (EXISTS (
+            SELECT 1 FROM kiosk_ops.staff_tasks t
+            WHERE t.kiosk_id=k.id AND t.assignee_id=@actor AND t.kind IN ('INCIDENT','KIOSK_REMOVAL')
+              AND t.status IN ('ASSIGNED','IN_PROGRESS','SUBMITTED')
+        ) OR EXISTS (
+            SELECT 1 FROM kiosk_ops.kiosk_applications a
+            WHERE a.assigned_kiosk_id=k.id AND a.assigned_technician_id=@actor
+              AND (a.status IN ('SCHEDULED','INSTALLING','AWAITING_HANDOVER')
+                   OR (a.status='ACTIVE' AND a.seller_id=k.seller_id))
+        ))
+        """;
 
-    private static async Task<IResult> Read(Guid taskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
+    public static void MapTechnicianTaskTelemetry(this WebApplication app)
+    {
+        app.MapGet("/api/staff/tasks/{taskId:guid}/iot-health", ReadTask)
+            .RequireAuthorization("Technician").WithTags("KioskOps").Produces<TechnicianTaskTelemetry>()
+            .WithSummary("Latest hardware signals for the technician's assigned work");
+        var health = app.MapGroup("/api/staff/kiosk-health").RequireAuthorization("Technician").WithTags("KioskOps");
+        health.MapGet("", ListKiosks).Produces<List<TechnicianKioskHealthSummary>>()
+            .WithSummary("Kiosks assigned to the technician for installation or repair");
+        health.MapGet("/{kioskId:guid}", ReadKiosk).Produces<TechnicianTaskTelemetry>()
+            .WithSummary("Latest hardware signals from all compartments of an assigned kiosk");
+    }
+
+    private static async Task<IResult> ListKiosks(NpgsqlDataSource data, HttpContext http, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Forbid();
+        await using var command = data.CreateCommand($"""
+            SELECT k.id,k.code,k.name,k.status FROM kiosk_ops.kiosks k
+            WHERE {AssignedKiosk}
+            ORDER BY k.code,k.id
+            """);
+        command.Parameters.AddWithValue("actor", actor);
+        var kiosks = new List<TechnicianKioskHealthSummary>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            kiosks.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        return Results.Ok(kiosks);
+    }
+
+    private static async Task<IResult> ReadKiosk(Guid kioskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Forbid();
+        await using var connection = await data.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        await using var scope = new NpgsqlCommand(
+            $"SELECT 1 FROM kiosk_ops.kiosks k WHERE k.id=@kiosk AND {AssignedKiosk}", connection, transaction);
+        scope.Parameters.AddWithValue("actor", actor);
+        scope.Parameters.AddWithValue("kiosk", kioskId);
+        if (await scope.ExecuteScalarAsync(ct) is null) return Results.NotFound();
+        var telemetry = await ReadTelemetry(connection, transaction, kioskId, null, ct);
+        await transaction.CommitAsync(ct);
+        return telemetry is null ? Results.NotFound() : Results.Ok(telemetry);
+    }
+
+    private static async Task<IResult> ReadTask(Guid taskId, NpgsqlDataSource data, HttpContext http, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         await using var connection = await data.OpenConnectionAsync(ct);
@@ -28,37 +84,14 @@ public static class TechnicianTaskTelemetryEndpoints
 
         Guid kiosk;
         Guid? incidentId;
-        string kioskStatus;
-        DateTime? heartbeat;
-        DateTimeOffset? observedAt;
-        bool fresh;
-        int[] flowers, doors, cycles;
-        long[] cycleTimes;
-        await using (var command = new NpgsqlCommand("""
-            SELECT t.kiosk_id,t.incident_id,k.status,k.last_heartbeat_at,p.observed_at,p.states,
-                   p.door_states,p.door_cycles,p.door_cycle_times,
-                   COALESCE(k.status='ONLINE'
-                     AND p.received_at > CURRENT_TIMESTAMP - INTERVAL '45 seconds'
-                     AND p.observed_at > extract(epoch FROM CURRENT_TIMESTAMP)*1000 - 45000
-                     AND p.observed_at <= extract(epoch FROM CURRENT_TIMESTAMP)*1000 + 5000, false)
-            FROM kiosk_ops.staff_tasks t JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id
-            LEFT JOIN kiosk_ops.flower_presence p ON p.kiosk_id=k.id
-            WHERE t.id=@task
-            """, connection, transaction))
+        await using (var command = new NpgsqlCommand(
+            "SELECT kiosk_id,incident_id FROM kiosk_ops.staff_tasks WHERE id=@task", connection, transaction))
         {
             command.Parameters.AddWithValue("task", taskId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct)) return Results.NotFound();
             kiosk = reader.GetGuid(0);
             incidentId = reader.IsDBNull(1) ? null : reader.GetGuid(1);
-            kioskStatus = reader.GetString(2);
-            heartbeat = reader.IsDBNull(3) ? null : reader.GetDateTime(3);
-            observedAt = reader.IsDBNull(4) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4));
-            flowers = reader.IsDBNull(5) ? [] : reader.GetFieldValue<int[]>(5);
-            doors = reader.IsDBNull(6) ? [] : reader.GetFieldValue<int[]>(6);
-            cycles = reader.IsDBNull(7) ? [] : reader.GetFieldValue<int[]>(7);
-            cycleTimes = reader.IsDBNull(8) ? [] : reader.GetFieldValue<long[]>(8);
-            fresh = reader.GetBoolean(9);
         }
 
         Guid? slot = null;
@@ -67,6 +100,44 @@ public static class TechnicianTaskTelemetryEndpoints
             var incident = await StaffIncidentContext.Read(connection, transaction, id, kiosk, ct);
             if (incident is null) return Results.NotFound();
             slot = incident.SlotId;
+        }
+        var telemetry = await ReadTelemetry(connection, transaction, kiosk, slot, ct);
+        await transaction.CommitAsync(ct);
+        return telemetry is null ? Results.NotFound() : Results.Ok(telemetry);
+    }
+
+    private static async Task<TechnicianTaskTelemetry?> ReadTelemetry(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, Guid kiosk, Guid? slot, CancellationToken ct)
+    {
+        string kioskStatus;
+        DateTime? heartbeat;
+        DateTimeOffset? observedAt;
+        bool fresh;
+        int[] flowers, doors, cycles;
+        long[] cycleTimes;
+        await using (var command = new NpgsqlCommand("""
+            SELECT k.status,k.last_heartbeat_at,p.observed_at,p.states,
+                   p.door_states,p.door_cycles,p.door_cycle_times,
+                   COALESCE(k.status='ONLINE'
+                     AND p.received_at > CURRENT_TIMESTAMP - INTERVAL '45 seconds'
+                     AND p.observed_at > extract(epoch FROM CURRENT_TIMESTAMP)*1000 - 45000
+                     AND p.observed_at <= extract(epoch FROM CURRENT_TIMESTAMP)*1000 + 5000, false)
+            FROM kiosk_ops.kiosks k
+            LEFT JOIN kiosk_ops.flower_presence p ON p.kiosk_id=k.id
+            WHERE k.id=@kiosk
+            """, connection, transaction))
+        {
+            command.Parameters.AddWithValue("kiosk", kiosk);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            kioskStatus = reader.GetString(0);
+            heartbeat = reader.IsDBNull(1) ? null : reader.GetDateTime(1);
+            observedAt = reader.IsDBNull(2) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
+            flowers = reader.IsDBNull(3) ? [] : reader.GetFieldValue<int[]>(3);
+            doors = reader.IsDBNull(4) ? [] : reader.GetFieldValue<int[]>(4);
+            cycles = reader.IsDBNull(5) ? [] : reader.GetFieldValue<int[]>(5);
+            cycleTimes = reader.IsDBNull(6) ? [] : reader.GetFieldValue<long[]>(6);
+            fresh = reader.GetBoolean(7);
         }
 
         var slots = new List<TechnicianSlotTelemetry>();
@@ -89,8 +160,7 @@ public static class TechnicianTaskTelemetryEndpoints
                     time is > 0 ? DateTimeOffset.FromUnixTimeSeconds(time.Value) : null));
             }
         }
-        await transaction.CommitAsync(ct);
-        return Results.Ok(new TechnicianTaskTelemetry(kioskStatus, heartbeat, observedAt, fresh, slots));
+        return new(kioskStatus, heartbeat, observedAt, fresh, slots);
     }
 
     private static T? ReadAt<T>(T[] values, int index) where T : struct =>
