@@ -15,8 +15,8 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
     {
         var f = await Setup();
         using var client = Client(f);
-        var product = await Create(client, f, 8);
-        var untouchedProduct = await Create(client, f, 19);
+        var product = await Create(client, 8);
+        var untouchedProduct = await Create(client, 19);
 
         var created = await Read(client, product);
         Assert.Equal(8, created.Quantity);
@@ -64,7 +64,7 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
         // Anonymous bodies prove that the field is omitted from JSON, rather than sent as a default value.
         var response = await client.PostAsJsonAsync("/api/me/products", new
         {
-            kioskId = f.Kiosk, name = "Legacy flower", description = (string?)null,
+            kioskId = Guid.NewGuid(), name = "Legacy flower", description = (string?)null,
             price = 125000L, tags = new[] { "ROSE" }, lengthCm = 15.25m, widthCm = 12m, heightCm = 30m
         });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -96,7 +96,7 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
     {
         var f = await Setup();
         using var client = Client(f);
-        var product = await Create(client, f, 6);
+        var product = await Create(client, 6);
 
         using var createBody = Json($$"""
             {"kioskId":"{{f.Kiosk}}","name":"Invalid create","description":null,"price":250000,
@@ -122,25 +122,21 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
     }
 
     [Fact]
-    public async Task QuantityDoesNotBypassRequiredKioskAndDimensions()
+    public async Task QuantityDoesNotBypassRequiredDimensions()
     {
         var f = await Setup();
         using var client = Client(f);
         foreach (var body in new object[]
         {
-            new { name = "No kiosk", description = (string?)null, price = 125000,
-                tags = new[] { "ROSE" }, lengthCm = 10, widthCm = 10, heightCm = 10, quantity = 5 },
-            new { kioskId = Guid.Empty, name = "Empty kiosk", description = (string?)null, price = 125000,
-                tags = new[] { "ROSE" }, lengthCm = 10, widthCm = 10, heightCm = 10, quantity = 5 },
-            new { kioskId = f.Kiosk, name = "No dimensions", description = (string?)null,
+            new { name = "No dimensions", description = (string?)null,
                 price = 125000, tags = new[] { "ROSE" }, quantity = 5 },
-            new { kioskId = f.Kiosk, name = "Invalid dimensions", description = (string?)null,
+            new { name = "Invalid dimensions", description = (string?)null,
                 price = 125000, tags = new[] { "ROSE" }, lengthCm = 0.004m, widthCm = 10, heightCm = 10, quantity = 5 }
         })
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/me/products", body)).StatusCode);
         Assert.Empty((await client.GetFromJsonAsync<List<ProductResponse>>("/api/me/products"))!);
 
-        var product = await Create(client, f, 9);
+        var product = await Create(client, 9);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync(Route(f, product), new
         {
             name = "No dimensions edit", description = (string?)null,
@@ -150,26 +146,23 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
     }
 
     [Fact]
-    public async Task ForeignKioskProductAndSellerRoutesCannotChangeQuantity()
+    public async Task ForeignProductAndSellerRoutesCannotChangeQuantity()
     {
         var own = await Setup();
         var foreign = await Setup();
         using var ownClient = Client(own);
         using var foreignClient = Client(foreign);
-        var ownProduct = await Create(ownClient, own, 7);
-        var foreignProduct = await Create(foreignClient, foreign, 21);
+        var ownProduct = await Create(ownClient, 7);
+        var foreignProduct = await Create(foreignClient, 21);
         var write = new UpdateProductRequest("Cross tenant edit", null, 50000, ["ROSE"], 15.25m, 12m, 30m, Quantity: 100);
 
-        Assert.Equal(HttpStatusCode.NotFound,
-            (await ownClient.PostAsJsonAsync("/api/me/products", new CreateProductRequest(
-                foreign.Kiosk, "Foreign kiosk", null, 50000, ["ROSE"], 10, 10, 10, Quantity: 100))).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await ownClient.PutAsJsonAsync(Route(own, foreignProduct), write)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await ownClient.PutAsJsonAsync(Route(foreign, foreignProduct), write)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await ownClient.PostAsJsonAsync($"/api/sellers/{foreign.Seller}/products", new CreateProductRequest(
-                own.Kiosk, "Legacy route", null, 50000, ["ROSE"], 10, 10, 10, Quantity: 100))).StatusCode);
+                "Legacy route", null, 50000, ["ROSE"], 10, 10, 10, Quantity: 100))).StatusCode);
 
         Assert.Equal(7, await StoredQuantity(ownProduct));
         Assert.Equal(21, await StoredQuantity(foreignProduct));
@@ -182,7 +175,7 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
     {
         var f = await Setup();
         using var client = Client(f);
-        var product = await Create(client, f, 11);
+        var product = await Create(client, 11);
         await Execute(f, """
             INSERT INTO kiosk_ops.bouquets(id,product_id,seller_id,qr_code,price_snapshot,status,stocked_at,sellable_until)
             VALUES(@bouquet,@product,@seller,@bouquet::text,125000,'STOCKED',public.app_now(),'infinity');
@@ -244,10 +237,10 @@ public sealed class ProductQuantityTests(ApiFactory factory) : IClassFixture<Api
         return client;
     }
 
-    private static async Task<Guid> Create(HttpClient client, Fixture f, int quantity)
+    private static async Task<Guid> Create(HttpClient client, int quantity)
     {
         var response = await client.PostAsJsonAsync("/api/me/products", new CreateProductRequest(
-            f.Kiosk, "Quantity flower", null, 125000, ["ROSE", "GIFT"], 15.25m, 12m, 30m, Quantity: quantity));
+            "Quantity flower", null, 125000, ["ROSE", "GIFT"], 15.25m, 12m, 30m, Quantity: quantity));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         return (await response.Content.ReadFromJsonAsync<ProductIdResponse>())!.Id;
     }
