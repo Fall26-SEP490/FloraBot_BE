@@ -19,14 +19,16 @@ public sealed record ProductResponse(
     decimal? WidthCm = null,
     decimal? HeightCm = null,
     int Quantity = 0);
-public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId);
+public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId,
+    string? KioskCode = null, string? KioskName = null, DateTime? ExpiresAt = null, string? ReminderStatus = null);
 public sealed record SellerPackageResponse(string Name, long AnnualFee, int MaxSlots, string Status)
 {
     // Source compatibility for old tests/tools; never expose the retired monthly field in JSON.
     [JsonIgnore]
     public long MonthlyFee => AnnualFee;
 }
-public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions);
+public sealed record SubscriptionOverviewResponse(SellerPackageResponse? Package, List<SubscriptionResponse> Subscriptions,
+    int Page = 1, bool HasMore = false);
 public sealed record KioskCatalogResponse(Guid BouquetId, string Name, long Price, string SlotCode, string ShopName, string? ImageUrl = null, string[]? Tags = null);
 public sealed record AdminSellerResponse(Guid Id, string ShopName, string Status, Guid? PackageId, DateOnly? PackageExpiresAt, string Phone, string? Address);
 // Legacy type retained for source compatibility. The monthly /api/packages route is retired.
@@ -45,5 +47,6 @@ public static class ReadEndpoints
         app.MapCatalogReads();
         app.MapKioskOpsReads();
         app.MapScreenReads();
+        app.MapAdminSellerOrders();
     }
 }

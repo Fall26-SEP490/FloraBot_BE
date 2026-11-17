@@ -34,23 +34,21 @@ public sealed class SellerEmailReader(NpgsqlDataSource data)
     public async Task<SellerEmailContent?> ReadAsync(SellerEmailRequested message, CancellationToken ct)
     {
         if (message.SellerId == Guid.Empty || message.Kind is not (SellerEmailEvents.Approval or SellerEmailEvents.Receipt or SellerEmailEvents.Reminder) ||
-            (message.Kind == SellerEmailEvents.Receipt) != message.SubscriptionId.HasValue ||
-            (message.Kind == SellerEmailEvents.Reminder) != message.ExpiresOn.HasValue)
+            (message.Kind == SellerEmailEvents.Receipt && !message.SubscriptionId.HasValue) ||
+            (message.Kind == SellerEmailEvents.Approval && message.SubscriptionId.HasValue))
             throw new ArgumentException("Invalid seller email event.", nameof(message));
         await using var connection = await data.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
         await using var seller = new NpgsqlCommand("""
-            SELECT shop_name,status,package_expires_at,(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+            SELECT shop_name,status
             FROM identity.sellers WHERE id=@id
             """, connection, transaction);
         seller.Parameters.AddWithValue("id", message.SellerId);
-        string shop; string status; DateOnly? expiry; DateOnly today;
+        string shop; string status;
         await using (var reader = await seller.ExecuteReaderAsync(ct))
         {
             if (!await reader.ReadAsync(ct)) throw new InvalidOperationException("Seller email resource is missing.");
             shop = reader.GetString(0); status = reader.GetString(1);
-            expiry = reader.IsDBNull(2) ? null : reader.GetFieldValue<DateOnly>(2);
-            today = reader.GetFieldValue<DateOnly>(3);
         }
         string subject; string text; string deliveryId;
         if (message.Kind == SellerEmailEvents.Approval)
@@ -63,12 +61,17 @@ public sealed class SellerEmailReader(NpgsqlDataSource data)
         }
         else if (message.Kind == SellerEmailEvents.Reminder)
         {
-            // A queued reminder may arrive after renewal, suspension or expiration.
-            if (status != "ACTIVE" || expiry != message.ExpiresOn || expiry <= today || expiry > today.AddDays(3)) return null;
-            subject = "FloraBot: Gói thuê của shop sắp hết hạn";
-            var date = expiry!.Value.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
-            text = $"Chào {shop},\n\nGói thuê của shop có hạn đến trước ngày {date}. Bạn có thể đăng nhập cổng quản lý để gia hạn nếu muốn tiếp tục bán hoa tại tủ.\n\nNếu chưa gia hạn, tủ sẽ ngừng bán hoa của shop từ ngày hết hạn. Cảm ơn bạn đã đồng hành cùng FloraBot.";
-            deliveryId = $"subscription-reminder:{message.SellerId}:{expiry:yyyy-MM-dd}";
+            if (!message.SubscriptionId.HasValue) return null;
+            await using var lease = new NpgsqlCommand(
+                SubscriptionReminders.EligibleLeases + " AND sub.id=@id AND sub.seller_id=@seller", connection, transaction);
+            lease.Parameters.AddWithValue("id", message.SubscriptionId.Value);
+            lease.Parameters.AddWithValue("seller", message.SellerId);
+            await using var reader = await lease.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            var date = reader.GetDateTime(4).AddHours(7).ToString("HH:mm dd/MM/yyyy", CultureInfo.InvariantCulture);
+            subject = "FloraBot: Kỳ thuê kiosk sắp hết hạn";
+            text = $"Chào {shop},\n\nKỳ thuê kiosk {reader.GetString(2)} ({reader.GetString(3)}) sẽ hết hạn lúc {date} giờ Việt Nam. Bạn có thể gia hạn kiosk này trong cổng Seller.";
+            deliveryId = $"subscription-reminder:{message.SubscriptionId}";
         }
         else
         {
@@ -113,7 +116,7 @@ public sealed class SellerEmailReader(NpgsqlDataSource data)
     }
 }
 
-public sealed class SellerEmailSubscriber(EmailSettings settings, SellerEmailReader reader, EmailDelivery delivery,
+public sealed class SellerEmailSubscriber(EmailSettings settings, SellerEmailReader reader, EmailDelivery delivery, NpgsqlDataSource data,
     ILogger<SellerEmailSubscriber> logger) : ICapSubscribe
 {
     [CapSubscribe(SellerEmailEvents.Requested)]
@@ -124,10 +127,27 @@ public sealed class SellerEmailSubscriber(EmailSettings settings, SellerEmailRea
             logger.LogInformation("Seller email delivery is disabled; event was not sent");
             return;
         }
-        var content = await reader.ReadAsync(message, CancellationToken.None);
-        if (content is null) return;
-        foreach (var recipient in content.Recipients)
-            await delivery.SendOnceAsync($"{content.DeliveryId}:{recipient.UserId}",
-                new(recipient.Email, content.Subject, content.Text), CancellationToken.None);
+        var reminderId = message.Kind == SellerEmailEvents.Reminder ? message.SubscriptionId : null;
+        if (reminderId is Guid previous && await EmailReminderAudit.WasSentAsync(data, previous)) return;
+        try
+        {
+            var content = await reader.ReadAsync(message, CancellationToken.None);
+            if (content is null)
+            {
+                if (reminderId is Guid skipped)
+                    await EmailReminderAudit.RecordOutcomeAsync(data, skipped, "SUBSCRIPTION_REMINDER_SKIPPED");
+                return;
+            }
+            foreach (var recipient in content.Recipients)
+                await delivery.SendOnceAsync($"{content.DeliveryId}:{recipient.UserId}",
+                    new(recipient.Email, content.Subject, content.Text), CancellationToken.None);
+            if (reminderId is Guid sent)
+                await EmailReminderAudit.RecordOutcomeAsync(data, sent, "SUBSCRIPTION_REMINDER_SENT");
+        }
+        catch (Exception) when (reminderId.HasValue)
+        {
+            await EmailReminderAudit.RecordOutcomeAsync(data, reminderId.Value, "SUBSCRIPTION_REMINDER_FAILED");
+            throw;
+        }
     }
 }

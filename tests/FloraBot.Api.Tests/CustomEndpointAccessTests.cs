@@ -238,6 +238,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
         Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/assignment", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", "/api/me/preorders/{requestId:guid}/loading-access");
         Add(["ADMIN"], "GET", "/api/admin/preorders");
+        Add(["ADMIN"], "GET", "/api/admin/sellers/{sellerId:guid}/orders", "/api/admin/sellers/{sellerId:guid}/orders/{orderId:guid}");
         Add(["ADMIN"], "POST", "/api/admin/preorders/{requestId:guid}/cancel");
         Add([], "POST", "/api/receipts/{orderId:guid}/evidence");
         Add(["ADMIN"], "GET", "/api/admin/evidence/{attachmentId:guid}");

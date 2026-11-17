@@ -130,7 +130,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         using var handler = new Provider();
         using var http = new HttpClient(handler);
         var delivery = new EmailDelivery(Redis, Data, new TransactionalEmailSender(http, settings));
-        var subscriber = new SellerEmailSubscriber(settings, new SellerEmailReader(Data), delivery, NullLogger<SellerEmailSubscriber>.Instance);
+        var subscriber = new SellerEmailSubscriber(settings, new SellerEmailReader(Data), delivery, Data, NullLogger<SellerEmailSubscriber>.Instance);
         var message = new SellerEmailRequested(fixture.Seller, SellerEmailEvents.Approval);
         handler.Fail = true;
         await Assert.ThrowsAsync<EmailUnavailableException>(() => subscriber.HandleAsync(message));
@@ -142,7 +142,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         Assert.Equal(2, handler.Calls);
         Assert.Equal(fixture.User + "@example.test", handler.Recipient);
         Assert.True(await Redis.GetDatabase().KeyExistsAsync(delivery.Key(deliveryId) + ":accepted"));
-        var disabled = new SellerEmailSubscriber(Settings("Disabled"), new SellerEmailReader(Data), delivery, NullLogger<SellerEmailSubscriber>.Instance);
+        var disabled = new SellerEmailSubscriber(Settings("Disabled"), new SellerEmailReader(Data), delivery, Data, NullLogger<SellerEmailSubscriber>.Instance);
         await disabled.HandleAsync(message with { SellerId = Guid.NewGuid() });
         Assert.Equal(2, handler.Calls);
     }
@@ -166,24 +166,27 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
     }
 
     [Fact]
-    public async Task RemindersUseServerDateCommitWithAuditAndSuppressStaleExpiry()
+    public async Task RemindersUseSevenDayWindowAndDeduplicateByKioskLease()
     {
         var fixture = await FixtureAsync();
-        await using var update = Data.CreateCommand("""
-            UPDATE identity.sellers SET status='ACTIVE',
-              package_expires_at=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date+2
-            WHERE id=@id RETURNING package_expires_at
+        var leases = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
+        var kiosks = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
+        await using var seed = Data.CreateCommand("""
+            UPDATE identity.sellers SET status='ACTIVE',package_expires_at=current_date+40 WHERE id=@seller;
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
+            SELECT id,id::text,'Tủ nhắc hạn','Test address','HCM',id::text,id::text,'OFFLINE',@seller
+            FROM unnest(@kiosks) x(id);
+            INSERT INTO identity.subscriptions(id,seller_id,kiosk_id,package_id,status,period_from,period_to,
+                period_from_ts,period_to_ts,price,payment_id)
+            SELECT id,@seller,kiosk,'20000000-0000-0000-0000-00000000000a','ACTIVE',
+                current_date+days-365,current_date+days,now()+make_interval(days=>days-365),
+                now()+make_interval(days=>days),600000,gen_random_uuid()
+            FROM unnest(@leases,@kiosks,ARRAY[6,7,8]) x(id,kiosk,days);
             """);
-        update.Parameters.AddWithValue("id", fixture.Seller);
-        var expiry = (DateOnly)(await update.ExecuteScalarAsync())!;
-        var excluded = new List<Guid>();
-        foreach (var days in new[] { -1, 0, 4 })
-        {
-            var other = await FixtureAsync(); excluded.Add(other.Seller);
-            await using var age = Data.CreateCommand("UPDATE identity.sellers SET status='ACTIVE',package_expires_at=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date+@days WHERE id=@id");
-            age.Parameters.AddWithValue("id", other.Seller); age.Parameters.AddWithValue("days", days);
-            await age.ExecuteNonQueryAsync();
-        }
+        seed.Parameters.AddWithValue("seller", fixture.Seller);
+        seed.Parameters.AddWithValue("leases", leases);
+        seed.Parameters.AddWithValue("kiosks", kiosks);
+        await seed.ExecuteNonQueryAsync();
         using var scope = factory.Services.CreateScope();
         var publisher = scope.ServiceProvider.GetRequiredService<ICapPublisher>();
         async Task Enqueue(bool commit)
@@ -197,27 +200,33 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         Assert.Empty(await EventsAsync(fixture.Seller));
         await Enqueue(true);
         await Enqueue(true);
-        var item = Assert.Single(await EventsAsync(fixture.Seller));
-        Assert.Equal(SellerEmailEvents.Reminder, item.GetProperty("kind").GetString());
-        Assert.Equal(expiry, DateOnly.Parse(item.GetProperty("expires_on").GetString()!));
-        foreach (var id in excluded) Assert.Empty(await EventsAsync(id));
-        await using var audit = Data.CreateCommand("SELECT count(*) FROM notify.audit_logs WHERE action='SUBSCRIPTION_REMINDER_QUEUED' AND entity_id=@id");
-        audit.Parameters.AddWithValue("id", fixture.Seller);
-        Assert.Equal(1L, await audit.ExecuteScalarAsync());
+        var events = await EventsAsync(fixture.Seller);
+        Assert.Equal(2, events.Count);
+        Assert.All(events, item => Assert.Equal(SellerEmailEvents.Reminder, item.GetProperty("kind").GetString()));
+        Assert.Equal(leases.Take(2).OrderBy(x => x),
+            events.Select(item => item.GetProperty("subscription_id").GetGuid()).OrderBy(x => x));
         var reader = new SellerEmailReader(Data);
-        var message = new SellerEmailRequested(fixture.Seller, SellerEmailEvents.Reminder, ExpiresOn: expiry);
-        Assert.Contains("sắp hết hạn", (await reader.ReadAsync(message, default))!.Subject);
-        update.CommandText = "UPDATE identity.sellers SET package_expires_at=package_expires_at+30 WHERE id=@id";
-        await update.ExecuteNonQueryAsync();
+        var message = new SellerEmailRequested(fixture.Seller, SellerEmailEvents.Reminder, leases[0]);
+        Assert.Contains("Tủ nhắc hạn", (await reader.ReadAsync(message, default))!.Text);
+        using var admin = factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
+        string? reminderStatus = null;
+        for (var attempt = 0; attempt < 30 && reminderStatus != "SUBSCRIPTION_REMINDER_SENT"; attempt++)
+        {
+            using var result = await admin.GetFromJsonAsync<JsonDocument>(
+                $"/api/sellers/{fixture.Seller}/subscriptions?page=1&kioskId={kiosks[0]}");
+            var row = Assert.Single(result!.RootElement.GetProperty("subscriptions").EnumerateArray());
+            Assert.Equal("Tủ nhắc hạn", row.GetProperty("kioskName").GetString());
+            reminderStatus = row.GetProperty("reminderStatus").GetString();
+            if (reminderStatus != "SUBSCRIPTION_REMINDER_SENT") await Task.Delay(200);
+        }
+        Assert.Equal("SUBSCRIPTION_REMINDER_SENT", reminderStatus);
+        await using var cancel = Data.CreateCommand("UPDATE identity.sellers SET status='SUSPENDED' WHERE id=@seller");
+        cancel.Parameters.AddWithValue("seller", fixture.Seller);
+        await cancel.ExecuteNonQueryAsync();
         Assert.Null(await reader.ReadAsync(message, default));
-        update.CommandText = "UPDATE identity.sellers SET package_expires_at=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Ho_Chi_Minh')::date+3 WHERE id=@id RETURNING package_expires_at";
-        var nextExpiry = (DateOnly)(await update.ExecuteScalarAsync())!;
-        await Enqueue(true);
-        Assert.Equal(2, (await EventsAsync(fixture.Seller)).Count);
-        update.CommandText = "UPDATE identity.sellers SET status='SUSPENDED' WHERE id=@id";
-        await update.ExecuteNonQueryAsync();
-        Assert.Null(await reader.ReadAsync(message with { ExpiresOn = nextExpiry }, default));
     }
+
 
     private async Task<List<JsonElement>> EventsAsync(Guid seller)
     {

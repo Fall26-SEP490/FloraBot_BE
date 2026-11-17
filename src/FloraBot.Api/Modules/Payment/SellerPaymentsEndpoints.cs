@@ -126,8 +126,10 @@ public static class SellerPaymentsEndpoints
         app.MapGet("/api/sellers/{sellerId:guid}/payments",
             async (Guid sellerId, HttpContext http, NpgsqlDataSource source,
                    string? status, long? orderCode, DateTime? from, DateTime? to,
-                   int? page, int? pageSize, CancellationToken ct) =>
+                   int? page, int? pageSize, Guid? kioskId, string? kind, CancellationToken ct) =>
             {
+                if (page is < 1 or > 100000 || from > to || kind is not (null or "CHARGE" or "REFUND"))
+                    return Results.BadRequest();
                 http.Response.Headers.CacheControl = "no-store";
                 await using var connection = await source.OpenConnectionAsync(ct);
 
@@ -143,13 +145,18 @@ public static class SellerPaymentsEndpoints
                     SELECT COUNT(*)
                     FROM payment.payments p
                     LEFT JOIN payment.gateway_orders g ON g.payment_id = p.id
-                    WHERE p.seller_id = @sellerId AND p.kind = 'CHARGE'
+                    WHERE p.seller_id = @sellerId AND p.kind = @kind
+                      AND (@kiosk IS NULL OR EXISTS (
+                          SELECT 1 FROM payment.v_order_payment_allocations a
+                          WHERE a.payment_id=p.id AND a.seller_id=@sellerId AND a.kiosk_id=@kiosk))
                       AND (@status IS NULL OR p.status = @status)
                       AND (@orderCode IS NULL OR g.order_code = @orderCode)
                       AND (@from IS NULL OR p.created_at >= @from)
                       AND (@to IS NULL OR p.created_at <= @to)
                     """;
                 countCmd.Parameters.AddWithValue("sellerId", sellerId);
+                countCmd.Parameters.AddWithValue("kind", kind ?? "CHARGE");
+                countCmd.Parameters.Add("kiosk", NpgsqlDbType.Uuid).Value = (object?)kioskId ?? DBNull.Value;
                 countCmd.Parameters.Add("status", NpgsqlDbType.Text).Value = (object?)status ?? DBNull.Value;
                 countCmd.Parameters.Add("orderCode", NpgsqlDbType.Bigint).Value = (object?)orderCode ?? DBNull.Value;
                 countCmd.Parameters.Add("from", NpgsqlDbType.TimestampTz).Value = (object?)from ?? DBNull.Value;
@@ -163,7 +170,10 @@ public static class SellerPaymentsEndpoints
                            p.channel_version, p.receiver_snapshot->>'accountNumber', p.checkout_id
                     FROM payment.payments p
                     LEFT JOIN payment.gateway_orders g ON g.payment_id = p.id
-                    WHERE p.seller_id = @sellerId AND p.kind = 'CHARGE'
+                    WHERE p.seller_id = @sellerId AND p.kind = @kind
+                      AND (@kiosk IS NULL OR EXISTS (
+                          SELECT 1 FROM payment.v_order_payment_allocations a
+                          WHERE a.payment_id=p.id AND a.seller_id=@sellerId AND a.kiosk_id=@kiosk))
                       AND (@status IS NULL OR p.status = @status)
                       AND (@orderCode IS NULL OR g.order_code = @orderCode)
                       AND (@from IS NULL OR p.created_at >= @from)
@@ -172,6 +182,8 @@ public static class SellerPaymentsEndpoints
                     LIMIT @limit OFFSET @offset
                     """;
                 queryCmd.Parameters.AddWithValue("sellerId", sellerId);
+                queryCmd.Parameters.AddWithValue("kind", kind ?? "CHARGE");
+                queryCmd.Parameters.Add("kiosk", NpgsqlDbType.Uuid).Value = (object?)kioskId ?? DBNull.Value;
                 queryCmd.Parameters.Add("status", NpgsqlDbType.Text).Value = (object?)status ?? DBNull.Value;
                 queryCmd.Parameters.Add("orderCode", NpgsqlDbType.Bigint).Value = (object?)orderCode ?? DBNull.Value;
                 queryCmd.Parameters.Add("from", NpgsqlDbType.TimestampTz).Value = (object?)from ?? DBNull.Value;
@@ -460,15 +472,28 @@ public static class SellerPaymentsEndpoints
         // 4. GET /api/sellers/{sellerId}/reports/sales (gross actual paid / refund / GMV named, no commission)
         app.MapGet("/api/sellers/{sellerId:guid}/reports/sales",
             async (Guid sellerId, HttpContext http, NpgsqlDataSource source,
-                   DateTime? from, DateTime? to, Guid? kioskId, CancellationToken ct) =>
+                   DateTime? from, DateTime? to, Guid? kioskId, string? month, CancellationToken ct) =>
             {
+                if (month is not null)
+                {
+                    if (from.HasValue || to.HasValue || !DateOnly.TryParseExact(month + "-01", "yyyy-MM-dd",
+                        System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var start)
+                        || start.Year is < 2 or > 9998)
+                        return Results.BadRequest();
+                    from = new DateTimeOffset(start.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(7)).UtcDateTime;
+                    to = new DateTimeOffset(start.AddMonths(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(7))
+                        .UtcDateTime.AddTicks(-10);
+                }
+                if (from > to) return Results.BadRequest();
                 http.Response.Headers.CacheControl = "no-store";
                 await using var connection = await source.OpenConnectionAsync(ct);
 
                 var (actorOk, actorError, _) = await CheckActiveActorAsync(connection, null, http, sellerId, ct);
                 if (!actorOk) return actorError!;
 
+                await using var snapshot = await connection.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
                 await using var summaryCmd = connection.CreateCommand();
+                summaryCmd.Transaction = snapshot;
                 summaryCmd.CommandText = """
                     SELECT gross_paid, total_refunded, paid_orders, unclaimed_orders, pending_amount
                     FROM payment.v2_sp_get_sales_summary(@sellerId, @from, @to, @kioskId)
@@ -495,6 +520,7 @@ public static class SellerPaymentsEndpoints
 
                 // Breakdown by kiosk
                 await using var kioskCmd = connection.CreateCommand();
+                kioskCmd.Transaction = snapshot;
                 kioskCmd.CommandText = """
                     SELECT id, code, name, gross_paid, order_count
                     FROM payment.v2_sp_get_sales_by_kiosk(@sellerId, @from, @to, @kioskId)

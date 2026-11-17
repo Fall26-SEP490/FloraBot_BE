@@ -9,6 +9,77 @@ namespace FloraBot.Api.Tests;
 public sealed class AdminIncidentsTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
     [Fact]
+    public async Task IncidentReadsExposeCurrentTaskAndRespectManagerKioskScope()
+    {
+        var data = factory.Services.GetRequiredService<NpgsqlDataSource>();
+        var kiosk = Guid.NewGuid();
+        var incident = Guid.NewGuid();
+        var technician = Guid.NewGuid();
+        var manager = Guid.NewGuid();
+        var otherManager = Guid.NewGuid();
+        var task = Guid.NewGuid();
+        await using var seed = data.CreateCommand("""
+            INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
+            VALUES(@kiosk,@kiosk::text,'Incident workflow kiosk','Address','HCM',@kiosk::text,@kiosk::text,'OFFLINE');
+            INSERT INTO identity.users(id,email,password_hash,full_name,role)
+            VALUES(@tech,@tech::text||'@example.test','!','Technician test','TECHNICIAN'),
+                  (@manager,@manager::text||'@example.test','!','Manager test','OPERATIONS_MANAGER'),
+                  (@other,@other::text||'@example.test','!','Other manager','OPERATIONS_MANAGER');
+            INSERT INTO kiosk_ops.manager_kiosks(manager_id,kiosk_id) VALUES(@manager,@kiosk);
+            INSERT INTO ordering.disputes(id,kind,kiosk_id,reason) VALUES(@incident,'DEVICE_FAULT',@kiosk,'Test incident');
+            """);
+        foreach (var (name, id) in new[] { ("kiosk", kiosk), ("incident", incident), ("tech", technician), ("manager", manager), ("other", otherManager) })
+            seed.Parameters.AddWithValue(name, id);
+        await seed.ExecuteNonQueryAsync();
+        using var admin = factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
+        using var operations = factory.CreateClient();
+        operations.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("OPERATIONS_MANAGER", userId: manager));
+        var adminPath = $"/api/admin/incidents?kioskId={kiosk}";
+        var managerPath = $"/api/operations/incidents?kioskId={kiosk}";
+        var detailPath = $"/api/admin/incidents/{incident}";
+
+        async Task Check(string progress, string? status)
+        {
+            var adminRow = Assert.Single((await admin.GetFromJsonAsync<AdminIncidentPage>(adminPath))!.Items);
+            var managerRow = Assert.Single((await operations.GetFromJsonAsync<AdminIncidentPage>(managerPath))!.Items);
+            var detail = (await admin.GetFromJsonAsync<AdminIncidentDetail>(detailPath))!.Incident;
+            foreach (var row in new[] { adminRow, managerRow, detail })
+            {
+                Assert.Equal(progress, row.Progress);
+                Assert.Equal(status, row.Task?.Status);
+                if (status is not null)
+                {
+                    Assert.Equal(task, row.Task!.Id);
+                    Assert.Equal(technician, row.Task.AssigneeId);
+                    Assert.Equal("Technician test", row.Task.AssigneeName);
+                }
+            }
+        }
+
+        await Check("UNASSIGNED", null);
+        await using var write = data.CreateCommand("""
+            INSERT INTO kiosk_ops.staff_tasks(id,kind,assignee_id,assigned_by,kiosk_id,incident_id,instructions)
+            VALUES(@task,'INCIDENT',@tech,@manager,@kiosk,@incident,'Check kiosk door');
+            """);
+        foreach (var (name, id) in new[] { ("task", task), ("tech", technician), ("manager", manager), ("kiosk", kiosk), ("incident", incident) })
+            write.Parameters.AddWithValue(name, id);
+        await write.ExecuteNonQueryAsync();
+        await Check("IN_PROGRESS", "ASSIGNED");
+        write.CommandText = "UPDATE kiosk_ops.staff_tasks SET status=@status WHERE id=@task";
+        var state = write.Parameters.AddWithValue("status", "IN_PROGRESS");
+        foreach (var (status, progress) in new[] { ("IN_PROGRESS", "IN_PROGRESS"), ("SUBMITTED", "AWAITING_REVIEW"), ("COMPLETED", "COMPLETED") })
+        {
+            state.Value = status;
+            await write.ExecuteNonQueryAsync();
+            await Check(progress, status);
+        }
+        operations.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("OPERATIONS_MANAGER", userId: otherManager));
+        Assert.Empty((await operations.GetFromJsonAsync<AdminIncidentPage>(managerPath))!.Items);
+        Assert.Equal(HttpStatusCode.Forbidden, (await operations.GetAsync(detailPath)).StatusCode);
+    }
+
+    [Fact]
     public async Task QueueIsAdminOnlyPagedAndResolutionUsesSourceFlowAndAudit()
     {
         using var scope = factory.Services.CreateScope();
