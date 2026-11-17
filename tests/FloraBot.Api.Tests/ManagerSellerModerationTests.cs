@@ -9,9 +9,12 @@ using Npgsql;
 
 namespace FloraBot.Api.Tests;
 
-public sealed class ManagerSellerModerationTests(ApiFactory factory) : IClassFixture<ApiFactory>
+public sealed class ManagerSellerModerationTests(ApiFactory factory) : IClassFixture<ApiFactory>, IAsyncLifetime
 {
-    private static readonly Guid BasicPackageId = Guid.Parse("20000000-0000-0000-0000-00000000000a");
+    public Task InitializeAsync() => AnnualPackageFixture.EnsureAsync(factory);
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    private static readonly Guid BasicPackageId = Guid.Parse("20000000-0000-0000-0000-00000000aa17");
 
     [Fact]
     public async Task OperationsManager_CanListAndDetailSellers_WithoutSecretFields()

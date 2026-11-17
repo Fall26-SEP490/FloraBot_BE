@@ -14,8 +14,11 @@ using StackExchange.Redis;
 
 namespace FloraBot.Api.Tests;
 
-public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFactory>
+public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFactory>, IAsyncLifetime
 {
+    public Task InitializeAsync() => AnnualPackageFixture.EnsureAsync(factory);
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private NpgsqlDataSource Data => factory.Services.GetRequiredService<NpgsqlDataSource>();
     private IConnectionMultiplexer Redis => factory.Services.GetRequiredService<IConnectionMultiplexer>();
     private static EmailSettings Settings(string provider = "Brevo") => EmailSettings.Load(new ConfigurationBuilder().AddInMemoryCollection(
@@ -26,7 +29,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         var seller = Guid.NewGuid(); var user = Guid.NewGuid();
         await using var command = Data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id)
-            VALUES(@seller,'Tiệm Hoa Thử','0902223344',@status,'20000000-0000-0000-0000-00000000000a');
+            VALUES(@seller,'Tiệm Hoa Thử','0902223344',@status,'20000000-0000-0000-0000-00000000aa17');
             INSERT INTO identity.users(id,email,phone,password_hash,full_name,role,seller_id)
             VALUES(@user,CASE WHEN @email THEN @user::text || '@example.test' ELSE NULL END,@user::text,'!unprovisioned','Chủ shop','SELLER',@seller);
             """);
@@ -41,7 +44,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
     {
         var fixture = await FixtureAsync(status: "PENDING");
         using var client = factory.CreateClient();
-        var input = new { p_seller = fixture.Seller, p_package = Guid.Parse("20000000-0000-0000-0000-00000000000a") };
+        var input = new { p_seller = fixture.Seller, p_package = Guid.Parse("20000000-0000-0000-0000-00000000aa17") };
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
         Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/admin/flows/approve_seller", input)).StatusCode);
         Assert.Empty(await EventsAsync(fixture.Seller));
@@ -65,7 +68,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         using var outbox = await connection.BeginTransactionAsync(publisher);
         var transaction = (NpgsqlTransaction)outbox.DbTransaction!;
         var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, default);
-        await using var command = new NpgsqlCommand("SELECT flow.approve_seller(@seller,'10000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-00000000000a')", connection, transaction);
+        await using var command = new NpgsqlCommand("SELECT flow.approve_seller(@seller,'10000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-00000000aa17')", connection, transaction);
         command.Parameters.AddWithValue("seller", fixture.Seller);
         await command.ExecuteNonQueryAsync();
         await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, default);
@@ -104,18 +107,29 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
     public async Task PaidSubscriptionUsesSourceAmountAndPeriodAndRejectsForeignSeller()
     {
         var fixture = await FixtureAsync();
-        await using var command = Data.CreateCommand("SELECT flow.subscribe(@seller,@user,1)");
-        command.Parameters.AddWithValue("seller", fixture.Seller); command.Parameters.AddWithValue("user", fixture.User);
-        var subscription = (Guid)(await command.ExecuteScalarAsync())!;
+        var subscription = Guid.NewGuid();
+        var payment = Guid.NewGuid();
+        await using var command = Data.CreateCommand("""
+            INSERT INTO identity.subscriptions(id,seller_id,package_id,period_from,period_to,price,status)
+            VALUES(@subscription,@seller,'20000000-0000-0000-0000-00000000aa17',
+                   CURRENT_DATE,(CURRENT_DATE+interval '1 year')::date,4800000,'PENDING_PAYMENT');
+            INSERT INTO payment.payments(id,seller_id,subscription_id,kind,purpose,gateway,idempotency_key,amount,status)
+            VALUES(@payment,@seller,@subscription,'CHARGE','SUBSCRIPTION','MANUAL',@payment::text,4800000,'PENDING');
+            UPDATE identity.subscriptions SET payment_id=@payment WHERE id=@subscription;
+            """);
+        command.Parameters.AddWithValue("seller", fixture.Seller);
+        command.Parameters.AddWithValue("payment", payment);
+        command.Parameters.AddWithValue("subscription", subscription);
+        await command.ExecuteNonQueryAsync();
         var reader = new SellerEmailReader(Data);
         var message = new SellerEmailRequested(fixture.Seller, SellerEmailEvents.Receipt, subscription);
         await Assert.ThrowsAsync<InvalidOperationException>(() => reader.ReadAsync(message, default));
         command.CommandText = "SELECT flow.subscription_paid(@subscription,@txn)";
-        command.Parameters.AddWithValue("subscription", subscription); command.Parameters.AddWithValue("txn", Guid.NewGuid().ToString());
+        command.Parameters.AddWithValue("txn", Guid.NewGuid().ToString());
         await command.ExecuteNonQueryAsync();
         var content = await reader.ReadAsync(message, default);
         Assert.NotNull(content);
-        Assert.Contains("400.000 đ", content.Text);
+        Assert.Contains("4.800.000 đ", content.Text);
         Assert.Contains(subscription.ToString(), content.Text);
         Assert.Contains("đến trước ngày", content.Text);
         var other = await FixtureAsync();
@@ -178,7 +192,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
             FROM unnest(@kiosks) x(id);
             INSERT INTO identity.subscriptions(id,seller_id,kiosk_id,package_id,status,period_from,period_to,
                 period_from_ts,period_to_ts,price,payment_id)
-            SELECT id,@seller,kiosk,'20000000-0000-0000-0000-00000000000a','ACTIVE',
+            SELECT id,@seller,kiosk,'20000000-0000-0000-0000-00000000aa17','ACTIVE',
                 current_date+days-365,current_date+days,now()+make_interval(days=>days-365),
                 now()+make_interval(days=>days),600000,gen_random_uuid()
             FROM unnest(@leases,@kiosks,ARRAY[6,7,8]) x(id,kiosk,days);
@@ -264,7 +278,7 @@ public sealed class SellerEmailTests(ApiFactory factory) : IClassFixture<ApiFact
         using var client = isolated.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("ADMIN"));
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/admin/flows/approve_seller",
-            new { p_seller = fixture.Seller, p_package = Guid.Parse("20000000-0000-0000-0000-00000000000a") })).StatusCode);
+            new { p_seller = fixture.Seller, p_package = Guid.Parse("20000000-0000-0000-0000-00000000aa17") })).StatusCode);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var received = Data.CreateCommand($"SELECT count(*) FROM {schema}.received WHERE \"Name\"=@name AND \"StatusName\"='Succeeded'");
         received.Parameters.AddWithValue("name", SellerEmailEvents.Requested);

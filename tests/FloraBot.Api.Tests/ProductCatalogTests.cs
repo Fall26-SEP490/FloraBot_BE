@@ -9,8 +9,11 @@ using Npgsql;
 
 namespace FloraBot.Api.Tests;
 
-public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiFactory>
+public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiFactory>, IAsyncLifetime
 {
+    public Task InitializeAsync() => AnnualPackageFixture.EnsureAsync(factory);
+    public Task DisposeAsync() => Task.CompletedTask;
+
     [Theory]
     [InlineData("", 100000, 10, 10, 10, "tag1")] // Empty name
     [InlineData("   ", 100000, 10, 10, 10, "tag1")] // Whitespace name
@@ -30,7 +33,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Validation Shop','0901234580','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Validation Shop','0901234580','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Validation Seller','SELLER',@seller,'ACTIVE');
             """);
@@ -71,7 +74,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Raw JSON Shop','0901234581','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Raw JSON Shop','0901234581','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Raw JSON Seller','SELLER',@seller,'ACTIVE');
             """);
@@ -143,7 +146,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Null Desc Shop','0901234570','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Null Desc Shop','0901234570','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Null Desc Seller','SELLER',@seller,'ACTIVE');
             """);
@@ -215,7 +218,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Direct SQL Shop','0901234579','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Direct SQL Shop','0901234579','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Direct SQL Seller','SELLER',@seller,'ACTIVE');
             """);
@@ -287,8 +290,8 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Tenant Shop','0901234582','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30),
-                  (@foreignSeller,'Foreign Tenant Shop','0901234583','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Tenant Shop','0901234582','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30),
+                  (@foreignSeller,'Foreign Tenant Shop','0901234583','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Tenant Seller','SELLER',@seller,'ACTIVE'),
                   (@admin,@admin::text||'@example.invalid','!unprovisioned','Tenant Admin','ADMIN',NULL,'ACTIVE');
@@ -367,7 +370,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Catalog Shop','0901234567','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Catalog Shop','0901234567','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Catalog Seller','SELLER',@seller,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
@@ -456,7 +459,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
         await using var setup = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Update Shop','0901234568','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Update Shop','0901234568','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Update Seller','SELLER',@seller,'ACTIVE');
             INSERT INTO catalog.flower_products(id,seller_id,name,description,price,tags,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
@@ -551,7 +554,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         await using var setup = data.CreateCommand("""
             -- Active Seller A
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@sellerA,'Shop A','0901234571','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@sellerA,'Shop A','0901234571','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@userA,@userA::text||'@example.invalid','!unprovisioned','Seller A','SELLER',@sellerA,'ACTIVE');
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
@@ -559,7 +562,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             -- Active Seller B
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@sellerB,'Shop B','0901234572','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@sellerB,'Shop B','0901234572','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@userB,@userB::text||'@example.invalid','!unprovisioned','Seller B','SELLER',@sellerB,'ACTIVE');
             INSERT INTO catalog.flower_products(id,seller_id,name,price,shelf_life_hours,status,inventory_kind,length_cm,width_cm,height_cm)
@@ -567,7 +570,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             -- Inactive Seller
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@inactiveSeller,'Inactive Shop','0901234573','SUSPENDED','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@inactiveSeller,'Inactive Shop','0901234573','SUSPENDED','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@inactiveUser,@inactiveUser::text||'@example.invalid','!unprovisioned','Inactive User','SELLER',@inactiveSeller,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
@@ -575,7 +578,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
 
             -- Expired subscription package seller
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@expiredSeller,'Expired Shop','0901234574','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE-1);
+            VALUES(@expiredSeller,'Expired Shop','0901234574','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE-1);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@expiredUser,@expiredUser::text||'@example.invalid','!unprovisioned','Expired User','SELLER',@expiredSeller,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status,seller_id)
@@ -666,7 +669,7 @@ public sealed class ProductCatalogTests(ApiFactory factory) : IClassFixture<ApiF
         await using var setup = data.CreateCommand("""
             -- Active seller with valid subscription and whole-kiosk assignment
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Stock Test Shop','0901234575','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Stock Test Shop','0901234575','ACTIVE','20000000-0000-0000-0000-00000000aa17',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role,seller_id,status)
             VALUES(@user,@user::text||'@example.invalid','!unprovisioned','Stock Test Seller','SELLER',@seller,'ACTIVE');
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
