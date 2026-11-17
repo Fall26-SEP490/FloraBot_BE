@@ -29,6 +29,26 @@ public sealed class FlowerPresenceProtocolTests
     }
 
     [Fact]
+    public void VersionTwoAuthenticatesDoorObservationsAndOutcomes()
+    {
+        var signed = FlowerPresenceProtocol.Sign(Message with
+        {
+            Version = 2,
+            DoorStates = [1, 0, -1, 1],
+            DoorCycles = [4, 5, 0, 6],
+            DoorCycleTimes = [1800000000, 1800000000, 0, 0]
+        }, Key);
+        Assert.Equal("60598c79295f749b651933c949f6c9934c02c25be58a58d1f8e43193f6154f65", signed.Signature);
+        Assert.True(FlowerPresenceProtocol.Verify(signed, signed.HardwareId, Key, Now));
+        Assert.False(FlowerPresenceProtocol.Verify(signed with { DoorStates = [0, 0, -1, 1] }, signed.HardwareId, Key, Now));
+        Assert.False(FlowerPresenceProtocol.Verify(signed with { DoorCycles = [3, 5, 0, 6] }, signed.HardwareId, Key, Now));
+        Assert.False(FlowerPresenceProtocol.Verify(signed with { DoorCycleTimes = [1800000001, 1800000000, 0, 0] }, signed.HardwareId, Key, Now));
+        Assert.False(FlowerPresenceProtocol.Valid(signed with { DoorStates = null }));
+        Assert.False(FlowerPresenceProtocol.Valid(signed with { Version = 1 }));
+        Assert.False(FlowerPresenceProtocol.Valid(signed with { DoorCycles = [7, 5, 0, 6] }));
+    }
+
+    [Fact]
     public void RejectsStaleFutureMalformedAndOrderEventSubstitution()
     {
         var signed = FlowerPresenceProtocol.Sign(Message, Key);

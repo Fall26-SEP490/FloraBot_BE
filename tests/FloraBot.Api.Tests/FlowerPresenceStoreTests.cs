@@ -29,6 +29,71 @@ public sealed class FlowerPresenceStoreTests(ApiFactory factory) : IClassFixture
     }
 
     [Fact]
+    public async Task AssignedTechnicianSeesOnlyTheIncidentSlotAndFreshSignedReadings()
+    {
+        var f = await Create();
+        var assigned = Guid.NewGuid(); var other = Guid.NewGuid(); var admin = Guid.NewGuid();
+        var task = Guid.NewGuid(); var incident = Guid.NewGuid();
+        await using (var setup = Data.CreateCommand("""
+            INSERT INTO identity.users(id,email,full_name,password_hash,role) VALUES
+              (@assigned,@assigned::text||'@example.invalid','Assigned technician','!unprovisioned','TECHNICIAN'),
+              (@other,@other::text||'@example.invalid','Other technician','!unprovisioned','TECHNICIAN'),
+              (@admin,@admin::text||'@example.invalid','Assigning admin','!unprovisioned','ADMIN');
+            INSERT INTO ordering.disputes(id,kind,kiosk_id,slot_id,reason)
+            SELECT @incident,'DEVICE_FAULT',@kiosk,id,'Door did not open'
+            FROM kiosk_ops.slots WHERE kiosk_id=@kiosk AND relay_channel=0;
+            INSERT INTO kiosk_ops.staff_tasks(id,kind,assignee_id,assigned_by,kiosk_id,incident_id,instructions,status)
+            VALUES(@task,'INCIDENT',@assigned,@admin,@kiosk,@incident,'Check compartment A01','ASSIGNED');
+            """))
+        {
+            setup.Parameters.AddWithValue("assigned", assigned); setup.Parameters.AddWithValue("other", other);
+            setup.Parameters.AddWithValue("admin", admin); setup.Parameters.AddWithValue("kiosk", f.Kiosk);
+            setup.Parameters.AddWithValue("task", task); setup.Parameters.AddWithValue("incident", incident);
+            await setup.ExecuteNonQueryAsync();
+        }
+        using var tech = factory.CreateClient();
+        tech.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: assigned));
+        using var unassigned = factory.CreateClient();
+        unassigned.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token("TECHNICIAN", userId: other));
+        var endpoint = $"/api/staff/tasks/{task}/iot-health";
+        Assert.Equal(HttpStatusCode.NotFound, (await unassigned.GetAsync(endpoint)).StatusCode);
+
+        Assert.True(await f.Receiver.ReceiveAsync(f.Message.HardwareId, f.Message, default));
+        var legacy = (await tech.GetFromJsonAsync<TechnicianTaskTelemetry>(endpoint))!;
+        Assert.True(legacy.IsFresh);
+        var legacySlot = Assert.Single(legacy.Slots);
+        Assert.Equal("A01", legacySlot.SlotCode);
+        Assert.True(legacySlot.FlowerDetected);
+        Assert.Null(legacySlot.DoorClosed);
+
+        var at = (f.Message.OccurredAt + 1) / 1000;
+        var newMessage = FlowerPresenceProtocol.Sign(f.Message with
+        {
+            Version = 2,
+            EventId = Guid.NewGuid(),
+            OccurredAt = f.Message.OccurredAt + 1,
+            DoorStates = [1, 0, 1, 0],
+            DoorCycles = [4, 0, 0, 0],
+            DoorCycleTimes = [at, 0, 0, 0]
+        }, Key);
+        Assert.True(await f.Receiver.ReceiveAsync(newMessage.HardwareId, newMessage, default));
+        var current = (await tech.GetFromJsonAsync<TechnicianTaskTelemetry>(endpoint))!;
+        var slot = Assert.Single(current.Slots);
+        Assert.True(slot.DoorClosed);
+        Assert.Equal("OPEN_TIMEOUT", slot.LastCycle);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(at), slot.LastCycleAt);
+
+        await using var stale = Data.CreateCommand("UPDATE kiosk_ops.flower_presence SET received_at=CURRENT_TIMESTAMP-interval '46 seconds' WHERE kiosk_id=@id");
+        stale.Parameters.AddWithValue("id", f.Kiosk); await stale.ExecuteNonQueryAsync();
+        var expired = (await tech.GetFromJsonAsync<TechnicianTaskTelemetry>(endpoint))!;
+        Assert.False(expired.IsFresh);
+        var expiredSlot = Assert.Single(expired.Slots);
+        Assert.Null(expiredSlot.FlowerDetected);
+        Assert.Null(expiredSlot.DoorClosed);
+        Assert.Null(expiredSlot.LastCycle);
+    }
+
+    [Fact]
     public async Task RedeliveryAndOlderTelemetryCannotOverwriteNewerObservationOrChangeOrders()
     {
         var f = await Create();

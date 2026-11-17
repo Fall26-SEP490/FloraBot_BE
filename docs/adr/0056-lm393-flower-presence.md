@@ -49,3 +49,22 @@ results on read failure/offline pause, and shows an installation caveat for HIGH
 See the seller kiosk view, admin slot details and operations available-kiosk
 inventory. Existing database/runtime deployment procedures apply; do not flash
 the hardware expecting an old backend to understand this new message.
+
+## Technician door observations (version 2)
+
+The standalone IoT firmware publishes version 2 after deploying migration
+`20261117_technician_door_telemetry.sql` and the updated API. The receiver still
+accepts version 1 for existing kiosks. Version 2 uses `florabot.flower.v2`
+as its canonical first line. After the four flower states it signs the four
+entries of `door_states`, then `door_cycles`, then `door_cycle_times`, in relay
+order. All numbers are decimal. `door_states` uses -1 unknown, 0 open and 1 closed
+as reported by MC-38. The cycle codes are 0 none, 1 relay pulsed, 2 opening observed,
+3 closing observed, 4 opening timeout, 5 closing timeout and 6 inspection needed.
+Cycle timestamps are Unix seconds, with 0 reserved for an unavailable timestamp.
+The last cycle is recorded in RAM and resets when ESP32 restarts.
+
+GET `/api/staff/tasks/{taskId}/iot-health` checks the requesting technician's
+task assignment and returns only the disputed slot when a slot is specified.
+It hides readings after 45 seconds or while the kiosk is offline. The relay
+outcome records software activation and sensor observations. Electrical and
+mechanical diagnosis of the lock requires feedback from additional hardware.
