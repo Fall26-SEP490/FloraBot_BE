@@ -16,18 +16,40 @@ public sealed record SignedFlowerPresence(
     [property: JsonPropertyName("event")] string Event,
     [property: JsonPropertyName("occurred_at")] long OccurredAt,
     [property: JsonPropertyName("states")] int[] States,
-    [property: JsonPropertyName("signature")] string Signature);
+    [property: JsonPropertyName("signature")] string Signature,
+    [property: JsonPropertyName("door_states")] int[]? DoorStates = null,
+    [property: JsonPropertyName("door_cycles")] int[]? DoorCycles = null,
+    [property: JsonPropertyName("door_cycle_times")] long[]? DoorCycleTimes = null);
 
 public static class FlowerPresenceProtocol
 {
     public const string Event = "FLOWER_PRESENCE";
-    public static bool Valid(SignedFlowerPresence m) => m.Version == 1 && m.Event == Event
+    public static bool Valid(SignedFlowerPresence m) => m.Event == Event
         && DeviceProtocol.ValidHardwareId(m.HardwareId) && m.EventId != Guid.Empty && m.OccurredAt > 0
-        && m.States is { Length: 4 } && m.States.All(s => s is >= -1 and <= 1);
+        && ValidStates(m.States) && (m.Version switch
+        {
+            1 => m.DoorStates is null && m.DoorCycles is null && m.DoorCycleTimes is null,
+            2 => ValidStates(m.DoorStates) && m.DoorCycles is { Length: 4 }
+                && m.DoorCycles.All(c => c is >= 0 and <= 6)
+                && m.DoorCycleTimes is { Length: 4 }
+                && m.DoorCycleTimes.All(t => t >= 0 && t <= m.OccurredAt / 1000)
+                && m.DoorCycles.Zip(m.DoorCycleTimes).All(x => x.First != 0 || x.Second == 0),
+            _ => false
+        });
 
-    public static string Canonical(SignedFlowerPresence m) => string.Join('\n',
-        new[] { "florabot.flower.v1", m.HardwareId, m.EventId.ToString("D"), m.OccurredAt.ToString(CultureInfo.InvariantCulture) }
-            .Concat(m.States.Select(s => s.ToString(CultureInfo.InvariantCulture))));
+    private static bool ValidStates(int[]? states) => states is { Length: 4 } && states.All(s => s is >= -1 and <= 1);
+
+    public static string Canonical(SignedFlowerPresence m)
+    {
+        var values = new[] { m.Version == 2 ? "florabot.flower.v2" : "florabot.flower.v1", m.HardwareId,
+            m.EventId.ToString("D"), m.OccurredAt.ToString(CultureInfo.InvariantCulture) }
+            .Concat(m.States.Select(s => s.ToString(CultureInfo.InvariantCulture)));
+        if (m.Version == 2)
+            values = values.Concat(m.DoorStates!.Select(s => s.ToString(CultureInfo.InvariantCulture)))
+                .Concat(m.DoorCycles!.Select(s => s.ToString(CultureInfo.InvariantCulture)))
+                .Concat(m.DoorCycleTimes!.Select(t => t.ToString(CultureInfo.InvariantCulture)));
+        return string.Join('\n', values);
+    }
 
     public static SignedFlowerPresence Sign(SignedFlowerPresence m, byte[] key)
     {
@@ -56,17 +78,21 @@ public sealed class FlowerPresenceReceiver(
     {
         if (!keys.Verify(message, hardware, DateTimeOffset.UtcNow)) return false;
         await using var command = data.CreateCommand("""
-            INSERT INTO kiosk_ops.flower_presence(kiosk_id,event_id,observed_at,states,received_at)
-            SELECT k.id,@event,@at,@states,CURRENT_TIMESTAMP FROM kiosk_ops.kiosks k
+            INSERT INTO kiosk_ops.flower_presence(kiosk_id,event_id,observed_at,states,received_at,door_states,door_cycles,door_cycle_times)
+            SELECT k.id,@event,@at,@states,CURRENT_TIMESTAMP,@doorStates,@cycles,@cycleTimes FROM kiosk_ops.kiosks k
             WHERE k.hardware_id=@hardware AND k.status<>'DISABLED'
             ON CONFLICT(kiosk_id) DO UPDATE SET event_id=excluded.event_id,observed_at=excluded.observed_at,
-              states=excluded.states,received_at=excluded.received_at
+              states=excluded.states,received_at=excluded.received_at,door_states=excluded.door_states,
+              door_cycles=excluded.door_cycles,door_cycle_times=excluded.door_cycle_times
             WHERE kiosk_ops.flower_presence.observed_at<excluded.observed_at
             RETURNING kiosk_id;
             """);
         command.Parameters.AddWithValue("event", message.EventId);
         command.Parameters.AddWithValue("at", message.OccurredAt);
         command.Parameters.AddWithValue("states", NpgsqlDbType.Array | NpgsqlDbType.Integer, message.States);
+        command.Parameters.AddWithValue("doorStates", NpgsqlDbType.Array | NpgsqlDbType.Integer, (object?)message.DoorStates ?? DBNull.Value);
+        command.Parameters.AddWithValue("cycles", NpgsqlDbType.Array | NpgsqlDbType.Integer, (object?)message.DoorCycles ?? DBNull.Value);
+        command.Parameters.AddWithValue("cycleTimes", NpgsqlDbType.Array | NpgsqlDbType.Bigint, (object?)message.DoorCycleTimes ?? DBNull.Value);
         command.Parameters.AddWithValue("hardware", hardware);
         var res = await command.ExecuteScalarAsync(ct);
         if (res is Guid kioskId && provider is not null)

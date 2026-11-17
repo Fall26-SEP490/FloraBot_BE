@@ -356,6 +356,7 @@ app.MapAdminAuditRead();
 app.MapSellerInventoryHistory();
 app.MapStaffStock();
 app.MapStaffTaskDetails();
+app.MapTechnicianTaskTelemetry();
 app.MapStaffEvidence();
 app.MapStaffIncidentResolution();
 app.MapAdminComplaintsRead();
