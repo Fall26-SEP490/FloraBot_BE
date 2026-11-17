@@ -1,0 +1,19 @@
+# 0064 — After-sale flower quality handling
+
+Date: 2026-11-16. Status: accepted.
+
+Customer complaints apply only after collection. Keep the existing receipt capability, complaint window, one-COMPLAINT-per-order rule, and verified private customer evidence. Staff must submit a report; a staff photo is optional.
+
+`ordering.complaint_handling` supplements `ordering.disputes`. Seller acceptance, assignment and final review use active database identities, order ownership, optimistic versions and audit. `kiosk_ops.staff_quality_tasks` binds a DELIVERY task to the exact complaint and original bouquet order item. Its public `workType` is `FLOWER_QUALITY`. Generic stock/preorder operations cannot repurpose this task. Existing staff transitions, reassignment and private evidence routes remain in use. A generic COMPLETED transition cannot bypass Seller resolution.
+
+Seller outcomes are EXPLANATION, REPLACEMENT or REFUND_REVIEW. RETURN asks staff to work again. EXPLANATION closes the complaint as RESOLVED_FIXED and restores the original order to COMPLETED without awarding points again. REFUND_REVIEW leaves the dispute OPEN and order DISPUTED for the existing Admin decision and refund/payout process. Neither a staff report nor Seller review transfers money.
+
+Replacement is compensation without an additional charge. Seller selects an active shop product and empty monitored WALK_IN slot at the original kiosk. The existing assigned inventory LOAD workflow verifies kiosk access, current staff authority, fresh empty baseline, door cycle and flower presence. In the same transaction as completion, the new bouquet is held for the original complaint and cannot enter the sale catalog. The ordinary STOCK_IN deduction runs exactly once. Seller's final review makes the replacement READY.
+
+Customer collects at the original kiosk with the original receipt capability. The kiosk must authenticate separately and match the route kiosk. A caller-supplied attempt ID makes uncertain open retries idempotent. Replacement commands retain the existing firmware CUSTOMER_PICKUP protocol, but their durable sidecar routes device events through replacement handling. Ordinary order dispensing, payments, sale events and loyalty completion are not repeated. Dispatcher rechecks the live complaint, hold, owner, lease and command on each send. Closing a door does not alone prove collection: require a fresh empty presence observation after opening. The scheduled quality job reconciles close-before-presence ordering, then expires abandoned reservations.
+
+Default reservation time is 24 hours from loading, capped by the bouquet's sellable deadline, configurable via `quality_replacement_hours`. Expiration or cancellation leaves physical contents PENDING_REMOVAL, preserves the complaint for follow-up, revokes unopened pickup commands and does not restore shop quantity or create a refund. Open doors and unfinished loading sessions prevent cancellation/closure until recovered. Admin resolution also invalidates outstanding replacements, preventing a refund decision alongside an independently usable replacement entitlement.
+
+Evidence keeps its original owners. Complaint reads merge only directly attached complaint evidence and verified task evidence linked through staff_quality_tasks, with stable 20-item pages. Private bytes require the same Seller/assigned-staff/Admin or receipt scope, and verified MIME/size/SHA-256. Storage errors remain 503. No public Cloudinary URL or receipt capability is emitted in these read contracts.
+
+Implementation: additive migration `20261116_z_flower_quality_complaints.sql`; API contracts are exported from the application OpenAPI workflow. FE handoff: `docs/fe-flower-quality-complaints.md`.

@@ -17,7 +17,7 @@ public sealed class JobRunner(NpgsqlDataSource data, IConnectionMultiplexer redi
     {
         "mark_offline_kiosks", "expire_pending_subscriptions", "roll_subscriptions",
         "expire_pending_payments", "expire_pickups", "expire_tokens", "expire_bouquets",
-        "settle_due_orders", "reconcile_daily", "remind_subscriptions", "expire_web_orders"
+        "settle_due_orders", "reconcile_daily", "remind_subscriptions", "expire_web_orders", "expire_quality_replacements"
     });
     private const string ReleaseScript = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
     public static string AdvisoryKey(string name) => $"florabot:jobs:{name}";

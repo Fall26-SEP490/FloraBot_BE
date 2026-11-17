@@ -142,6 +142,8 @@ builder.Services.AddScoped<PrivateEvidence>();
 builder.Services.AddHttpClient<AdvisorClient>(client => client.Timeout = TimeSpan.FromMilliseconds(1800))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AiAdvisor>();
+builder.Services.AddHttpClient<FlowerChat>(client => client.Timeout = TimeSpan.FromSeconds(12))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AdvisorCache>();
 builder.Services.AddHttpClient<SeasonalForecastClient>(client => client.Timeout = TimeSpan.FromSeconds(12))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
@@ -248,6 +250,12 @@ builder.Services.AddRateLimiter(options =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("advisor", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("flower-review", http => RateLimitPartition.GetFixedWindowLimiter(
+        http.User.FindFirstValue("sub") ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("flower-advisor", http => RateLimitPartition.GetFixedWindowLimiter(
+        http.User.FindFirstValue("sub") ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 12, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     foreach (var name in new[] { "auth", "receipt" })
         options.AddPolicy(name, http => RateLimitPartition.GetFixedWindowLimiter(http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions { PermitLimit = name == "auth" ? 10 : 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
@@ -344,6 +352,7 @@ app.MapCustomerSellerChat();
 app.MapSellerStaffChat();
 app.MapWebPaymentLinks();
 FloraBot.Api.ReadModels.WebCatalog.MapWebCatalog(app);
+FloraBot.Api.ReadModels.FlowerReviews.MapFlowerReviews(app);
 app.MapOtp();
 app.MapKioskCustomerFlows();
 app.MapReads();
@@ -360,6 +369,7 @@ app.MapTechnicianTaskTelemetry();
 app.MapStaffEvidence();
 app.MapStaffIncidentResolution();
 app.MapAdminComplaintsRead();
+app.MapQualityComplaints();
 app.MapAdminWithdrawalsRead();
 app.MapAdminRefundsRead();
 app.MapReceiptRead();
@@ -398,6 +408,7 @@ app.MapPaymentLinks();
 app.MapKioskRenewals();
 app.MapKioskPaymentLinks();
 AiAdvisor.MapReads(app);
+FlowerChat.Map(app);
 app.MapSeasonalSales();
 app.MapIdentity(); app.MapCatalog(); app.MapKioskOps(); app.MapOrdering(); app.MapPayment(); app.MapNotify(); app.MapAi();
 if (exportFile is not null)

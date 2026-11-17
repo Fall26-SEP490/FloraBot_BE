@@ -30,7 +30,8 @@ public static class StaffStock
                 // Lock the assignment before the stock routine updates the same row.
                 await using (var scope = new NpgsqlCommand("""
                     SELECT t.status,
-                           EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks i WHERE i.task_id=t.id),
+                           (EXISTS (SELECT 1 FROM kiosk_ops.staff_inventory_tasks i WHERE i.task_id=t.id)
+                             OR EXISTS(SELECT 1 FROM kiosk_ops.staff_quality_tasks q WHERE q.task_id=t.id)),
                            EXISTS (SELECT 1 FROM kiosk_ops.staff_stock_actions a
                                    WHERE a.id=@operation AND a.task_id=t.id AND a.actor_id=u.id)
                     FROM kiosk_ops.staff_tasks t
@@ -85,7 +86,7 @@ public static class StaffStock
     {
         http.Response.Headers.CacheControl = "no-store";
         Guid seller, kiosk; string status;
-        await using (var command = data.CreateCommand("SELECT seller_id,kiosk_id,status FROM kiosk_ops.staff_tasks WHERE id=@id AND assignee_id=@actor AND kind='DELIVERY'"))
+        await using (var command = data.CreateCommand("SELECT seller_id,kiosk_id,status FROM kiosk_ops.staff_tasks WHERE id=@id AND assignee_id=@actor AND kind='DELIVERY' AND NOT EXISTS(SELECT 1 FROM kiosk_ops.staff_quality_tasks WHERE task_id=@id)"))
         {
             command.Parameters.AddWithValue("id", taskId); command.Parameters.AddWithValue("actor", Guid.Parse(http.User.FindFirstValue("sub")!));
             await using var reader = await command.ExecuteReaderAsync(ct);

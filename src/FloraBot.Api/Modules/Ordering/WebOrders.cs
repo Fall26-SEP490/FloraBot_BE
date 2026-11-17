@@ -17,12 +17,22 @@ public sealed record WebRequestInput(
     DateTimeOffset PickupAt,
     string Instructions,
     Guid? BouquetId = null,
-    Guid? Id = null);
-public sealed record WebQuoteInput(long Price, DateTimeOffset PickupAt, string Note, bool Reject = false);
+    Guid? Id = null,
+    List<PreorderAccessoryInput>? Accessories = null);
+public sealed record PreorderAccessoryInput(Guid AccessoryId, int Quantity);
+public sealed record RequestedPreorderAccessory(Guid AccessoryId, string Name, int Quantity);
+public sealed record QuotedPreorderAccessory(Guid AccessoryId, string Name, int Quantity, long UnitPrice, long LineTotal);
+public sealed record WebQuoteInput(long Price, DateTimeOffset PickupAt, string Note, bool Reject = false,
+    List<PreorderAccessoryInput>? Accessories = null);
 public sealed record WebFulfillInput(Guid SlotId, string QrCode, Guid? LoadingAccessId = null);
 public sealed record WebCancelInput(string Reason);
-public sealed record WebAcceptInput(long Price, DateTimeOffset PickupAt, string Note);
-public sealed record WebRequestRow(Guid Id, string Kind, string State, Guid ProductId, Guid KioskId, Guid SellerId, string Instructions, DateTimeOffset PickupAt, DateTimeOffset PickupBefore, long? QuotedPrice, string? QuoteNote, DateTimeOffset? QuoteExpiresAt, Guid? OrderId, Guid? CheckoutId, string? OrderCode, string? OrderStatus, string? TrackingToken, bool Ready, DateTimeOffset? PayBefore, string? ProductName, string? ShopName, string? KioskName, string? Address);
+public sealed record WebAcceptInput(long Price, DateTimeOffset PickupAt, string Note, int? QuoteVersion = null);
+public sealed record WebRequestRow(Guid Id, string Kind, string State, Guid ProductId, Guid KioskId, Guid SellerId,
+    string Instructions, DateTimeOffset PickupAt, DateTimeOffset PickupBefore, long? QuotedPrice, string? QuoteNote,
+    DateTimeOffset? QuoteExpiresAt, Guid? OrderId, Guid? CheckoutId, string? OrderCode, string? OrderStatus,
+    string? TrackingToken, bool Ready, DateTimeOffset? PayBefore, string? ProductName, string? ShopName,
+    string? KioskName, string? Address, long? QuotedFlowerPrice, long QuotedAccessoryTotal, int QuoteVersion,
+    List<RequestedPreorderAccessory> RequestedAccessories, List<QuotedPreorderAccessory> QuotedAccessories);
 public sealed record WebRequestPage(List<WebRequestRow> Items, int Page, bool HasMore);
 
 public static class WebOrders
@@ -34,7 +44,8 @@ public static class WebOrders
         app.MapGet("/api/admin/preorders", (int? page, NpgsqlDataSource source, CancellationToken ct) => ReadAsync(source, null, null, false, page, ct)).RequireAuthorization("Admin").Produces<WebRequestPage>();
         app.MapPost("/api/member/preorders", async (WebRequestInput input, HttpContext http, NpgsqlDataSource source, FloraDbContext db, ICapPublisher publisher, CancellationToken ct) =>
         {
-            if (input.Kind is not ("STOCK" or "CUSTOM") || input.Instructions is null || input.Instructions.Length > 2000 || input.Kind == "STOCK" && input.BouquetId is null) return Results.BadRequest();
+            if (input.Kind is not ("STOCK" or "CUSTOM") || input.Instructions is null || input.Instructions.Length > 2000 || input.Kind == "STOCK" && input.BouquetId is null
+                || !ValidAccessorySelection(input.Accessories)) return Results.BadRequest();
 
             // Generate an idempotency key when the client omits the optional request ID.
             // Clients that already send a stable ID can keep using it for safe retries.
@@ -57,35 +68,46 @@ public static class WebOrders
                 }
             }
 
-            return await Run(source, publisher, "SELECT flow.web_request(@id,@customer,@kind,@product,@kiosk,@bouquet,@pickup,@instructions)", command =>
+            return await Run(source, publisher, "SELECT flow.web_request(@id,@customer,@kind,@product,@kiosk,@bouquet,@pickup,@instructions,@accessories)", command =>
             {
                 command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("customer", User(http));
                 command.Parameters.AddWithValue("kind", input.Kind); command.Parameters.AddWithValue("product", input.ProductId); command.Parameters.AddWithValue("kiosk", input.KioskId);
                 command.Parameters.AddWithValue("bouquet", NpgsqlDbType.Uuid, (object?)input.BouquetId ?? DBNull.Value);
                 command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("instructions", input.Instructions.Trim());
+                command.Parameters.Add("accessories", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(
+                    input.Accessories ?? [], new JsonSerializerOptions(JsonSerializerDefaults.Web));
             }, ct);
         }).RequireAuthorization("PreorderCustomer").RequireRateLimiting("auth").Produces<FlowResult>()
           .ProducesProblem(StatusCodes.Status409Conflict)
-          .WithDescription("Chỉ nhận preorder CUSTOM theo mẫu hoa đang ACTIVE và còn tồn tại shop. Nếu quantity = 0, trả 409 với detail PREORDER_PRODUCT_OUT_OF_STOCK. Số lượng không bị giữ chỗ khi tạo yêu cầu; được trừ khi Seller/nhân viên nạp hoa vào kiosk.");
+          .WithDescription("Tạo yêu cầu preorder CUSTOM với phụ kiện tùy chọn từ kho SHOP của Seller mẫu hoa. Accessories chỉ ghi nhận mong muốn, chưa giữ tồn; BE nhân đơn giá với số lượng trong báo giá và trừ tồn khi khách accept. Phụ kiện được giao cùng bó hoa trong một ô kiosk, không chọn kiosk hoặc ô riêng cho phụ kiện.");
         app.MapPost("/api/member/preorders/{requestId:guid}/accept", async (Guid requestId, WebAcceptInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (!await Owns(source, requestId, User(http), null, ct)) return Results.NotFound();
             if (input.Note is null || input.Note.Length > 1000) return Results.BadRequest();
-            return await Run(source, publisher, "SELECT flow.web_accept(@id,@customer,@price,@pickup,@note)", command => { command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("customer", User(http)); command.Parameters.AddWithValue("price", input.Price); command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("note", input.Note); }, ct);
+            return await Run(source, publisher, "SELECT flow.web_accept(@id,@customer,@price,@pickup,@note,@quoteVersion)", command =>
+            {
+                command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("customer", User(http));
+                command.Parameters.AddWithValue("price", input.Price); command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime);
+                command.Parameters.AddWithValue("note", input.Note);
+                command.Parameters.Add("quoteVersion", NpgsqlDbType.Integer).Value = (object?)input.QuoteVersion ?? DBNull.Value;
+            }, ct);
         }).RequireAuthorization("PreorderCustomer").Produces<FlowResult>();
         app.MapPost("/api/member/preorders/{requestId:guid}/cancel", (Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), User(http), null, source, publisher, ct)).RequireAuthorization("PreorderCustomer");
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel", (Guid sellerId, Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), null, sellerId, source, publisher, ct)).RequireAuthorization("Merchant", "SameSeller");
         app.MapPost("/api/admin/preorders/{requestId:guid}/cancel", (Guid requestId, WebCancelInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) => Cancel(requestId, input, User(http), null, null, source, publisher, ct)).RequireAuthorization("Admin");
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", async (Guid sellerId, Guid requestId, WebQuoteInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
-            if (input.Note is null || input.Note.Length is < 5 or > 1000) return Results.BadRequest();
+            if (input.Note is null || input.Note.Length is < 5 or > 1000 || !ValidAccessorySelection(input.Accessories)) return Results.BadRequest();
             if (!await Owns(source, requestId, null, sellerId, ct)) return Results.NotFound();
-            return await Run(source, publisher, "SELECT flow.web_quote(@id,@seller,@actor,@price,@pickup,@note,@reject)", command =>
+            return await Run(source, publisher, "SELECT flow.web_quote(@id,@seller,@actor,@price,@pickup,@note,@reject,@accessories)", command =>
             {
                 command.Parameters.AddWithValue("id", requestId); command.Parameters.AddWithValue("seller", sellerId); command.Parameters.AddWithValue("actor", User(http));
                 command.Parameters.AddWithValue("price", input.Price); command.Parameters.AddWithValue("pickup", input.PickupAt.UtcDateTime); command.Parameters.AddWithValue("note", input.Note.Trim()); command.Parameters.AddWithValue("reject", input.Reject);
+                command.Parameters.Add("accessories", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(
+                    input.Accessories ?? [], new JsonSerializerOptions(JsonSerializerDefaults.Web));
             }, ct);
-        }).RequireAuthorization("Merchant", "SameSeller").Produces<FlowResult>();
+        }).RequireAuthorization("Merchant", "SameSeller").Produces<FlowResult>()
+          .WithDescription("Price là giá phần bó hoa. BE lấy giá danh mục cho phụ kiện được Seller xác nhận; quotedPrice trong GET preorders là tổng phải trả. QuoteVersion phải được gửi lại khi khách chấp nhận báo giá.");
         app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/fulfill", async (Guid sellerId, Guid requestId, WebFulfillInput input, HttpContext http, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct) =>
         {
             if (input.SlotId == Guid.Empty || string.IsNullOrWhiteSpace(input.QrCode) || input.QrCode.Length > 120
@@ -102,6 +124,11 @@ public static class WebOrders
         command.Parameters.AddWithValue("id", id); command.Parameters.AddWithValue("customer", NpgsqlDbType.Uuid, (object?)customer ?? DBNull.Value); command.Parameters.AddWithValue("seller", NpgsqlDbType.Uuid, (object?)seller ?? DBNull.Value);
         return Equals(await command.ExecuteScalarAsync(ct), true);
     }
+    private static bool ValidAccessorySelection(List<PreorderAccessoryInput>? accessories) => accessories is null
+        || accessories.Count <= 20
+            && accessories.All(x => x is not null && x.AccessoryId != Guid.Empty && x.Quantity > 0)
+            && accessories.Select(x => x.AccessoryId).Distinct().Count() == accessories.Count;
+
     private static Guid User(HttpContext http) => Guid.Parse(http.User.FindFirstValue("sub")!);
     private static async Task<IResult> Cancel(Guid id, WebCancelInput input, Guid actor, Guid? customer, Guid? seller, NpgsqlDataSource source, ICapPublisher publisher, CancellationToken ct)
     {
@@ -126,14 +153,31 @@ public static class WebOrders
         var number = page ?? 1; if (number is < 1 or > 100000) return Results.BadRequest();
         await using var command = source.CreateCommand("""
             SELECT r.id,r.kind,r.state,r.product_id,r.kiosk_id,r.seller_id,r.instructions,r.pickup_at,r.pickup_before,r.quoted_price,r.quote_note,r.quote_expires_at,
-              o.id,o.checkout_id,o.order_code,o.status,o.tracking_token,EXISTS(SELECT 1 FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='BOUQUET'),o.created_at+flow.cfg_min('hold_minutes'),r.display_snapshot->>'product',r.display_snapshot->>'shop',r.display_snapshot->>'kiosk',r.display_snapshot->>'address'
+              o.id,o.checkout_id,o.order_code,o.status,o.tracking_token,
+              EXISTS(SELECT 1 FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='BOUQUET' AND i.line_status='ACTIVE'),
+              o.created_at+flow.cfg_min('hold_minutes'),r.display_snapshot->>'product',r.display_snapshot->>'shop',r.display_snapshot->>'kiosk',r.display_snapshot->>'address',
+              r.quoted_flower_price,r.quoted_accessories,r.quote_version,r.requested_accessories,
+              coalesce((SELECT sum((x.value->>'lineTotal')::bigint) FROM jsonb_array_elements(r.quoted_accessories) AS x(value)),0)
             FROM ordering.web_requests r LEFT JOIN ordering.orders o ON o.id=r.order_id
             WHERE (@customer IS NULL OR r.customer_id=@customer) AND (@seller IS NULL OR r.seller_id=@seller)
             ORDER BY r.created_at DESC,r.id DESC LIMIT 26 OFFSET @offset
             """);
         command.Parameters.AddWithValue("customer", NpgsqlDbType.Uuid, (object?)customer ?? DBNull.Value); command.Parameters.AddWithValue("seller", NpgsqlDbType.Uuid, (object?)seller ?? DBNull.Value); command.Parameters.AddWithValue("offset", (number - 1) * 25);
         await using var reader = await command.ExecuteReaderAsync(ct); var items = new List<WebRequestRow>();
-        while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetGuid(3), reader.GetGuid(4), reader.GetGuid(5), reader.GetString(6), reader.GetFieldValue<DateTimeOffset>(7), reader.GetFieldValue<DateTimeOffset>(8), reader.IsDBNull(9) ? null : reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11), reader.IsDBNull(12) ? null : reader.GetGuid(12), reader.IsDBNull(13) ? null : reader.GetGuid(13), reader.IsDBNull(14) ? null : reader.GetString(14), reader.IsDBNull(15) ? null : reader.GetString(15), privateReceipt && !reader.IsDBNull(16) ? reader.GetString(16) : null, reader.GetBoolean(17), reader.IsDBNull(18) ? null : reader.GetFieldValue<DateTimeOffset>(18), reader.IsDBNull(19) ? null : reader.GetString(19), reader.IsDBNull(20) ? null : reader.GetString(20), reader.IsDBNull(21) ? null : reader.GetString(21), reader.IsDBNull(22) ? null : reader.GetString(22)));
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        while (await reader.ReadAsync(ct)) items.Add(new(
+            reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetGuid(3), reader.GetGuid(4), reader.GetGuid(5),
+            reader.GetString(6), reader.GetFieldValue<DateTimeOffset>(7), reader.GetFieldValue<DateTimeOffset>(8),
+            reader.IsDBNull(9) ? null : reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11), reader.IsDBNull(12) ? null : reader.GetGuid(12),
+            reader.IsDBNull(13) ? null : reader.GetGuid(13), reader.IsDBNull(14) ? null : reader.GetString(14),
+            reader.IsDBNull(15) ? null : reader.GetString(15), privateReceipt && !reader.IsDBNull(16) ? reader.GetString(16) : null,
+            reader.GetBoolean(17), reader.IsDBNull(18) ? null : reader.GetFieldValue<DateTimeOffset>(18),
+            reader.IsDBNull(19) ? null : reader.GetString(19), reader.IsDBNull(20) ? null : reader.GetString(20),
+            reader.IsDBNull(21) ? null : reader.GetString(21), reader.IsDBNull(22) ? null : reader.GetString(22),
+            reader.IsDBNull(23) ? null : reader.GetInt64(23), reader.GetInt64(27), reader.GetInt32(25),
+            JsonSerializer.Deserialize<List<RequestedPreorderAccessory>>(reader.GetString(26), jsonOptions) ?? [],
+            JsonSerializer.Deserialize<List<QuotedPreorderAccessory>>(reader.GetString(24), jsonOptions) ?? []));
         return Results.Ok(new WebRequestPage(items.Take(25).ToList(), number, items.Count > 25));
     }
 

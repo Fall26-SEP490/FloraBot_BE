@@ -30,7 +30,7 @@ public static class AdminComplaintsRead
             http.Response.Headers.CacheControl = "no-store";
             status ??= "OPEN";
             var number = page ?? 1;
-            if (status is not ("OPEN" or "RESOLVED_REJECT" or "RESOLVED_REFUND") || number < 1 || number > 100000)
+            if (status is not ("OPEN" or "RESOLVED_REJECT" or "RESOLVED_REFUND" or "RESOLVED_FIXED" or "CANCELLED") || number < 1 || number > 100000)
                 return Results.BadRequest();
             var query = db.Disputes.AsNoTracking().Where(x => x.Kind == "COMPLAINT" && x.Status == status);
             if (kioskId.HasValue) query = query.Where(x => x.KioskId == kioskId);

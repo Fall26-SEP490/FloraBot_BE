@@ -176,6 +176,10 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/open");
         Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/preorders/pickup-otp/attempts/{attemptId:guid}");
         Add([], "GET", "/api/shop/catalog");
+        Add([], "POST", "/api/shop/flower-chat");
+        Add([], "GET", "/api/shop/products/{productId:guid}/reviews", "/api/shop/products/{productId:guid}/reviews/{reviewId:guid}/photo");
+        Add(["CUSTOMER"], "GET", "/api/shop/products/{productId:guid}/review-eligibility");
+        Add(["CUSTOMER"], "POST", "/api/shop/products/{productId:guid}/reviews");
         Add([], "GET", "/api/kiosk-locations");
         Add(["SELLER"], "GET", "/api/sellers/{sellerId:guid}/kiosks");
         Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location");
@@ -227,7 +231,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/profile");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/profile", "/api/member/password", "/api/member/shop", "/api/member/google/link");
         Add(["CUSTOMER", "SELLER"], "GET", "/api/member/history");
-        Add(["CUSTOMER"], "GET", "/api/member/preorders");
+        Add(["CUSTOMER"], "GET", "/api/member/preorders", "/api/member/kiosks/{kioskId:guid}/catalog/accessories", "/api/member/sellers/{sellerId:guid}/catalog/accessories");
         Add(["CUSTOMER"], "POST", "/api/member/preorders", "/api/member/preorders/{requestId:guid}/accept", "/api/member/preorders/{requestId:guid}/cancel", "/api/member/preorders/{requestId:guid}/payment-link");
         Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/preorders");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/quote", "/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/cancel");
@@ -336,6 +340,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         // OperationsSellerEndpoints
         Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/sellers", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/status-history", "/api/operations/sellers/{sellerId:guid}/accounts");
         Add(["OPERATIONS_MANAGER"], "PUT", "/api/operations/sellers/{sellerId:guid}", "/api/operations/sellers/{sellerId:guid}/accounts/{userId:guid}");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/sellers/{sellerId:guid}/kiosks");
         Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/sellers/{sellerId:guid}/status");
         // Flower presence is a portal Account read, not a kiosk-scoped customer session.
         Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/kiosks/{id:guid}/flower-presence");

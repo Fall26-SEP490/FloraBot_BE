@@ -28,7 +28,7 @@ public static class ScreenReadEndpoints
                   (SELECT a.file_url FROM notify.attachments a
                    WHERE a.owner_service='catalog' AND a.owner_type='flower_product'
                      AND a.owner_id=c.product_id AND a.phase='PRODUCT' AND NOT a.is_hidden
-                   ORDER BY a.is_cover DESC,a.sort_order,a.created_at,a.id LIMIT 1)
+                   ORDER BY a.is_cover DESC,a.sort_order,a.created_at,a.id LIMIT 1), c.tags
                 FROM screen.v_kiosk_catalog c
                 WHERE c.kiosk_id=@id
                 ORDER BY c.slot_code
@@ -36,7 +36,7 @@ public static class ScreenReadEndpoints
             command.Parameters.AddWithValue("id", kioskId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             var items = new List<KioskCatalogResponse>();
-            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetInt64(2), reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
+            while (await reader.ReadAsync(ct)) items.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetInt64(2), reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5), reader.GetFieldValue<string[]>(6)));
             http.Response.Headers.CacheControl = "no-store";
             return Results.Ok(items);
         }).RequireAuthorization("Shopping").Produces<List<KioskCatalogResponse>>();
