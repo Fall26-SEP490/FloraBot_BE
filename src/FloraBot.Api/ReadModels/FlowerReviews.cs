@@ -6,7 +6,8 @@ using NpgsqlTypes;
 
 namespace FloraBot.Api.ReadModels;
 
-public sealed record FlowerReview(Guid Id, short Stars, string? Comment, string? PhotoUrl, DateTime CreatedAt);
+public sealed record FlowerReview(Guid Id, short Stars, string? Comment, string? PhotoUrl, DateTime CreatedAt,
+    string ReviewerName);
 public sealed record FlowerReviewPage(decimal? ProductAverage, long ProductCount, decimal? ShopAverage,
     long ShopCount, List<FlowerReview> Items, bool HasMore);
 public sealed record FlowerReviewEligibility(bool Eligible);
@@ -83,10 +84,12 @@ public static class FlowerReviews
         }
 
         await using var list = new NpgsqlCommand("""
-            SELECT id, stars, comment, photo_type IS NOT NULL, created_at
-            FROM catalog.flower_product_reviews
-            WHERE product_id = @product
-            ORDER BY created_at DESC, id DESC
+            SELECT r.id, r.stars, r.comment, r.photo_type IS NOT NULL, r.created_at,
+                   COALESCE(NULLIF(btrim(u.full_name), ''), 'Khách hàng')
+            FROM catalog.flower_product_reviews r
+            LEFT JOIN identity.users u ON u.id = r.customer_id
+            WHERE r.product_id = @product
+            ORDER BY r.created_at DESC, r.id DESC
             LIMIT @limit OFFSET @offset
             """, connection, transaction);
         list.Parameters.AddWithValue("product", productId);
@@ -100,7 +103,7 @@ public static class FlowerReviews
                 var id = reader.GetGuid(0);
                 items.Add(new(id, reader.GetInt16(1), reader.IsDBNull(2) ? null : reader.GetString(2),
                     reader.GetBoolean(3) ? $"/api/shop/products/{productId}/reviews/{id}/photo" : null,
-                    reader.GetDateTime(4)));
+                    reader.GetDateTime(4), reader.GetString(5)));
             }
         }
         await transaction.CommitAsync(ct);
