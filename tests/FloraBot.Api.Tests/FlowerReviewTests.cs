@@ -20,7 +20,10 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
             VALUES(@seller,'Shop review','0901234567','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role)
-            SELECT x,x::text||'@example.invalid','!test','Test review buyer','CUSTOMER'
+            SELECT x,x::text||'@example.invalid','!test',
+                   CASE WHEN x = @firstReviewer THEN 'Nguyễn Minh Anh'
+                        WHEN x = @preorder THEN 'Trần Thu Hà'
+                        ELSE 'Test review buyer' END,'CUSTOMER'
             FROM unnest(ARRAY[@buyer,@preorder,@other,@stranger,@firstReviewer]) AS x;
             INSERT INTO kiosk_ops.kiosks(id,code,name,address,region,hardware_id,mqtt_client_id,status)
             VALUES(@kiosk,@kiosk::text,'Review kiosk','Test address','HCM',@kiosk::text,@kiosk::text,'ONLINE');
@@ -91,6 +94,8 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
         Assert.Equal(3, page.ShopCount);
         Assert.Equal(4.333m, Math.Round(page.ShopAverage!.Value, 3));
         var photoReview = Assert.Single(page.Items, x => x.PhotoUrl is not null);
+        Assert.Equal("Nguyễn Minh Anh", photoReview.ReviewerName);
+        Assert.Equal("Trần Thu Hà", Assert.Single(page.Items, x => x.Stars == 5).ReviewerName);
         Assert.Equal("Hoa đẹp.", photoReview.Comment);
         using var photo = await anonymous.GetAsync(photoReview.PhotoUrl);
         Assert.Equal("image/png", photo.Content.Headers.ContentType?.MediaType);
