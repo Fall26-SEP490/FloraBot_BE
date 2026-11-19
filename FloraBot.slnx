@@ -15,4 +15,7 @@
     <Project Path="tests/FloraBot.SellerRefunds.Tests/FloraBot.SellerRefunds.Tests.csproj" />
     <Project Path="tests/FloraBot.ShopLoyalty.Tests/FloraBot.ShopLoyalty.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/CommunicationProbe/CommunicationProbe.csproj" />
+  </Folder>
 </Solution>
