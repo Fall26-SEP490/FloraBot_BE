@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../FloraBot.Email/FloraBot.Email.csproj" />
     <Content Update="Infrastructure/flows.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <PackageReference Include="DotNetCore.CAP.PostgreSql" Version="10.0.2" />
     <PackageReference Include="DotNetCore.CAP.RabbitMQ" Version="10.0.2" />

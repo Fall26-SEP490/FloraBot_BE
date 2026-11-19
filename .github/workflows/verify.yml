@@ -5,6 +5,35 @@ on:
 permissions:
   contents: read
 jobs:
+  communication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: florabot
+          POSTGRES_PASSWORD: local-florabot-only
+          POSTGRES_DB: florabot_communication_tests
+        ports:
+          - 55436:5432
+        options: >-
+          --health-cmd "pg_isready -U florabot -d florabot_communication_tests"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_COMMUNICATION_DATABASE_URL: Host=localhost;Port=55436;Database=florabot_communication_tests;Username=florabot;Password=local-florabot-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore tests/FloraBot.Communication.Tests/FloraBot.Communication.Tests.csproj
+      - run: dotnet test tests/FloraBot.Communication.Tests/FloraBot.Communication.Tests.csproj --no-restore
+      - run: dotnet publish src/FloraBot.Communication/FloraBot.Communication.csproj -c Release -o artifacts/communication
+      - uses: actions/upload-artifact@v4
+        with:
+          name: communication-service
+          path: artifacts/communication
   firmware-build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -70,6 +99,7 @@ jobs:
         run: |
           ./scripts/initialize-db.ps1 -ApiTests
           ./scripts/initialize-db.ps1 -JobsTests
+          docker compose exec -T postgres createdb -U florabot florabot_communication_tests
       - run: dotnet restore
       - run: dotnet format FloraBot.slnx --verify-no-changes --no-restore
       - run: dotnet test --no-restore --logger trx --results-directory artifacts

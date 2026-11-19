@@ -1,11 +1,14 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FloraBot.Api/FloraBot.Api.csproj" />
+    <Project Path="src/FloraBot.Email/FloraBot.Email.csproj" />
+    <Project Path="src/FloraBot.Communication/FloraBot.Communication.csproj" />
     <Project Path="src/FloraBot.Gateway/FloraBot.Gateway.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FloraBot.BrowserHost/FloraBot.BrowserHost.csproj" />
     <Project Path="tests/FloraBot.Api.Tests/FloraBot.Api.Tests.csproj" />
+    <Project Path="tests/FloraBot.Communication.Tests/FloraBot.Communication.Tests.csproj" />
     <Project Path="tests/FloraBot.Gateway.Tests/FloraBot.Gateway.Tests.csproj" />
     <Project Path="tests/FloraBot.KioskTermination.Tests/FloraBot.KioskTermination.Tests.csproj" />
     <Project Path="tests/FloraBot.PreorderCapacity.Tests/FloraBot.PreorderCapacity.Tests.csproj" />

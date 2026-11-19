@@ -3,10 +3,11 @@ using System.Net.Mail;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 
 namespace FloraBot.Api.Modules.Notify;
 
-public enum EmailProvider { Disabled, Brevo, GoogleSmtp }
+public enum EmailProvider { Disabled, Brevo, GoogleSmtp, Communication }
 
 public sealed class EmailSettings
 {
@@ -14,14 +15,26 @@ public sealed class EmailSettings
     public string Sender { get; private init; } = "";
     public string SenderName { get; private init; } = "FloraBot";
     public string Credential { get; private init; } = "";
+    public Uri? ServiceUrl { get; private init; }
 
     public static EmailSettings Load(IConfiguration configuration, bool development)
     {
         var provider = configuration["EMAIL_PROVIDER"] ?? "Disabled";
         if (!Enum.GetNames<EmailProvider>().Contains(provider, StringComparer.OrdinalIgnoreCase) ||
             !Enum.TryParse<EmailProvider>(provider, true, out var selected))
-            throw new InvalidOperationException("EMAIL_PROVIDER must be Disabled, Brevo or GoogleSmtp.");
+            throw new InvalidOperationException("EMAIL_PROVIDER must be Disabled, Brevo, GoogleSmtp or Communication.");
         if (selected == EmailProvider.Disabled) return new();
+        if (selected == EmailProvider.Communication)
+        {
+            var token = configuration["COMMUNICATION_SERVICE_TOKEN"] ?? "";
+            if (token.Length < 32 || token.Any(char.IsWhiteSpace) || token.Any(char.IsControl))
+                throw new InvalidOperationException("COMMUNICATION_SERVICE_TOKEN must contain at least 32 characters without whitespace.");
+            if (!Uri.TryCreate(configuration["COMMUNICATION_SERVICE_URL"], UriKind.Absolute, out var url) ||
+                url.Scheme is not ("http" or "https") || url.UserInfo.Length != 0 ||
+                url.AbsolutePath != "/" || url.Query.Length != 0 || url.Fragment.Length != 0)
+                throw new InvalidOperationException("COMMUNICATION_SERVICE_URL must be an HTTP(S) origin without credentials or a path.");
+            return new() { Provider = selected, Credential = token, ServiceUrl = url };
+        }
         var sender = configuration["EMAIL_SENDER"] ?? "";
         if (!IsAddress(sender)) throw new InvalidOperationException("EMAIL_SENDER must be a single email address.");
         if (selected == EmailProvider.GoogleSmtp && !development &&
@@ -48,12 +61,13 @@ public sealed class EmailSettings
         return new() { Provider = selected, Sender = sender, SenderName = senderName, Credential = credential };
     }
 
-    internal static bool IsAddress(string address) => address.Length is > 0 and <= 254 &&
+    public static bool IsAddress(string? address) => address is { Length: > 0 and <= 254 } &&
         !address.Any(char.IsControl) && MailAddress.TryCreate(address, out var parsed) &&
         parsed.DisplayName.Length == 0 && parsed.Address == address && parsed.Host.Contains('.');
 }
 
-public sealed record TransactionalEmail(string Recipient, string Subject, string Text, string? Html = null);
+public sealed record TransactionalEmail(string Recipient, string Subject, string Text, string? Html = null,
+    string? DeliveryId = null);
 
 public sealed class EmailUnavailableException : Exception
 {
@@ -68,6 +82,15 @@ public interface ITransactionalEmailSender
 // Acceptance by a provider is not proof of inbox delivery. No automatic send retries here.
 public sealed class TransactionalEmailSender(HttpClient client, EmailSettings settings) : ITransactionalEmailSender
 {
+    public static void Validate(TransactionalEmail email)
+    {
+        if (!EmailSettings.IsAddress(email.Recipient) || string.IsNullOrWhiteSpace(email.Subject) ||
+            email.Subject.Length > 200 || email.Subject.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(email.Text) || Encoding.UTF8.GetByteCount(email.Text) > 32 * 1024 ||
+            (email.Html != null && (string.IsNullOrWhiteSpace(email.Html) || Encoding.UTF8.GetByteCount(email.Html) > 64 * 1024)))
+            throw new ArgumentException("Email requires one recipient, a plain subject and at most 32 KiB of text.", nameof(email));
+    }
+
     public static MailMessage CreateMailMessage(TransactionalEmail email, EmailSettings settings)
     {
         var html = !string.IsNullOrWhiteSpace(email.Html) ? email.Html : EmailTemplates.CreateDefaultHtml(email.Subject, email.Text);
@@ -88,12 +111,8 @@ public sealed class TransactionalEmailSender(HttpClient client, EmailSettings se
 
     public async Task SendAsync(TransactionalEmail email, CancellationToken ct)
     {
-        if (!EmailSettings.IsAddress(email.Recipient) || string.IsNullOrWhiteSpace(email.Subject) ||
-            email.Subject.Length > 200 || email.Subject.Any(char.IsControl) ||
-            string.IsNullOrWhiteSpace(email.Text) || Encoding.UTF8.GetByteCount(email.Text) > 32 * 1024 ||
-            (email.Html != null && (string.IsNullOrWhiteSpace(email.Html) || Encoding.UTF8.GetByteCount(email.Html) > 64 * 1024)))
-            throw new ArgumentException("Email requires one recipient, a plain subject and at most 32 KiB of text.", nameof(email));
-        if (settings.Provider == EmailProvider.Disabled) throw new EmailUnavailableException();
+        Validate(email);
+        if (settings.Provider is EmailProvider.Disabled or EmailProvider.Communication) throw new EmailUnavailableException();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         var html = !string.IsNullOrWhiteSpace(email.Html) ? email.Html : EmailTemplates.CreateDefaultHtml(email.Subject, email.Text);

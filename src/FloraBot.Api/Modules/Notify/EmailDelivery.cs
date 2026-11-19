@@ -29,7 +29,7 @@ public sealed class EmailDelivery(IConnectionMultiplexer redis, NpgsqlDataSource
         try
         {
             if (await cache.KeyExistsAsync(key + ":accepted")) return;
-            await sender.SendAsync(message, ct);
+            await sender.SendAsync(message with { DeliveryId = key }, ct);
             await cache.StringSetAsync(key + ":accepted", "1", TimeSpan.FromDays(90));
         }
         finally
