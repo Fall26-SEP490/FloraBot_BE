@@ -34,7 +34,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         var endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()
             .Where(endpoint => IsCustomHttpEndpoint(endpoint))
             .SelectMany(endpoint => (endpoint.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods ?? ["*"])
-                .Select(method => (Key: method + " " + endpoint.RoutePattern.RawText, Endpoint: endpoint)))
+                .Select(method => (Key: method + " " + endpoint.RoutePattern.RawText!.TrimEnd('/'), Endpoint: endpoint)))
             .ToDictionary(entry => entry.Key, entry => entry.Endpoint);
         var expectedKeys = Matrix.Select(entry => entry.Key).ToHashSet();
         var missing = expectedKeys.Except(endpoints.Keys).Order();
@@ -143,6 +143,17 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
                 request.Content.Headers.ContentType = new("image/png");
                 return request;
             }
+            if (endpoint.Template.Contains("/quality-replacements/", StringComparison.Ordinal))
+            {
+                request.Content = System.Net.Http.Json.JsonContent.Create(new
+                {
+                    complaintId = Guid.NewGuid(),
+                    orderId = Guid.NewGuid(),
+                    trackingToken = "test-tracking-token",
+                    attemptId = Guid.NewGuid()
+                });
+                return request;
+            }
             var json = endpoint.Template.EndsWith("/otp/request", StringComparison.Ordinal) ? "{\"phone\":\"0901234567\"}" :
                 endpoint.Template.EndsWith("/otp/verify", StringComparison.Ordinal) ? "{\"phone\":\"0901234567\",\"code\":\"123456\"}" :
                 endpoint.Template.EndsWith("/status", StringComparison.Ordinal) ? "{\"status\":\"ACTIVE\"}" : "{}";
@@ -154,6 +165,53 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
     private static Access[] BuildMatrix()
     {
         var entries = new List<Access>();
+        // Independently maintained permissions for the current portal read/control endpoints.
+        Add(["ADMIN"], "GET", "/api/admin/audit-logs", "/api/admin/audit-logs/{id:long}",
+            "/api/admin/kiosk-manager-assignments", "/api/admin/revenue/{kind}",
+            "/api/admin/sellers/{sellerId:guid}/report-kiosks",
+            "/api/admin/incidents/{incidentId:guid}/evidence/{attachmentId:guid}",
+            "/api/admin/quality-complaints", "/api/admin/quality-complaints/{complaintId:guid}",
+            "/api/admin/quality-complaints/{complaintId:guid}/evidence/{attachmentId:guid}");
+        Add(["ADMIN"], "PUT", "/api/admin/kiosks/{kioskId:guid}/operations-manager");
+        Add(["SELLER"], "GET", "/api/me/complaints", "/api/me/complaints/{complaintId:guid}",
+            "/api/me/complaints/{complaintId:guid}/evidence/{attachmentId:guid}", "/api/me/inventory-history", "/api/me/shop",
+            "/api/sellers/{sellerId:guid}/accessories/{id:guid}", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}",
+            "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/location-requests");
+        Add(["SELLER"], "PUT", "/api/sellers/{sellerId:guid}/accessories/{id:guid}", "/api/sellers/{sellerId:guid}/staff/{staffId:guid}");
+        Add(["SELLER"], "POST", "/api/sellers/{sellerId:guid}/accessories",
+            "/api/sellers/{sellerId:guid}/kiosks/{kioskId:guid}/termination-requests/{id:guid}/withdraw");
+        Add(["ADMIN", "SELLER"], "GET", "/api/me/kiosks/{kioskId:guid}/layout-requests");
+        Add(["ADMIN", "SELLER"], "PUT", "/api/me/products/{productId:guid}/photos/order");
+        Add(["ADMIN", "SELLER"], "DELETE", "/api/me/products/{productId:guid}/photos/{photoId:guid}");
+        Add(["OPERATIONS_MANAGER"], "GET", "/api/operations/kiosk-layout-requests", "/api/operations/kiosk-location-requests",
+            "/api/operations/maintenance-recoveries", "/api/operations/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-recovery",
+            "/api/operations/staff-tasks/{taskId:guid}/repair-readiness");
+        Add(["TECHNICIAN"], "GET", "/api/staff/tasks/{taskId:guid}/repair-readiness");
+        Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/inventory-maintenance/open");
+        // These routes perform installation/manager assignment checks inside the handler.
+        string[] account = ["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"];
+        Add(account, "GET", "/api/admin/kiosks/{id:guid}/esp32-config", "/api/operations/kiosks/{id:guid}/esp32-config",
+            "/api/staff/kiosk-installations/{installationId:guid}/esp32-config");
+        Add(account, "POST", "/api/staff/kiosk-installations/{installationId:guid}/esp32-config/download",
+            "/api/staff/kiosk-installations/{installationId:guid}/esp32-config/provision");
+        Add(["SELLER_STAFF"], "GET", "/api/staff/quality-complaints/{complaintId:guid}/evidence/{attachmentId:guid}", "/api/staff/tasks/{taskId:guid}/quality");
+        Add(["ADMIN"], "PATCH", "/api/admin/staff-tasks/{taskId:guid}");
+        Add(["OPERATIONS_MANAGER"], "PATCH", "/api/operations/staff-tasks/{taskId:guid}");
+        Add(["SELLER"], "PATCH", "/api/me/shop", "/api/me/staff-tasks/{taskId:guid}", "/api/sellers/{sellerId:guid}/accessories/{id:guid}/status");
+        Add(["CUSTOMER"], "POST", "/api/account/close");
+        Add(["ADMIN"], "POST", "/api/admin/refunds/{refundId:guid}/seller-submission/reject");
+        Add(["KIOSK"], "POST", "/api/kiosks/{kioskId:guid}/quality-replacements/open", "/api/kiosks/{kioskId:guid}/quality-replacements/status");
+        Add(["SELLER"], "POST", "/api/me/complaints/{complaintId:guid}/accept", "/api/me/complaints/{complaintId:guid}/assignment",
+            "/api/me/complaints/{complaintId:guid}/replacement-plan", "/api/me/complaints/{complaintId:guid}/replacement/cancel",
+            "/api/me/complaints/{complaintId:guid}/review", "/api/me/maintenance-open");
+        Add(["ADMIN", "SELLER"], "POST", "/api/me/kiosks/{kioskId:guid}/layout-requests", "/api/me/kiosks/{kioskId:guid}/renewals");
+        Add([], "POST", "/api/mobile/auth/admin/login", "/api/mobile/auth/login", "/api/mobile/auth/logout", "/api/mobile/auth/refresh",
+            "/api/receipts/complaints/{complaintId:guid}/evidence/{attachmentId:guid}", "/api/receipts/complaints/lookup");
+        Add(account, "POST", "/api/mobile/auth/password", "/api/operations/kiosks/{id:guid}/esp32-config/download",
+            "/api/operations/kiosks/{id:guid}/esp32-config/provision");
+        Add(["OPERATIONS_MANAGER"], "POST", "/api/operations/kiosk-layout-requests/{requestId:guid}/review",
+            "/api/operations/kiosk-location-requests/{id:guid}/review", "/api/operations/kiosk-termination-requests/{id:guid}/assign",
+            "/api/operations/kiosks/{kioskId:guid}/slots/{slotId:guid}/maintenance-recovery/{sessionId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/communication/email-deliveries");
         Add(["ADMIN"], "POST", "/api/admin/communication/email-deliveries/reconcile");
         Add(["SELLER"], "POST", "/api/me/maintenance-access", "/api/me/inventory-tasks", "/api/me/technical-repairs/{taskId:guid}/approve");
@@ -247,7 +305,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["ADMIN"], "POST", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN"], "GET", "/api/admin/evidence/{purpose}/{resourceId:guid}");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/slots/{slotId:guid}/evidence/{purpose}");
-        Add([], "GET", "/health", "/api/packages", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
+        Add([], "GET", "/health", "/api/kiosks", "/api/auth/config", "/api/kiosk-packages");
         Add(["CUSTOMER"], "POST", "/api/member/kiosk-applications");
         Add(["CUSTOMER", "SELLER"], "POST", "/api/member/kiosk-applications/{id:guid}/payment-link", "/api/member/kiosk-applications/{id:guid}/cancel");
         Add(["SELLER"], "POST", "/api/me/kiosk-applications");

@@ -170,3 +170,17 @@ chặn thao tác trên trạng thái cũ. Không có cam kết exactly-once vớ
 Đây là một bước tách Communication, chưa phải hoàn tất bảy service.
 Chat và notification hiện có tiếp tục nằm trong API. Chưa merge main/deploy VPS.
 Kiểm thử dùng email provider giả, PostgreSQL/RabbitMQ local, không gửi email thật.
+
+## Kiểm chứng phục hồi bổ sung — 2026-11-19
+
+Kiểm thử dùng TCP proxy local để cắt kết nối AMQP thật, ghi nhận CAP outbox vẫn giữ
+request, dừng Communication rồi khởi động lại với cùng DB và khóa Data Protection.
+Request được tự retry và gửi đúng một lần qua provider giả; replay cả request cũ
+và mới không làm gửi trùng. Không restart broker dùng chung hoặc truy cập VPS.
+Test rút ngắn FailedRetryInterval và FallbackWindowLookbackSeconds xuống 1 giây;
+production giữ mặc định CAP (lookback 240 giây, chu kỳ retry 60 giây). Vì vậy sau
+restart, outbox có thể chờ vài phút trước khi được CAP thử lại. Khoảng chờ này
+không phải mất dữ liệu hay lỗi múi giờ.
+Danh sách quyền API được cập nhật độc lập theo các endpoint hiện tại, chuẩn hóa
+trailing slash trong test và dùng payload hợp lệ cho kiểm tra kiosk khác.
+Không thay đổi authorization production để làm test qua.
