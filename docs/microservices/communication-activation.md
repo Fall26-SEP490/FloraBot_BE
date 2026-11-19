@@ -73,10 +73,27 @@ API, sau đó mới dừng Communication. Đối soát yêu cầu còn treo; kh�
 Succeeded hoặc xóa hàng đợi để làm sạch. Cửa sổ chuyển đổi không phải transaction
 phân tán với SMTP và không đảm bảo exactly-once ở provider.
 
-Chưa kiểm chứng IIS/provisioning end-to-end trên VPS trước khi người vận hành chạy.
-Local đã kiểm tra broker/callback canary, fail-closed khi token sai, bảo toàn biến
-XML không liên quan, build và bộ integration Communication. Sau chạy cần kiểm tra
-RAM, log, SMTP trong một nghiệp vụ được phép, cùng khả năng đăng nhập/OTP thực tế.
+## Kết quả VPS ngày 20/11/2026
+
+Người vận hành đã chạy bản Fix1 thành công trên API v53: DB/login riêng được tạo,
+service có binding loopback 5090, broker consumer và canary callback đạt. Google
+SMTP được giữ nguyên, API chuyển sang Communication và bật hàng đợi email Seller.
+Backup trước chuyển đổi nằm tại
+`C:\FloraBotMigration\Backups\Before-Communication-20261120-015602`.
+Khóa và cấu hình service nằm tại `C:\FloraBot\secrets\communication-20261120`.
+
+Đăng nhập Customer và yêu cầu OTP email qua API công khai thành công. Người vận
+hành xác nhận nhận được thư tại hộp thư gửi và một hộp thư khác. Không xác minh
+OTP và không đổi email tài khoản trong kiểm thử. Đây là kiểm chứng transport
+SMTP/OTP thực tế; không khẳng định mọi loại email Seller đã được thử live.
+Local có integration 14/14 trên DB sạch, canary với login không superuser và test
+parser ConnectionString trên Windows PowerShell 5.1/PowerShell 7.
+
+Khi deploy API sau này, tiếp tục copy cấu hình từ bản IIS đang chạy: giữ bốn biến
+Communication, không đổi token hoặc trả EMAIL_PROVIDER về GoogleSmtp ngoài ý muốn.
+Deploy API không tự cập nhật service Communication; backup DB service cùng khóa
+Data Protection và cập nhật binary service theo quy trình riêng. Cần tiếp tục đo
+RAM/log sau vận hành; chưa có kiểm chứng tải dài hạn cho VPS dùng chung.
 
 ## Build lại
 
@@ -85,5 +102,5 @@ RAM, log, SMTP trong một nghiệp vụ được phép, cùng khả năng đăn
 ```
 
 Đường dẫn output phải mới. Không chạy trực tiếp file enable trong source vì hash
-gói còn là placeholder. Gói được build từ feature branch; publication cần thao tác
-merge/push riêng theo yêu cầu của chủ dự án.
+gói còn là placeholder. Script kích hoạt dành cho lần provision đầu tiên, không
+chạy lại trên service đã kích hoạt để cập nhật thường kỳ.

@@ -60,6 +60,13 @@ Xem [hướng dẫn cấu hình và kiểm tra Communication](communication.md).
 
 ## Các mốc tiếp theo
 
+**Cập nhật 20/11/2026:** AI và Communication email đang chạy thành tiến trình
+riêng trên VPS; Gateway cũng chạy riêng. Communication có DB/login riêng, SMTP,
+CAP broker và callback đã được kiểm chứng, OTP đã nhận ở hộp thư khác. Chat và
+thông báo trong ứng dụng vẫn ở API chung; năm phạm vi Identity, Catalog, Ordering,
+Payment, Kiosk Operations chưa tách thành tiến trình độc lập. Không coi hai service
+đang chạy riêng là đã hoàn tất toàn bộ phạm vi của hai service mục tiêu.
+
 1. **Hoàn thiện Communication.** Chuyển quyền quản lý chat và thông báo sang
    service, định nghĩa hợp đồng sự kiện có phiên bản. Chuyển phần nhận và xử lý
    sự kiện sau khi đã làm rõ quy tắc kiểm tra điều kiện gửi theo trạng thái hiện
