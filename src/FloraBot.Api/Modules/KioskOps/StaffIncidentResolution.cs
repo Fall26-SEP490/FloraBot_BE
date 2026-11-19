@@ -12,6 +12,7 @@ public static class StaffIncidentResolution
 {
     public static void MapStaffIncidentResolution(this WebApplication app)
     {
+        app.MapTechnicalRepairReadiness();
         app.MapPost("/api/staff/tasks/{taskId:guid}/resolve-incident", async (Guid taskId, StaffIncidentResolutionInput input, NpgsqlDataSource data, ICapPublisher publisher, HttpContext http, CancellationToken ct) =>
         {
             if (input.Id == Guid.Empty || input.Version < 1 || string.IsNullOrWhiteSpace(input.Report) || input.Report.Trim().Length is < 10 or > 2000) return Results.BadRequest();
@@ -37,10 +38,11 @@ public static class StaffIncidentResolution
                 await outbox.CommitAsync(ct);
                 return Results.Ok(new StaffIncidentResolutionResult(input.Id, version));
             }
-            catch (PostgresException ex) when (ex.SqlState is "42501" or "P0002" or "40001" or "22023" or "23505" or "P0001")
+            catch (PostgresException ex) when (ex.SqlState is "42501" or "P0002" or "40001" or "22023" or "23505" or "P0001" or "P4090")
             {
                 return ex.SqlState switch
                 {
+                    "P4090" => TechnicalRepairReadiness.Problem(ex.MessageText),
                     "42501" => Results.Forbid(),
                     "P0002" => Results.NotFound(),
                     "40001" or "23505" => Results.Problem(statusCode: 409, detail: "Công việc hoặc sự cố đã thay đổi. Tải lại để kiểm tra kết quả trước khi tiếp tục."),

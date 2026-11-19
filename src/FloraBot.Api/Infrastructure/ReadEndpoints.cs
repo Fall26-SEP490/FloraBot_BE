@@ -20,7 +20,8 @@ public sealed record ProductResponse(
     decimal? HeightCm = null,
     int Quantity = 0);
 public sealed record SubscriptionResponse(Guid Id, string PackageName, DateOnly PeriodFrom, DateOnly PeriodTo, long Price, string Status, Guid? KioskId,
-    string? KioskCode = null, string? KioskName = null, DateTime? ExpiresAt = null, string? ReminderStatus = null);
+    string? KioskCode = null, string? KioskName = null, DateTime? ExpiresAt = null, string? ReminderStatus = null,
+    string? TerminationReason = null);
 public sealed record SellerPackageResponse(string Name, long AnnualFee, int MaxSlots, string Status)
 {
     // Source compatibility for old tests/tools; never expose the retired monthly field in JSON.
