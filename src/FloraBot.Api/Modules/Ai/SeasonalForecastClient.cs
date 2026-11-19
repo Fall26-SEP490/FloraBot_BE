@@ -125,7 +125,7 @@ public sealed class SeasonalForecastClient(HttpClient client, IConfiguration con
 
         // Budget safe total 12s to cover Python CPU fitting + 8s Gemini bounded call
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(12));
+        timeout.CancelAfter(TimeSpan.FromSeconds(22));
 
         try
         {

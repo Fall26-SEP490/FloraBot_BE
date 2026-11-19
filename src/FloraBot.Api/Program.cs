@@ -159,7 +159,7 @@ builder.Services.AddScoped<AiAdvisor>();
 builder.Services.AddHttpClient<FlowerChat>(client => client.Timeout = TimeSpan.FromSeconds(22))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AdvisorCache>();
-builder.Services.AddHttpClient<SeasonalForecastClient>(client => client.Timeout = TimeSpan.FromSeconds(12))
+builder.Services.AddHttpClient<SeasonalForecastClient>(client => client.Timeout = TimeSpan.FromSeconds(24))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddSignalR(options => { options.MaximumReceiveMessageSize = 4096; options.EnableDetailedErrors = false; });
 builder.Services.AddSingleton<IUserIdProvider, JwtSubjectUserIdProvider>();
