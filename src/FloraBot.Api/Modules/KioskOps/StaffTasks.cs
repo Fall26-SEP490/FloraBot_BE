@@ -140,9 +140,10 @@ public static class StaffTasks
 
     private static Guid Actor(HttpContext http) => Guid.Parse(http.User.FindFirstValue("sub")!);
     private static bool ValidReport(string? text) => text?.Trim() is { Length: >= 10 and <= 2000 } && !text.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t'));
-    private static bool Handled(PostgresException ex) => ex.SqlState is "42501" or "P0002" or "40001" or "22023" or "23505" or "23514" or "23503";
+    private static bool Handled(PostgresException ex) => ex.SqlState is "42501" or "P0002" or "40001" or "22023" or "23505" or "23514" or "23503" or "P4090";
     private static IResult Problem(PostgresException ex) => ex.SqlState switch
     {
+        "P4090" => TechnicalRepairReadiness.Problem(ex.MessageText),
         "42501" => Results.Forbid(),
         "P0002" => Results.NotFound(),
         "40001" or "23505" => Results.Problem(statusCode: 409, detail: "Công việc đã thay đổi hoặc đã được phân công. Tải lại danh sách trước khi tiếp tục."),
@@ -200,7 +201,8 @@ public static class StaffTasks
             input.Status is not ("IN_PROGRESS" or "SUBMITTED" or "COMPLETED" or "CANCELLED")) return Results.BadRequest();
         await using var command = data.CreateCommand("""
             SELECT CASE WHEN @status='COMPLETED' AND EXISTS (
-                SELECT 1 FROM kiosk_ops.technical_repair_access g WHERE g.task_id=@id)
+                SELECT 1 FROM kiosk_ops.staff_tasks t JOIN ordering.disputes d ON d.id=t.incident_id
+                WHERE t.id=@id AND t.kind='INCIDENT' AND d.slot_id IS NOT NULL)
                 THEN flow.accept_technical_repair(@id,@actor,@version,@report)
                 ELSE flow.transition_staff_task(@id,@actor,@version,@status,@report)
             END

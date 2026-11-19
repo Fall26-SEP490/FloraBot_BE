@@ -9,6 +9,7 @@ public static class ScreenReadEndpoints
 {
     public static void MapScreenReads(this WebApplication app)
     {
+        app.MapAdminRevenueReports();
         foreach (var view in new[] { "v_admin_queue", "v_refund_queue", "v_revenue_daily", "v_platform_revenue", "v_ai_effectiveness" })
         {
             var safeView = view;
