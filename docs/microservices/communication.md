@@ -114,3 +114,59 @@ live provider delivery remain separate deployment checks.
   `D:/log/FloraBot-Communication-20261119` on the implementation machine.
 - A separate GitHub Actions job builds/tests/publishes the service with only its
   PostgreSQL dependency. Its hosted CI execution awaits publication of this branch.
+
+## Bước 2 — Hàng đợi và đối soát email (local, chưa triển khai VPS)
+
+Luồng bất đồng bộ chỉ áp dụng email Seller: duyệt shop, biên nhận thuê và nhắc hết hạn.
+API giữ quyền đọc dữ liệu nghiệp vụ và người nhận. Communication giữ vận chuyển,
+DB riêng, nội dung chờ gửi được bảo vệ bằng ASP.NET Data Protection, và trạng thái gửi.
+OTP tiếp tục gọi đồng bộ để giữ thời hạn và phản hồi hiện tại.
+
+1. API kiểm tra nghiệp vụ và stage nội dung qua HTTP nội bộ có token.
+2. API ghi metadata kỹ thuật và sự kiện ID có chữ ký HMAC trong cùng transaction CAP.
+3. Communication nhận RabbitMQ, xác thực chữ ký, gọi API kiểm tra lại người nhận,
+   nội dung và điều kiện nghiệp vụ ngay trước gửi. Không đủ điều kiện thì SKIPPED.
+4. Nhà cung cấp chấp nhận thì ACCEPTED; không xác định kết quả thì UNCERTAIN.
+   CAP outbox ghi kết quả và publish cùng transaction. API chỉ nhận revision mới hơn.
+5. Với nhắc hạn thuê, API chỉ audit SENT khi toàn bộ người nhận đã ACCEPTED.
+   UNCERTAIN không được tính là đã gửi thành công.
+6. Một job nhẹ mỗi phút tìm tối đa 100 bản QUEUED cũ trên 2 phút để phát lại ID.
+   Nó xử lý trường hợp queue chưa được bind lúc khởi động hoặc hết lượt retry CAP.
+   Receipt ngăn gửi lại email đã ACCEPTED; kết quả có thể phát lại an toàn.
+
+### Cấu hình bổ sung khi bật
+
+- API: EMAIL_PROVIDER=Communication, COMMUNICATION_SERVICE_URL,
+  COMMUNICATION_SERVICE_TOKEN và COMMUNICATION_BROKER_ENABLED=true.
+- Service: EMAIL_PROVIDER=Brevo/GoogleSmtp, thông tin provider riêng,
+  COMMUNICATION_DATABASE_URL, COMMUNICATION_SERVICE_TOKEN,
+  COMMUNICATION_BROKER_ENABLED=true, COMMUNICATION_API_URL trỏ loopback API,
+  DATA_PROTECTION_KEYS_PATH bền vững, chỉ service được đọc.
+- Hai bên dùng cùng RABBITMQ_EXCHANGE và thông tin broker. Service có consumer group riêng.
+- Token chỉ lưu trên máy triển khai. COMMUNICATION_PREVIOUS_SERVICE_TOKEN hỗ trợ khoảng
+  chuyển tiếp khi xoay token; loại bỏ sau khi hai bên và các sự kiện tồn đã chuyển xong.
+- Chạy migration 20261119_communication_delivery_results.sql trong DB API trước khi bật.
+  DB Communication tự tạo các bảng kỹ thuật; không đọc trực tiếp bảng nghiệp vụ API.
+- Khởi động Communication và xác nhận broker consumer hoạt động trước khi bật phía API.
+  /ready hiện kiểm tra DB/provider, chưa chứng minh RabbitMQ hoặc provider bên ngoài khỏe.
+- Sao lưu cả DB Communication và thư mục khóa Data Protection. Mất khóa sẽ không đọc
+  được email đang chờ. Bảo vệ khóa bằng ACL; mặc định không mã hóa khóa trên đĩa.
+- Các endpoint /internal chỉ được truy cập qua mạng nội bộ/loopback.
+
+### API Admin, không thêm giao diện FE
+
+GET /api/admin/communication/email-deliveries?state=UNCERTAIN&page=1&pageSize=25
+trả ID kỹ thuật, trạng thái, revision và thời điểm cập nhật; không trả nội dung/email.
+POST /api/admin/communication/email-deliveries/reconcile nhận operationId, deliveryId,
+expectedState, expectedRevision, decision, providerReference và reason.
+ActorId luôn được API lấy lại từ phiên Admin, không tin giá trị client gửi.
+Decision ACCEPTED chỉ dùng khi đã đối chiếu provider xác nhận chấp nhận gửi.
+RETRY_CONFIRMED_NOT_SENT chỉ dùng khi provider xác nhận chưa gửi. Không dùng để thử may rủi.
+SENDING chỉ được đối soát sau 60 giây. OperationId chống lặp và optimistic revision
+chặn thao tác trên trạng thái cũ. Không có cam kết exactly-once với provider bên ngoài.
+
+### Giới hạn phạm vi
+
+Đây là một bước tách Communication, chưa phải hoàn tất bảy service.
+Chat và notification hiện có tiếp tục nằm trong API. Chưa merge main/deploy VPS.
+Kiểm thử dùng email provider giả, PostgreSQL/RabbitMQ local, không gửi email thật.

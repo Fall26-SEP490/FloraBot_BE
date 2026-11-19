@@ -81,7 +81,7 @@ builder.Services.AddCap(options =>
             (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing")
                 ? "local-florabot-only" : throw new InvalidOperationException("RABBITMQ_PASSWORD is required."));
         rabbit.PublishConfirms = true;
-        rabbit.ExchangeName = "florabot." + new NpgsqlConnectionStringBuilder(connectionString).Database;
+        rabbit.ExchangeName = builder.Configuration["RABBITMQ_EXCHANGE"] ?? "florabot." + new NpgsqlConnectionStringBuilder(connectionString).Database;
     });
 });
 builder.Services.AddTransient<PaymentEventSubscriber>();
@@ -89,6 +89,9 @@ builder.Services.AddTransient<SubscriptionEventSubscriber>();
 builder.Services.AddTransient<SellerEmailSubscriber>();
 builder.Services.AddScoped<SellerEmailReader>();
 builder.Services.AddScoped<EmailDelivery>();
+builder.Services.AddScoped<CommunicationDispatch>();
+builder.Services.AddHostedService<CommunicationRecovery>();
+builder.Services.AddTransient<CommunicationOutcomes>();
 builder.Services.AddTransient<OrderEventSubscriber>();
 builder.Services.AddTransient<RefundEventSubscriber>();
 if (builder.Configuration.GetValue("MQTT_ENABLED", false))
@@ -129,12 +132,17 @@ builder.Services.AddHttpClient("payos", client => client.Timeout = TimeSpan.From
 Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<IPayOsClientResolver, PayOsClientResolver>(builder.Services);
 builder.Services.AddScoped<FlowExecutor>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton(EmailSettings.Load(builder.Configuration, builder.Environment.IsDevelopment()));
+var emailSettings = EmailSettings.Load(builder.Configuration, builder.Environment.IsDevelopment());
+if (builder.Configuration.GetValue("COMMUNICATION_BROKER_ENABLED", false) && emailSettings.Provider != EmailProvider.Communication)
+    throw new InvalidOperationException("Queued email requires EMAIL_PROVIDER=Communication.");
+builder.Services.AddSingleton(emailSettings);
 builder.Services.AddHttpClient<TransactionalEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient<CommunicationEmailSender>(client => client.Timeout = TimeSpan.FromSeconds(20))
     .RemoveAllLoggers()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("communication-control", client => client.Timeout = TimeSpan.FromSeconds(10))
+    .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddTransient<ITransactionalEmailSender>(sp =>
     sp.GetRequiredService<EmailSettings>().Provider == EmailProvider.Communication
         ? sp.GetRequiredService<CommunicationEmailSender>()
@@ -341,6 +349,7 @@ if (app.Environment.IsDevelopment() || publicSwaggerEnabled)
 else
     app.MapOpenApi().RequireAuthorization("Admin");
 app.MapAuth();
+app.MapCommunication();
 app.MapMobileAuth();
 app.MapAccountHierarchy();
 app.MapAdminAccounts();

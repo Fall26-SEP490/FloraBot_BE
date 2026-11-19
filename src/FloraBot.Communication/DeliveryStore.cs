@@ -20,6 +20,19 @@ public sealed class DeliveryStore(NpgsqlDataSource data) : IHostedService
                 created_at timestamptz NOT NULL DEFAULT now(),
                 updated_at timestamptz NOT NULL DEFAULT now()
             );
+            ALTER TABLE communication.email_deliveries DROP CONSTRAINT IF EXISTS email_deliveries_state_check;
+            ALTER TABLE communication.email_deliveries ADD CONSTRAINT email_deliveries_state_check
+              CHECK(state IN ('SENDING','ACCEPTED','UNCERTAIN','RETRYABLE'));
+            CREATE TABLE IF NOT EXISTS communication.email_queue (
+                id text PRIMARY KEY,external_id text NOT NULL UNIQUE,fingerprint text NOT NULL,
+                protected_payload text,state text NOT NULL DEFAULT 'PREPARED',revision bigint NOT NULL DEFAULT 0,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS communication.email_reconciliations (
+                operation_id uuid PRIMARY KEY,delivery_id text NOT NULL,request_hash text NOT NULL,
+                result_state text NOT NULL,revision bigint NOT NULL,actor_id uuid NOT NULL,
+                provider_reference text NOT NULL,reason text NOT NULL,created_at timestamptz NOT NULL DEFAULT now()
+            );
             """, connection, transaction);
         await command.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
@@ -36,6 +49,13 @@ public sealed class DeliveryStore(NpgsqlDataSource data) : IHostedService
         insert.Parameters.AddWithValue("id", id);
         insert.Parameters.AddWithValue("fingerprint", fingerprint);
         if (await insert.ExecuteScalarAsync(ct) is not null) return new(true, fingerprint, "SENDING");
+        await using var retry = data.CreateCommand("""
+            UPDATE communication.email_deliveries SET state='SENDING',updated_at=now()
+            WHERE id=@id AND fingerprint=@fingerprint AND state='RETRYABLE' RETURNING id
+            """);
+        retry.Parameters.AddWithValue("id", id);
+        retry.Parameters.AddWithValue("fingerprint", fingerprint);
+        if (await retry.ExecuteScalarAsync(ct) is not null) return new(true, fingerprint, "SENDING");
         await using var query = data.CreateCommand("SELECT fingerprint,state FROM communication.email_deliveries WHERE id=@id");
         query.Parameters.AddWithValue("id", id);
         await using var reader = await query.ExecuteReaderAsync(ct);

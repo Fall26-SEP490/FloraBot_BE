@@ -26,3 +26,15 @@ made atomic with PostgreSQL; these receipts do not guarantee exactly-once delive
 The public FE contracts, payment routing and device flows are outside this
 increment. Public chat, notifications, broker ownership and subsequent business
 service migrations are described in `docs/microservices/README.md`.
+
+## Increment 2 — broker delivery and reconciliation
+
+Opt-in queued seller email uses API-owned technical correlation metadata plus a
+Communication-owned protected payload queue. This extends the initial receipt-only
+increment; the earlier statements about no payload storage describe increment 1.
+API owns business eligibility. Signed ID-only CAP requests and outcomes cross the
+boundary, and an authenticated callback rechecks eligibility before delivery.
+Queued payloads are cleared on ACCEPTED/SKIPPED. UNCERTAIN requires explicit audited
+operator reconciliation with optimistic revision and an idempotent operation ID.
+Public Admin control endpoints are added; existing FE behavior is unchanged.
+See the Vietnamese operational notes in docs/microservices/communication.md.

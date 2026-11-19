@@ -117,7 +117,7 @@ public sealed class SellerEmailReader(NpgsqlDataSource data)
 }
 
 public sealed class SellerEmailSubscriber(EmailSettings settings, SellerEmailReader reader, EmailDelivery delivery, NpgsqlDataSource data,
-    ILogger<SellerEmailSubscriber> logger) : ICapSubscribe
+    ILogger<SellerEmailSubscriber> logger, CommunicationDispatch? communication = null) : ICapSubscribe
 {
     [CapSubscribe(SellerEmailEvents.Requested)]
     public async Task HandleAsync(SellerEmailRequested message)
@@ -136,6 +136,11 @@ public sealed class SellerEmailSubscriber(EmailSettings settings, SellerEmailRea
             {
                 if (reminderId is Guid skipped)
                     await EmailReminderAudit.RecordOutcomeAsync(data, skipped, "SUBSCRIPTION_REMINDER_SKIPPED");
+                return;
+            }
+            if (settings.Provider == EmailProvider.Communication && communication?.Enabled == true)
+            {
+                await communication.QueueAsync(message, content, CancellationToken.None);
                 return;
             }
             foreach (var recipient in content.Recipients)

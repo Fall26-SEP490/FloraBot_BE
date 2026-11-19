@@ -20,6 +20,16 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U florabot -d florabot_communication_tests"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        env:
+          RABBITMQ_DEFAULT_USER: florabot
+          RABBITMQ_DEFAULT_PASS: local-florabot-only
+        ports:
+          - 55672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 15
     env:
       TEST_COMMUNICATION_DATABASE_URL: Host=localhost;Port=55436;Database=florabot_communication_tests;Username=florabot;Password=local-florabot-only
     steps:
