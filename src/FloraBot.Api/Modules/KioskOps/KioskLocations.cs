@@ -291,7 +291,7 @@ public static class KioskLocations
             query = query.Where(k => k.SellerId.HasValue && managedShops.Contains(k.SellerId.Value));
         }
         var kiosks = await query
-            .OrderBy(k => k.Code)
+            .OrderByDescending(k => k.CreatedAt)
             .ThenBy(k => k.Id)
             .ToListAsync(ct);
         if (manager.HasValue && kiosks.Count == 0) return Results.NotFound();
