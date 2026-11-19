@@ -14,6 +14,11 @@ Chạy PowerShell Administrator:
 & 'C:\FloraBotMigration\FloraBot-Enable-Communication.ps1'
 ```
 
+Có thể thêm `-PreflightOnly` để chạy riêng các guard và đọc cấu hình mà không tạo
+backup/DB/service, không sửa API và không hỏi mật khẩu. ConnectionString được đọc
+bằng setter .NET tường minh để tránh dictionary adapter của PowerShell. Bản script
+trước sửa này có thể dừng ở preflight do đọc Database/Host rỗng.
+
 Script hỏi mật khẩu PostgreSQL của **postgres**, không phải tài khoản Admin
 FloraBot hay mật khẩu Windows. Nếu dùng một login quản trị PostgreSQL khác:
 

@@ -1,4 +1,4 @@
-param([string]$ProvisionUser = 'postgres')
+param([string]$ProvisionUser = 'postgres', [switch]$PreflightOnly)
 $ErrorActionPreference = 'Stop'
 Import-Module WebAdministration
 $root = 'C:\FloraBotMigration'
@@ -89,14 +89,17 @@ function Assert-EmailQueueDrained {
 }
 
 try {
+    $phase = 'API v53 and provisioning username checks'
     if ($ProvisionUser -notmatch '^[A-Za-z_][A-Za-z0-9_]{0,62}$') { throw 'Invalid PostgreSQL provisioning username.' }
     if ($api -ne 'C:\FloraBot\staging\v53\API' -or $site.State -ne 'Started' -or
         (Get-Item -LiteralPath "$api\FloraBot.Api.dll").VersionInfo.ProductVersion -ne $expectedApi) { throw 'Expected confirmed API v53.' }
+    $phase = 'new Communication resources, port, RAM and package checks'
     if ((Test-Path -LiteralPath $serviceRoot) -or (Test-Path -LiteralPath $private) -or
         (Get-Website | Where-Object Name -eq $service) -or (Test-Path "IIS:\AppPools\$service")) { throw 'Communication resources already exist; do not rerun activation.' }
     if (@(Get-NetTCPConnection -LocalPort 5090 -State Listen -ErrorAction SilentlyContinue).Count) { throw 'Port 5090 is occupied.' }
     if ((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt 768KB) { throw 'Less than 768 MiB RAM free.' }
     if ((Get-FileHash -LiteralPath $zip).Hash -ne $expectedZip) { throw 'Package hash mismatch.' }
+    $phase = 'effective Production SMTP and broker settings'
     [xml]$web = Get-Content -LiteralPath "$api\web.config" -Raw
     foreach ($e in [Environment]::GetEnvironmentVariables('Machine').GetEnumerator()) { $envSettings[([string]$e.Key).Replace('__',':')] = [string]$e.Value }
     $filter = "system.applicationHost/applicationPools/add[@name='$pool']/environmentVariables/add"
@@ -113,14 +116,24 @@ try {
     if ($settings['EMAIL_PROVIDER'] -ine 'GoogleSmtp' -or $settings['GOOGLE_SMTP_ALLOWED_IN_PRODUCTION'] -ine 'true' -or
         !$settings['EMAIL_SENDER'] -or !$settings['GOOGLE_SMTP_APP_PASSWORD'] -or !$settings['RABBITMQ_PASSWORD'] -or
         $settings['COMMUNICATION_BROKER_ENABLED'] -ieq 'true') { throw 'Email/broker configuration differs from preflight.' }
+    $phase = 'PostgreSQL connection string validation'
     $builder = New-Object System.Data.Common.DbConnectionStringBuilder
-    $builder.ConnectionString = $settings['DATABASE_URL']
+    # PowerShell's IDictionary adapter treats .ConnectionString assignment as a
+    # dictionary key. Call the .NET setter explicitly to actually parse it.
+    $builder.set_ConnectionString([string]$settings['DATABASE_URL'])
     $businessDatabase = [string]$builder['Database']
     if (!$businessDatabase -or $businessDatabase -notmatch '^[A-Za-z_][A-Za-z0-9_]{0,62}$') { throw 'Expected simple business DB name.' }
     $dbHost = [string]$builder['Host']; $dbPort = 5432
     if ($builder.ContainsKey('Port')) { $dbPort = [int]$builder['Port'] }
     if ($dbHost -notin @('127.0.0.1','localhost','::1')) { throw 'Only the confirmed local PostgreSQL instance is supported.' }
     $dbArgs = @('-h',$dbHost,'-p',[string]$dbPort,'-U',$ProvisionUser)
+    if ($PreflightOnly) {
+        [ordered]@{ ReadOnly=$true; ActivationPreflight='PASS'; ApiPath=$api; ApiBuild=$expectedApi;
+            DatabaseConnectionParsed=$true; DatabaseIsLocal=$true; Provider='GoogleSmtp';
+            Port5090Free=$true; NewCommunicationResourcesAbsent=$true } | ConvertTo-Json
+        return
+    }
+    $phase = 'protected backup and package preparation'
     Protect-AdminDirectory $backup
     Copy-Item -LiteralPath "$api\web.config" -Destination "$backup\web.config.before"
     Backup-WebConfiguration -Name "FloraBot-before-communication-$stamp" | Out-Null
@@ -183,7 +196,7 @@ try {
         ASPNETCORE_ENVIRONMENT='Production'; DOTNET_ENVIRONMENT='Production'
         EMAIL_PROVIDER='GoogleSmtp'; EMAIL_SENDER=$settings['EMAIL_SENDER']
         EMAIL_SENDER_NAME=$settings['EMAIL_SENDER_NAME']; GOOGLE_SMTP_APP_PASSWORD=$settings['GOOGLE_SMTP_APP_PASSWORD']
-        GOOGLE_SMTP_ALLOWED_IN_PRODUCTION='true'; COMMUNICATION_DATABASE_URL=$serviceDb.ConnectionString
+        GOOGLE_SMTP_ALLOWED_IN_PRODUCTION='true'; COMMUNICATION_DATABASE_URL=$serviceDb.get_ConnectionString()
         COMMUNICATION_SERVICE_TOKEN=$serviceToken; COMMUNICATION_BROKER_ENABLED='true'
         COMMUNICATION_API_URL='http://127.0.0.1:5080'; DATA_PROTECTION_KEYS_PATH=(Join-Path $private 'keys')
         RABBITMQ_HOST=$settings['RABBITMQ_HOST']; RABBITMQ_PORT=$settings['RABBITMQ_PORT']
@@ -245,6 +258,18 @@ try {
     "Rollback configuration: $backup\web.config.before"
     "Service private configuration and persistent keys: $private"
 } catch {
+    $safeReasons = @(
+        'Invalid PostgreSQL provisioning username.', 'Expected confirmed API v53.',
+        'Communication resources already exist; do not rerun activation.', 'Port 5090 is occupied.',
+        'Less than 768 MiB RAM free.', 'Package hash mismatch.', 'Expected Production environment.',
+        'Email/broker configuration differs from preflight.', 'Expected simple business DB name.',
+        'Only the confirmed local PostgreSQL instance is supported.',
+        'Provisioning login needs CREATE ROLE and CREATE DATABASE.',
+        'Legacy seller email events remain pending/failed; reconcile them before cutover.'
+    )
+    $failureMessage = [string]$_.Exception.Message
+    if ($failureMessage -in $safeReasons) { Write-Host "Safe failure reason: $failureMessage" }
+    else { Write-Host "Failure type: $($_.Exception.GetType().Name); raw details suppressed." }
     if ($apiChanged) {
         Stop-Pool $pool
         [IO.File]::WriteAllBytes("$api\web.config",[IO.File]::ReadAllBytes("$backup\web.config.before"))
