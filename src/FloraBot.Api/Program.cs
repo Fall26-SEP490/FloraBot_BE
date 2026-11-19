@@ -156,7 +156,7 @@ builder.Services.AddScoped<PrivateEvidence>();
 builder.Services.AddHttpClient<AdvisorClient>(client => client.Timeout = TimeSpan.FromMilliseconds(1800))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AiAdvisor>();
-builder.Services.AddHttpClient<FlowerChat>(client => client.Timeout = TimeSpan.FromSeconds(12))
+builder.Services.AddHttpClient<FlowerChat>(client => client.Timeout = TimeSpan.FromSeconds(22))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<AdvisorCache>();
 builder.Services.AddHttpClient<SeasonalForecastClient>(client => client.Timeout = TimeSpan.FromSeconds(12))
