@@ -38,6 +38,10 @@ public sealed class ModuleBoundaryTests
         type.FullName?.StartsWith("FloraBot.Api.Modules.Ai.Seasonal", StringComparison.Ordinal) == true);
 
     [Fact]
+    public void KioskRenewalContractsKeepSchemaOwnership() => AssertModuleBoundaries(type =>
+        type.FullName?.StartsWith("FloraBot.Api.Modules.Identity.KioskRenewals", StringComparison.Ordinal) == true);
+
+    [Fact]
     public void QualityComplaintContractsKeepSchemaOwnership() => AssertModuleBoundaries(type =>
         type.FullName?.StartsWith("FloraBot.Api.Modules.Ordering.QualityComplaints", StringComparison.Ordinal) == true ||
         type.FullName?.StartsWith("FloraBot.Api.Modules.Notify.QualityEvidence", StringComparison.Ordinal) == true);
