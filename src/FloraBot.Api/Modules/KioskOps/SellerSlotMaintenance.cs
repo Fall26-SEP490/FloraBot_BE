@@ -323,7 +323,26 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
             if (auth.Kiosk.Status != "ONLINE")
                 return Results.Problem(statusCode: 409, detail: "Kiosk hiện đang không trực tuyến.");
 
-            if (auth.Slot.Zone != "WALK_IN")
+            var qualityReplacementLoad = false;
+            if (auth.Slot.Zone == "PREORDER" && action == MaintenanceAction.Load && auth.Actor.Role == "SELLER_STAFF")
+            {
+                await using var quality = new NpgsqlCommand("""
+                    SELECT 1 FROM kiosk_ops.quality_replacements r
+                    JOIN kiosk_ops.staff_tasks t ON t.id=r.task_id
+                    WHERE r.task_id=@task AND r.slot_id=@slot AND r.product_id=@product AND r.state='PLANNED'
+                      AND t.seller_id=@seller AND t.kiosk_id=@kiosk AND t.assignee_id=@actor
+                      AND t.status='IN_PROGRESS' AND flow.quality_task_live(t.id)
+                    FOR SHARE OF r,t
+                    """, connection, transaction);
+                quality.Parameters.AddWithValue("task", input.Id);
+                quality.Parameters.AddWithValue("slot", slotId);
+                quality.Parameters.Add("product", NpgsqlTypes.NpgsqlDbType.Uuid).Value = (object?)input.ProductId ?? DBNull.Value;
+                quality.Parameters.AddWithValue("seller", sellerId);
+                quality.Parameters.AddWithValue("kiosk", kioskId);
+                quality.Parameters.AddWithValue("actor", actorId);
+                qualityReplacementLoad = await quality.ExecuteScalarAsync(ct) is not null;
+            }
+            if (auth.Slot.Zone != "WALK_IN" && !qualityReplacementLoad)
                 return Results.Problem(statusCode: 409, detail: "Quy trình bảo trì tự phục vụ chỉ áp dụng cho ô vùng WALK_IN.");
 
             // Idempotency recheck under slot lock
@@ -504,7 +523,8 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
                 IsActorActive: auth.Actor.Status == "ACTIVE",
                 IsShopActive: isShopAuthorized,
                 IsProductOwnedBySeller: productOwned,
-                RowVersion: auth.Slot.RowVersion);
+                RowVersion: auth.Slot.RowVersion,
+                IsQualityReplacementLoad: qualityReplacementLoad);
 
             var valResult = SlotMaintenancePolicy.ValidateInitialSession(context, action, now);
             if (!valResult.Allowed)

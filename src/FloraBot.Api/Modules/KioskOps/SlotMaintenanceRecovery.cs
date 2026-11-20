@@ -66,7 +66,9 @@ public sealed partial class SlotMaintenanceService
         JOIN kiosk_ops.kiosks k ON k.id=ms.kiosk_id AND k.seller_id=ms.seller_id
         JOIN kiosk_ops.manager_kiosks m ON m.kiosk_id=ms.kiosk_id AND m.manager_id=@manager
         JOIN identity.users u ON u.id=m.manager_id AND u.role='OPERATIONS_MANAGER' AND u.status='ACTIVE'
-        WHERE s.current_seller_id=ms.seller_id AND s.status='LOCKED' AND s.zone='WALK_IN'
+        WHERE s.current_seller_id=ms.seller_id AND s.status='LOCKED'
+          AND (s.zone='WALK_IN' OR (s.zone='PREORDER' AND ms.action='LOAD' AND EXISTS (
+            SELECT 1 FROM kiosk_ops.quality_replacements r WHERE r.task_id=ms.id AND r.slot_id=s.id AND r.product_id=ms.new_product_id)))
           AND ms.stage NOT IN ('Completed','Recovered') AND ms.expires_at<=clock_timestamp()
         """;
 
@@ -150,8 +152,17 @@ public sealed partial class SlotMaintenanceService
             var auth = await LoadAndLockContextAsync(connection, transaction, kioskId, slotId, sellerId,
                 actorId: null, sessionId, ct);
             if (auth?.Session is not { } session) return Results.NotFound();
+            var qualityPreorder = false;
+            if (auth.Slot.Zone == "PREORDER" && session.Action == "LOAD")
+            {
+                await using var quality = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.quality_replacements WHERE task_id=@task AND slot_id=@slot AND product_id=@product", connection, transaction);
+                quality.Parameters.AddWithValue("task", sessionId);
+                quality.Parameters.AddWithValue("slot", slotId);
+                quality.Parameters.Add("product", NpgsqlTypes.NpgsqlDbType.Uuid).Value = (object?)session.NewProductId ?? DBNull.Value;
+                qualityPreorder = await quality.ExecuteScalarAsync(ct) is not null;
+            }
             if (session.Stage is "Completed" or "Recovered" || session.ExpiresAt > DateTime.UtcNow
-                || auth.Slot.Status != "LOCKED" || auth.Slot.Zone != "WALK_IN"
+                || auth.Slot.Status != "LOCKED" || (auth.Slot.Zone != "WALK_IN" && !qualityPreorder)
                 || auth.Slot.HoldOrderId.HasValue || auth.Slot.HoldUntil.HasValue)
                 return Results.Problem(statusCode: 409, detail: "Chỉ khôi phục ô Walk-in đang khóa bởi phiên hết hạn và không giữ đơn.");
 

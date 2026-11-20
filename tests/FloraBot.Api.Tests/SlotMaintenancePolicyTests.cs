@@ -5,6 +5,17 @@ namespace FloraBot.Api.Tests;
 public sealed class SlotMaintenancePolicyTests
 {
     [Fact]
+    public void PreorderLoadingRequiresVerifiedQualityReplacementScope()
+    {
+        var context = CreateValidContext(zone: "PREORDER") with { ActorRole = "SELLER_STAFF" };
+        Assert.False(SlotMaintenancePolicy.ValidateInitialSession(context, MaintenanceAction.Load, Now).Allowed);
+        Assert.True(SlotMaintenancePolicy.ValidateInitialSession(context with { IsQualityReplacementLoad = true }, MaintenanceAction.Load, Now).Allowed);
+        Assert.False(SlotMaintenancePolicy.ValidateInitialSession(context with { IsQualityReplacementLoad = true }, MaintenanceAction.Replace, Now).Allowed);
+        Assert.False(SlotMaintenancePolicy.ValidateInitialSession(context with { Zone = null, IsQualityReplacementLoad = true }, MaintenanceAction.Load, Now).Allowed);
+        Assert.False(SlotMaintenancePolicy.ValidateInitialSession(context with { HasActiveHold = true, IsQualityReplacementLoad = true }, MaintenanceAction.Load, Now).Allowed);
+    }
+
+    [Fact]
     public void UnknownActionCannotCompleteALoadingSession()
     {
         var result = SlotMaintenancePolicy.EvaluateStageCompletion((MaintenanceAction)999,

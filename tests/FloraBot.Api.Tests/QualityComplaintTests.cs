@@ -162,6 +162,27 @@ public sealed class QualityComplaintTests(ApiFactory factory) : IClassFixture<Ap
         Assert.Equal(0L, await Sql("SELECT count(*) FROM payment.payments WHERE order_id=@id AND kind='REFUND'", ("id", f.Order)));
     }
 
+    [Theory]
+    [InlineData("held")]
+    [InlineData("sensor")]
+    [InlineData("owner")]
+    public async Task PreorderReplacementPlanRejectsUnavailableSlots(string blocker)
+    {
+        var f = await Setup(); using var seller = Client("SELLER", f.Actor, f.Seller);
+        await Assign(seller, f);
+        await Sql("UPDATE kiosk_ops.slots SET zone='PREORDER' WHERE id=@slot", ("slot", f.Slot));
+        if (blocker == "held")
+            await Sql("UPDATE kiosk_ops.slots SET hold_order_id=@order,hold_until=public.app_now()+interval '1 hour' WHERE id=@slot", ("order", f.Order), ("slot", f.Slot));
+        if (blocker == "sensor")
+            await Sql("UPDATE kiosk_ops.slot_sensor_capabilities SET enabled=false WHERE slot_id=@slot", ("slot", f.Slot));
+        if (blocker == "owner")
+            await Sql("UPDATE kiosk_ops.slots SET current_seller_id=NULL WHERE id=@slot", ("slot", f.Slot));
+        var detail = await Read(seller, f);
+        Assert.Equal(HttpStatusCode.Conflict, (await seller.PostAsJsonAsync($"/api/me/complaints/{f.Complaint}/replacement-plan",
+            new QualityReplacementPlan(detail.Version, 1, f.Product, f.Slot))).StatusCode);
+        Assert.Equal(0L, await Sql("SELECT count(*) FROM kiosk_ops.quality_replacements WHERE complaint_id=@id", ("id", f.Complaint)));
+    }
+
     private async Task<(Guid Task, QualityComplaintDetail Detail)> ReadyReplacement(Fixture f, HttpClient seller, HttpClient staff, HttpClient device)
     {
         var task = await Assign(seller, f);
@@ -195,10 +216,18 @@ public sealed class QualityComplaintTests(ApiFactory factory) : IClassFixture<Ap
         return (task, await Read(seller, f));
     }
 
-    [Fact]
-    public async Task ReplacementUsesMonitoredLoadingAndReceiptScopedPickupWithoutASecondSale()
+    [Theory]
+    [InlineData("WALK_IN")]
+    [InlineData("PREORDER")]
+    public async Task ReplacementUsesMonitoredLoadingAndReceiptScopedPickupWithoutASecondSale(string zone)
     {
         var f = await Setup(member: true); using var seller = Client("SELLER", f.Actor, f.Seller); using var staff = Client("SELLER_STAFF", f.Staff, f.Seller); using var device = await Device(f);
+        await Sql("UPDATE kiosk_ops.slots SET zone=@zone WHERE id=@slot", ("zone", zone), ("slot", f.Slot));
+        if (zone == "PREORDER")
+            await Assert.ThrowsAsync<PostgresException>(async () => {
+                await Sql("SELECT flow.stock_bouquet(public.uuid_v7(),@product,@slot,@actor,'quality-direct-stock-rejected')",
+                    ("product", f.Product), ("slot", f.Slot), ("actor", f.Actor));
+            });
         var (_, ready) = await ReadyReplacement(f, seller, staff, device);
         Assert.Equal("REPLACEMENT_READY", ready.HandlingState);
         var items = await device.GetFromJsonAsync<JsonElement>($"/api/kiosks/{f.Kiosk}/catalog/items");

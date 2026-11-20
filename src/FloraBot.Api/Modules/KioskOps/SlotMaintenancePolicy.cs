@@ -30,7 +30,8 @@ public sealed record SlotMaintenanceContext(
     bool IsActorActive = false,
     bool IsShopActive = false,
     bool IsProductOwnedBySeller = false,
-    long? RowVersion = null);
+    long? RowVersion = null,
+    bool IsQualityReplacementLoad = false);
 
 public sealed record SensorObservation(
     DateTimeOffset ObservedAt,
@@ -98,7 +99,8 @@ public static class SlotMaintenancePolicy
         if (context.SlotCurrentSellerId != context.SellerId) return new(false, null, null, "SlotNotOwnedBySeller");
         if (context.KioskSellerId != context.SellerId) return new(false, null, null, "KioskNotOwnedBySeller");
         if (!context.HasActiveAssignment) return new(false, null, null, "SlotAssignmentInactive");
-        if (context.Zone != "WALK_IN") return new(false, null, null, "SlotNotInWalkInZone");
+        if (context.Zone != "WALK_IN" && !(context.Zone == "PREORDER" && context.IsQualityReplacementLoad && requestedAction == MaintenanceAction.Load))
+            return new(false, null, null, "SlotNotInWalkInZone");
         if (!context.KioskOnline) return new(false, null, null, "KioskOffline");
         if (context.LastHeartbeatAt is null || now - context.LastHeartbeatAt.Value > TimeSpan.FromSeconds(TelemetryFreshnessSeconds))
             return new(false, null, null, "KioskHeartbeatStale");

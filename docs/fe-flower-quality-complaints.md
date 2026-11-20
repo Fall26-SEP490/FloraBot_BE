@@ -130,7 +130,7 @@ Admin lọc hồ sơ chuyển xem xét hoàn tiền bằng `GET /api/admin/quali
 
 ## 5. Nạp và nhận hoa thay tại kiosk
 
-Seller chọn mẫu còn tồn của shop và ô **WALK_IN trống, đã xác minh cảm biến** tại kiosk của đơn gốc. Dùng API sản phẩm/ô hiện có để lấy lựa chọn. FE không được cho staff tự đổi mẫu hoặc ô đã giao.
+Seller chọn mẫu còn tồn của shop và ô **WALK_IN hoặc PREORDER trống, không giữ đơn, đã xác minh cảm biến** tại kiosk của đơn gốc. Dùng API sản phẩm/ô hiện có để lấy lựa chọn. FE không được cho staff tự đổi mẫu hoặc ô đã giao. Đây là luồng hoa thay có công việc riêng; nạp bán sẵn thông thường vẫn chỉ dùng WALK_IN. Khách nhận hoa thay bằng biên nhận đơn gốc cho cả hai loại ô.
 
 Nếu task đang `SUBMITTED`, Seller trả việc bằng `RETURN` trước; khi task `ASSIGNED` hoặc `IN_PROGRESS`, gửi:
 
