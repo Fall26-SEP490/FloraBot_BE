@@ -10,6 +10,31 @@ public static class KioskRenewals
 {
     public static void MapKioskRenewals(this WebApplication app)
     {
+        app.MapPost("/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/cancel", async (
+            Guid sellerId, Guid subscriptionId, HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actor)) return Results.Unauthorized();
+            await using var connection = await data.OpenConnectionAsync(ct);
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            try
+            {
+                await using var cancel = new NpgsqlCommand("SELECT flow.cancel_kiosk_renewal(@actor,@seller,@sub)", connection, transaction);
+                cancel.Parameters.AddWithValue("actor", actor);
+                cancel.Parameters.AddWithValue("seller", sellerId);
+                cancel.Parameters.AddWithValue("sub", subscriptionId);
+                await cancel.ExecuteNonQueryAsync(ct);
+                await transaction.CommitAsync(ct);
+                return Results.NoContent();
+            }
+            catch (PostgresException ex) when (ex.SqlState is "42501" or "55000")
+            {
+                return ex.SqlState == "42501" ? Results.NotFound() : Results.Problem(statusCode: 409,
+                    detail: "Kỳ gia hạn đã được thanh toán hoặc không còn chờ thanh toán. Vui lòng tải lại.");
+            }
+        }).RequireAuthorization("Merchant", "SameSeller").WithTags("Identity")
+          .Produces(204).ProducesProblem(404).ProducesProblem(409);
+
         app.MapPost("/api/me/kiosks/{kioskId:guid}/renewals", async (
             Guid kioskId, HttpContext http, NpgsqlDataSource data, CancellationToken ct) =>
         {

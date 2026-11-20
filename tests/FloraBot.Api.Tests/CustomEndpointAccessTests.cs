@@ -205,6 +205,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
             "/api/me/complaints/{complaintId:guid}/replacement-plan", "/api/me/complaints/{complaintId:guid}/replacement/cancel",
             "/api/me/complaints/{complaintId:guid}/review", "/api/me/maintenance-open");
         Add(["ADMIN", "SELLER"], "POST", "/api/me/kiosks/{kioskId:guid}/layout-requests", "/api/me/kiosks/{kioskId:guid}/renewals");
+        Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/subscriptions/{subscriptionId:guid}/cancel");
         Add([], "POST", "/api/mobile/auth/admin/login", "/api/mobile/auth/login", "/api/mobile/auth/logout", "/api/mobile/auth/refresh",
             "/api/receipts/complaints/{complaintId:guid}/evidence/{attachmentId:guid}", "/api/receipts/complaints/lookup");
         Add(account, "POST", "/api/mobile/auth/password", "/api/operations/kiosks/{id:guid}/esp32-config/download",

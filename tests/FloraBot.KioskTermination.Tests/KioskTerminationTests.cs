@@ -109,7 +109,7 @@ public sealed class KioskTerminationUnitTests
     }
 }
 
-public sealed class KioskTerminationIntegrationTests : IClassFixture<KioskTerminationTestFactory>
+public sealed partial class KioskTerminationIntegrationTests : IClassFixture<KioskTerminationTestFactory>
 {
     private readonly KioskTerminationTestFactory _factory;
     private readonly HttpClient _client;
