@@ -16,4 +16,6 @@ Default reservation time is 24 hours from loading, capped by the bouquet's sella
 
 Evidence keeps its original owners. Complaint reads merge only directly attached complaint evidence and verified task evidence linked through staff_quality_tasks, with stable 20-item pages. Private bytes require the same Seller/assigned-staff/Admin or receipt scope, and verified MIME/size/SHA-256. Storage errors remain 503. No public Cloudinary URL or receipt capability is emitted in these read contracts.
 
+Update 2026-11-20: replacements may use an empty monitored WALK_IN or PREORDER slot at the original kiosk. Preorder loading is allowed only for the live assigned quality task, exact planned slot/product, and monitored LOAD session; ordinary stock and generic inventory tasks remain WALK_IN only. Expired Preorder replacement loading sessions remain recoverable by the assigned Operations Manager. Receipt-scoped pickup, reservation and no-second-sale behavior are unchanged. Additive migration: `20261120_quality_replacement_preorder_slots.sql`.
+
 Implementation: additive migration `20261116_z_flower_quality_complaints.sql`; API contracts are exported from the application OpenAPI workflow. FE handoff: `docs/fe-flower-quality-complaints.md`.
