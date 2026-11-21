@@ -32,7 +32,8 @@ public sealed record WebRequestRow(Guid Id, string Kind, string State, Guid Prod
     DateTimeOffset? QuoteExpiresAt, Guid? OrderId, Guid? CheckoutId, string? OrderCode, string? OrderStatus,
     string? TrackingToken, bool Ready, DateTimeOffset? PayBefore, string? ProductName, string? ShopName,
     string? KioskName, string? Address, long? QuotedFlowerPrice, long QuotedAccessoryTotal, int QuoteVersion,
-    List<RequestedPreorderAccessory> RequestedAccessories, List<QuotedPreorderAccessory> QuotedAccessories);
+    List<RequestedPreorderAccessory> RequestedAccessories, List<QuotedPreorderAccessory> QuotedAccessories,
+    DateTimeOffset? CreatedAt = null);
 public sealed record WebRequestPage(List<WebRequestRow> Items, int Page, bool HasMore);
 
 public static class WebOrders
@@ -157,7 +158,7 @@ public static class WebOrders
               EXISTS(SELECT 1 FROM ordering.order_items i WHERE i.order_id=o.id AND i.item_type='BOUQUET' AND i.line_status='ACTIVE'),
               o.created_at+flow.cfg_min('hold_minutes'),r.display_snapshot->>'product',r.display_snapshot->>'shop',r.display_snapshot->>'kiosk',r.display_snapshot->>'address',
               r.quoted_flower_price,r.quoted_accessories,r.quote_version,r.requested_accessories,
-              coalesce((SELECT sum((x.value->>'lineTotal')::bigint) FROM jsonb_array_elements(r.quoted_accessories) AS x(value)),0)
+              coalesce((SELECT sum((x.value->>'lineTotal')::bigint) FROM jsonb_array_elements(r.quoted_accessories) AS x(value)),0),r.created_at
             FROM ordering.web_requests r LEFT JOIN ordering.orders o ON o.id=r.order_id
             WHERE (@customer IS NULL OR r.customer_id=@customer) AND (@seller IS NULL OR r.seller_id=@seller)
             ORDER BY r.created_at DESC,r.id DESC LIMIT 26 OFFSET @offset
@@ -177,7 +178,8 @@ public static class WebOrders
             reader.IsDBNull(21) ? null : reader.GetString(21), reader.IsDBNull(22) ? null : reader.GetString(22),
             reader.IsDBNull(23) ? null : reader.GetInt64(23), reader.GetInt64(27), reader.GetInt32(25),
             JsonSerializer.Deserialize<List<RequestedPreorderAccessory>>(reader.GetString(26), jsonOptions) ?? [],
-            JsonSerializer.Deserialize<List<QuotedPreorderAccessory>>(reader.GetString(24), jsonOptions) ?? []));
+            JsonSerializer.Deserialize<List<QuotedPreorderAccessory>>(reader.GetString(24), jsonOptions) ?? [],
+            reader.GetFieldValue<DateTimeOffset>(28)));
         return Results.Ok(new WebRequestPage(items.Take(25).ToList(), number, items.Count > 25));
     }
 
