@@ -8,7 +8,7 @@ namespace FloraBot.Api.Modules.KioskOps;
 internal sealed record MaintenanceAccessRequest(Guid KioskId, Guid SlotId, string Operation, Guid SessionId,
     string? Action, Guid? ExpectedBouquetId, Guid? ProductId, string? Reason, Guid? RequestId = null);
 internal sealed record ConfirmMaintenanceAccessRequest(string Code);
-internal sealed record AcceptedMaintenanceAccess(string Status = "ACCEPTED");
+internal sealed record AcceptedMaintenanceAccess(string Status = "ACCEPTED", DateTimeOffset? ExpiresAt = null);
 
 internal static class MaintenanceAccessEndpoints
 {
@@ -30,7 +30,20 @@ internal static class MaintenanceAccessEndpoints
             return Results.Ok(await MaintenanceAccessStore.PendingAsync(data, kioskId, ct));
         }).RequireAuthorization("Kiosk").WithTags("KioskOps").Produces<List<MaintenanceAccessPending>>();
 
-        app.MapPost("/api/kiosks/{kioskId:guid}/maintenance-access/{id:guid}/confirm", ConfirmAsync)
+        app.MapPost("/api/me/maintenance-access/{id:guid}/confirm", (
+            Guid id, ConfirmMaintenanceAccessRequest input, HttpContext http, NpgsqlDataSource data,
+            MaintenanceAccessStore store, SlotMaintenanceService service, ManualUnlockRetryService retry,
+            ICapPublisher publisher, ILoggerFactory loggerFactory, CancellationToken ct) =>
+                ConfirmCoreAsync(Guid.Empty, id, input, http, data, store, service, retry, publisher, loggerFactory, true, ct))
+            .RequireAuthorization(policy => policy.RequireAuthenticatedUser().RequireRole("SELLER", "SELLER_STAFF", "TECHNICIAN"))
+            .RequireRateLimiting("maintenance-code-verify").WithTags("KioskOps")
+            .Produces<AcceptedMaintenanceAccess>().ProducesProblem(400).Produces(404).ProducesProblem(409);
+
+        app.MapPost("/api/kiosks/{kioskId:guid}/maintenance-access/{id:guid}/confirm", (
+            Guid kioskId, Guid id, ConfirmMaintenanceAccessRequest input, HttpContext http, NpgsqlDataSource data,
+            MaintenanceAccessStore store, SlotMaintenanceService service, ManualUnlockRetryService retry,
+            ICapPublisher publisher, ILoggerFactory loggerFactory, CancellationToken ct) =>
+                ConfirmCoreAsync(kioskId, id, input, http, data, store, service, retry, publisher, loggerFactory, false, ct))
             .RequireAuthorization("Kiosk").RequireRateLimiting("maintenance-code-verify").WithTags("KioskOps")
             .Produces<AcceptedMaintenanceAccess>().ProducesProblem(400).Produces(404).ProducesProblem(409);
     }
@@ -110,19 +123,24 @@ internal static class MaintenanceAccessEndpoints
         return Results.Ok(issued);
     }
 
-    private static async Task<IResult> ConfirmAsync(Guid kioskId, Guid id, ConfirmMaintenanceAccessRequest input,
+    private static async Task<IResult> ConfirmCoreAsync(Guid kioskId, Guid id, ConfirmMaintenanceAccessRequest input,
         HttpContext http, NpgsqlDataSource data, MaintenanceAccessStore store, SlotMaintenanceService service,
-        ManualUnlockRetryService retry, ICapPublisher publisher, ILoggerFactory loggerFactory, CancellationToken ct)
+        ManualUnlockRetryService retry, ICapPublisher publisher, ILoggerFactory loggerFactory, bool fromWeb, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
-        if (!IsAuthenticatedKiosk(http, kioskId)) return Results.Forbid();
+        if (!fromWeb && !IsAuthenticatedKiosk(http, kioskId)) return Results.Forbid();
+        if (fromWeb && !Guid.TryParse(http.User.FindFirstValue("sub"), out _)) return Results.Forbid();
         var logger = loggerFactory.CreateLogger(typeof(MaintenanceAccessEndpoints).FullName!);
-        var binding = await MaintenanceAccessStore.ReadAsync(data, id, kioskId, ct);
+        var binding = fromWeb
+            ? await MaintenanceAccessStore.ReadForActorAsync(data, id,
+                Guid.Parse(http.User.FindFirstValue("sub")!), http.User.FindFirstValue("role") ?? "", ct)
+            : await MaintenanceAccessStore.ReadAsync(data, id, kioskId, ct);
         if (binding is null)
         {
             logger.LogInformation("Maintenance access challenge {ChallengeId} unavailable at kiosk {KioskId}", id, kioskId);
             return Results.NotFound();
         }
+        kioskId = binding.KioskId;
         if (binding.ActorRole == "TECHNICIAN" && binding.Operation == "REPAIR")
             return await TechnicalRepairAccess.ConfirmAsync(binding, id, input.Code, data, publisher, store, ct);
         if (binding.ActorRole is not ("SELLER" or "SELLER_STAFF")) return Results.NotFound();

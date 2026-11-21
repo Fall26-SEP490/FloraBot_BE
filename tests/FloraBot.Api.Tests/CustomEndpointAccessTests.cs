@@ -220,6 +220,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER_STAFF"], "GET", "/api/staff/tasks/{taskId:guid}/inventory-maintenance");
         Add(["SELLER_STAFF"], "POST", "/api/staff/tasks/{taskId:guid}/inventory-maintenance/access");
         Add(["TECHNICIAN"], "POST", "/api/staff/tasks/{taskId:guid}/repair-access");
+        Add(["SELLER", "SELLER_STAFF", "TECHNICIAN"], "POST", "/api/me/maintenance-access/{id:guid}/confirm");
         Add(["TECHNICIAN"], "GET", "/api/staff/tasks/{taskId:guid}/iot-health");
         Add(["TECHNICIAN"], "GET", "/api/staff/kiosk-health", "/api/staff/kiosk-health/{kioskId:guid}");
         Add(["KIOSK"], "GET", "/api/kiosks/{kioskId:guid}/maintenance-access/pending");

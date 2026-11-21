@@ -260,7 +260,8 @@ builder.Services.AddRateLimiter(options =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("maintenance-code-issue", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("sub") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-    options.AddPolicy("maintenance-code-verify", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
+    options.AddPolicy("maintenance-code-verify", http => RateLimitPartition.GetFixedWindowLimiter(
+        http.User.FindFirstValue("kiosk_id") is { } kioskIdentity ? $"kiosk:{kioskIdentity}" : $"user:{http.User.FindFirstValue("sub") ?? "unknown"}",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("advisor", http => RateLimitPartition.GetFixedWindowLimiter(http.User.FindFirstValue("kiosk_id") ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));

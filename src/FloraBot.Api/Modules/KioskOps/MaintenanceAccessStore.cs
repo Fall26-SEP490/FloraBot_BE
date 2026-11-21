@@ -88,6 +88,27 @@ internal sealed class MaintenanceAccessStore(byte[] key)
             : null;
     }
 
+    public static async Task<MaintenanceAccessBinding?> ReadForActorAsync(
+        NpgsqlDataSource data, Guid id, Guid actorId, string role, CancellationToken ct)
+    {
+        await using var query = data.CreateCommand("""
+            SELECT c.kiosk_id,c.slot_id,c.seller_id,c.task_id,c.operation,c.payload
+            FROM kiosk_ops.maintenance_access_challenges c
+            JOIN identity.users u ON u.id=c.actor_id AND u.role=c.actor_role AND u.status='ACTIVE'
+            WHERE c.id=@id AND c.actor_id=@actor AND c.actor_role=@role
+              AND (c.actor_role='TECHNICIAN' OR u.seller_id=c.seller_id)
+              AND c.consumed_at IS NULL AND c.expires_at>clock_timestamp() AND c.failed_attempts<5
+            """);
+        query.Parameters.AddWithValue("id", id);
+        query.Parameters.AddWithValue("actor", actorId);
+        query.Parameters.AddWithValue("role", role);
+        await using var reader = await query.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? new(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), actorId, role,
+                reader.IsDBNull(3) ? null : reader.GetGuid(3), reader.GetString(4), reader.GetString(5))
+            : null;
+    }
+
     public async Task<MaintenanceAccessVerification> VerifyAsync(NpgsqlConnection connection,
         NpgsqlTransaction transaction, Guid id, Guid kioskId, string? code, CancellationToken ct)
     {

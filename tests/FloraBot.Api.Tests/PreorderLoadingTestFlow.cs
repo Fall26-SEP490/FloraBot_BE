@@ -7,7 +7,7 @@ namespace FloraBot.Api.Tests;
 
 internal static class PreorderLoadingTestFlow
 {
-    // Simulates device telemetry around the real OTP/loading HTTP endpoints.
+    // Simulates device telemetry around the authenticated web OTP/loading HTTP endpoints.
     // This validates the backend flow, not physical hardware operation.
     internal static async Task LoadAsync(NpgsqlDataSource data, ApiFactory factory, HttpClient actor,
         HttpClient device, Guid request, Guid kiosk, Guid slot, Guid actorId, int relay,
@@ -34,8 +34,16 @@ internal static class PreorderLoadingTestFlow
         var accessId = (await access.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
         var code = factory.EmailSender.ExtractLastCode(actorId + "@example.invalid");
         Assert.NotNull(code);
-        var confirmation = await device.PostAsJsonAsync($"/api/kiosks/{kiosk}/maintenance-access/{accessId}/confirm", new { code });
+        var confirmPath = $"/api/me/maintenance-access/{accessId}/confirm";
+        Assert.Equal(HttpStatusCode.Forbidden, (await device.PostAsJsonAsync(confirmPath, new { code })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await actor.PostAsJsonAsync(confirmPath,
+            new { code = code == "000000" ? "000001" : "000000" })).StatusCode);
+        var confirmation = await actor.PostAsJsonAsync(confirmPath, new { code });
         Assert.True(confirmation.IsSuccessStatusCode, await confirmation.Content.ReadAsStringAsync());
+        var confirmed = await confirmation.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(confirmed.GetProperty("expiresAt").GetDateTimeOffset() > DateTimeOffset.UtcNow);
+        Assert.Equal(HttpStatusCode.NotFound, (await actor.PostAsJsonAsync(confirmPath, new { code })).StatusCode);
+        Assert.Equal(1L, await Sql("SELECT count(*) FROM kiosk_ops.preorder_loading_sessions WHERE challenge_id=@access", ("access", accessId)));
         var body = new { slotId = slot, qrCode = "loaded-preorder-" + request, loadingAccessId = accessId };
         Assert.Equal(HttpStatusCode.Conflict, (await actor.PostAsJsonAsync(fulfillPath, body)).StatusCode);
         await Sql("""

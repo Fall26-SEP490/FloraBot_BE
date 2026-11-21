@@ -126,7 +126,7 @@ internal static class PreorderLoadingAccess
         try
         {
             await sender.SendAsync(new TransactionalEmail(email, "FloraBot - Mã OTP nạp hoa đặt trước",
-                $"Mã nạp hoa: {issued.Code}\nNhập mã trên màn hình tại đúng kiosk được giao. Mã dùng một lần, hết hạn sau 2 phút."), ct);
+                $"Mã nạp hoa: {issued.Code}\nĐứng cạnh đúng ô tủ được giao, nhập mã trong mục nạp đơn đặt trước trên web hoặc ứng dụng FloraBot để xác nhận mở ô. Mã dùng một lần, hết hạn sau 2 phút."), ct);
         }
         catch (EmailUnavailableException)
         {
@@ -166,9 +166,13 @@ internal static class PreorderLoadingAccess
         try
         {
             if (await open.ExecuteScalarAsync(ct) is not Guid) return Results.NotFound();
+            await using var expiry = new NpgsqlCommand(
+                "SELECT expires_at FROM kiosk_ops.preorder_loading_sessions WHERE challenge_id=@id", connection, transaction);
+            expiry.Parameters.AddWithValue("id", id);
+            var expiresAt = new DateTimeOffset((DateTime)(await expiry.ExecuteScalarAsync(ct))!);
             await DomainChanges.PublishAsync(connection, transaction, publisher, watermark, ct);
             await outbox.CommitAsync(ct);
-            return Results.Ok(new AcceptedMaintenanceAccess());
+            return Results.Ok(new AcceptedMaintenanceAccess(ExpiresAt: expiresAt));
         }
         catch (PostgresException ex) when (ex.SqlState is "22023" or "40001" or "40P01")
         {
