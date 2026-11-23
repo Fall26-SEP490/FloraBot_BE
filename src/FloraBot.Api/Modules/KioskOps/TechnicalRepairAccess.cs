@@ -6,7 +6,8 @@ using Npgsql;
 
 namespace FloraBot.Api.Modules.KioskOps;
 
-internal sealed record TechnicalRepairRow(Guid Id, string KioskName, string SlotCode, string Reason, DateTimeOffset? ExpiresAt);
+internal sealed record TechnicalRepairRow(Guid Id, string KioskName, string SlotCode, string Reason, DateTimeOffset? ExpiresAt,
+    Guid KioskId, Guid SlotId);
 internal sealed record TechnicalRepairApproval(DateTimeOffset ExpiresAt);
 
 internal static class TechnicalRepairAccess
@@ -28,7 +29,8 @@ internal static class TechnicalRepairAccess
         if (!Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId)) return Results.Forbid();
         await using var query = data.CreateCommand("""
             SELECT t.id,k.name,s.slot_code,d.reason,
-                CASE WHEN g.revoked_at IS NULL AND g.technician_id=t.assignee_id AND g.expires_at>clock_timestamp() THEN g.expires_at END
+                CASE WHEN g.revoked_at IS NULL AND g.technician_id=t.assignee_id AND g.expires_at>clock_timestamp() THEN g.expires_at END,
+                k.id,s.id
             FROM kiosk_ops.staff_tasks t
             JOIN ordering.disputes d ON d.id=t.incident_id AND d.kiosk_id=t.kiosk_id
             JOIN kiosk_ops.kiosks k ON k.id=t.kiosk_id AND k.seller_id=@seller
@@ -44,7 +46,7 @@ internal static class TechnicalRepairAccess
         var result = new List<TechnicalRepairRow>();
         while (await reader.ReadAsync(ct))
             result.Add(new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
-                reader.IsDBNull(4) ? null : new DateTimeOffset(reader.GetDateTime(4))));
+                reader.IsDBNull(4) ? null : new DateTimeOffset(reader.GetDateTime(4)), reader.GetGuid(5), reader.GetGuid(6)));
         return Results.Ok(result);
     }
 

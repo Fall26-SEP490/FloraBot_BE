@@ -496,6 +496,8 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
         var repairs = await seller.GetFromJsonAsync<JsonElement>("/api/me/technical-repairs");
         var expiredRepair = Assert.Single(repairs.EnumerateArray(), row => row.GetProperty("id").GetGuid() == taskId);
         Assert.Equal(JsonValueKind.Null, expiredRepair.GetProperty("expiresAt").ValueKind);
+        Assert.Equal(f.Kiosk, expiredRepair.GetProperty("kioskId").GetGuid());
+        Assert.Equal(f.Slot, expiredRepair.GetProperty("slotId").GetGuid());
         using var renewed = await seller.PostAsJsonAsync(approvePath, new { });
         Assert.Equal(HttpStatusCode.OK, renewed.StatusCode);
         using var issued = await technician.PostAsJsonAsync($"{taskPath}/repair-access", new { });
