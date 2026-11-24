@@ -152,7 +152,7 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
         var client = factory.CreateClient();
         var tokens = factory.Services.GetRequiredService<TokenService>();
         client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.Issue(new User
-            { Id = id, Role = "CUSTOMER", FullName = "Test review buyer" }));
+        { Id = id, Role = "CUSTOMER", FullName = "Test review buyer" }));
         return client;
     }
 
