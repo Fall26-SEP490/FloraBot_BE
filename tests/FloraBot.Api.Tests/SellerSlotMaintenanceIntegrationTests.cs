@@ -748,6 +748,33 @@ public sealed class SellerSlotMaintenanceIntegrationTests(ApiFactory factory) : 
     }
 
     [Fact]
+    public async Task SellerCanEnableSensorsOnlyOnAssignedSlot()
+    {
+        var owned = await SetupAsync(slotStatus: "RENTED_EMPTY", capabilityEnabled: false);
+        var foreign = await SetupAsync(slotStatus: "RENTED_EMPTY", capabilityEnabled: false);
+        using var seller = Client(owned);
+        var ownPath = $"/api/me/kiosks/{owned.Kiosk}/slots/{owned.Slot}/sensor-capabilities";
+        var otherPath = $"/api/me/kiosks/{foreign.Kiosk}/slots/{foreign.Slot}/sensor-capabilities";
+        var input = new UpdateSensorCapabilityRequest(true, true, true);
+
+        using var foreignResult = await seller.PutAsJsonAsync(otherPath, input);
+        Assert.Equal(HttpStatusCode.NotFound, foreignResult.StatusCode);
+        using var result = await seller.PutAsJsonAsync(ownPath, input);
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var capability = await result.Content.ReadFromJsonAsync<SlotSensorCapabilityResponse>();
+        Assert.NotNull(capability);
+        Assert.Equal(owned.Slot, capability.SlotId);
+        Assert.Equal(owned.Actor, capability.EnrolledBy);
+        Assert.True(capability.Enabled && capability.DoorVerified && capability.PresenceVerified);
+        Assert.False(capability.SupportsManualRetry);
+
+        using var repeat = await seller.PutAsJsonAsync(ownPath, input);
+        Assert.Equal(capability.EnrolledBy, (await repeat.Content.ReadFromJsonAsync<SlotSensorCapabilityResponse>())?.EnrolledBy);
+        using var disable = await seller.PutAsJsonAsync(ownPath, input with { Enabled = false });
+        Assert.Equal(HttpStatusCode.BadRequest, disable.StatusCode);
+    }
+
+    [Fact]
     public async Task BeginSessionEnforcesRoleAndTenant()
     {
         var f = await SetupAsync();

@@ -1142,13 +1142,19 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
         Guid kioskId, Guid slotId, CancellationToken ct)
     {
         await using var connection = await data.OpenConnectionAsync(ct);
+        return await ReadSensorCapabilityAsync(connection, null, kioskId, slotId, ct);
+    }
+
+    private static async Task<IResult> ReadSensorCapabilityAsync(
+        NpgsqlConnection connection, NpgsqlTransaction? transaction, Guid kioskId, Guid slotId, CancellationToken ct)
+    {
         await using var command = new NpgsqlCommand("""
             SELECT c.relay_channel, c.enabled, c.door_verified, c.presence_verified,
                    c.supports_manual_retry, c.enrolled_by, c.updated_at
             FROM kiosk_ops.slots s
             LEFT JOIN kiosk_ops.slot_sensor_capabilities c ON c.slot_id = s.id AND c.kiosk_id = s.kiosk_id
             WHERE s.id = @slot AND s.kiosk_id = @kiosk
-            """, connection);
+            """, connection, transaction);
         command.Parameters.AddWithValue("slot", slotId);
         command.Parameters.AddWithValue("kiosk", kioskId);
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -1162,7 +1168,7 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
     }
 
     public async Task<IResult> UpdateSensorCapabilityAsync(
-        Guid kioskId, Guid slotId, Guid adminId, UpdateSensorCapabilityRequest input, CancellationToken ct)
+        Guid kioskId, Guid slotId, Guid actorId, UpdateSensorCapabilityRequest input, CancellationToken ct, Guid? sellerId = null)
     {
         await using var connection = await data.OpenConnectionAsync(ct);
         using var outbox = await connection.BeginTransactionAsync(publisher, cancellationToken: ct);
@@ -1173,21 +1179,42 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
             await using var timeoutCmd = new NpgsqlCommand("SET LOCAL lock_timeout = '5s'", connection, transaction);
             await timeoutCmd.ExecuteNonQueryAsync(ct);
 
-            // Kiosk SHARE -> Slot UPDATE
-            await using (var kioskCmd = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.kiosks WHERE id = @kiosk FOR SHARE", connection, transaction))
-            {
-                kioskCmd.Parameters.AddWithValue("kiosk", kioskId);
-                if (await kioskCmd.ExecuteScalarAsync(ct) is null) return Results.NotFound();
-            }
-
             int relay;
-            await using (var slotCmd = new NpgsqlCommand("SELECT relay_channel FROM kiosk_ops.slots WHERE id = @slot AND kiosk_id = @kiosk FOR UPDATE", connection, transaction))
+            if (sellerId is { } owner)
             {
-                slotCmd.Parameters.AddWithValue("slot", slotId);
-                slotCmd.Parameters.AddWithValue("kiosk", kioskId);
-                var res = await slotCmd.ExecuteScalarAsync(ct);
-                if (res is null) return Results.NotFound();
-                relay = Convert.ToInt32(res);
+                var context = await LoadAndLockContextAsync(connection, transaction, kioskId, slotId, owner, actorId, null, ct);
+                if (context is null || !context.AssignmentActive ||
+                    context.Actor is not { Role: "SELLER", Status: "ACTIVE" } || context.Seller.Status != "ACTIVE")
+                    return Results.NotFound();
+
+                if (!input.Enabled)
+                    return Results.Problem(statusCode: 400, detail: "Chủ shop chỉ được bật cấu hình cảm biến cho ô được phân bổ.");
+
+                relay = context.Slot.RelayChannel;
+                var current = context.Capability;
+                if (current.Enabled && current.DoorVerified == input.DoorVerified &&
+                    current.PresenceVerified == input.PresenceVerified &&
+                    current.KioskId == kioskId && current.RelayChannel == relay)
+                    return await ReadSensorCapabilityAsync(connection, transaction, kioskId, slotId, ct);
+            }
+            else
+            {
+                // Kiosk SHARE -> Slot UPDATE
+                await using (var kioskCmd = new NpgsqlCommand("SELECT 1 FROM kiosk_ops.kiosks WHERE id = @kiosk FOR SHARE", connection, transaction))
+                {
+                    kioskCmd.Parameters.AddWithValue("kiosk", kioskId);
+                    if (await kioskCmd.ExecuteScalarAsync(ct) is null) return Results.NotFound();
+                }
+
+                await using (var slotCmd = new NpgsqlCommand("SELECT relay_channel FROM kiosk_ops.slots WHERE id = @slot AND kiosk_id = @kiosk FOR UPDATE", connection, transaction))
+                {
+                    slotCmd.Parameters.AddWithValue("slot", slotId);
+                    slotCmd.Parameters.AddWithValue("kiosk", kioskId);
+                    var res = await slotCmd.ExecuteScalarAsync(ct);
+                    if (res is null) return Results.NotFound();
+                    relay = Convert.ToInt32(res);
+                }
+
             }
 
             if (relay is < 0 or > 3)
@@ -1199,7 +1226,7 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
                     supports_manual_retry, enrolled_by, enrolled_at, updated_at
                 ) VALUES (
                     @slot, @kiosk, @relay, @enabled, @doorVerified, @presenceVerified,
-                    false, @admin, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    false, @actor, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (slot_id) DO UPDATE SET
                     kiosk_id = excluded.kiosk_id,
@@ -1218,17 +1245,17 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
                 upsert.Parameters.AddWithValue("enabled", input.Enabled);
                 upsert.Parameters.AddWithValue("doorVerified", input.DoorVerified);
                 upsert.Parameters.AddWithValue("presenceVerified", input.PresenceVerified);
-                upsert.Parameters.AddWithValue("admin", adminId);
+                upsert.Parameters.AddWithValue("actor", actorId);
                 await upsert.ExecuteNonQueryAsync(ct);
             }
 
             var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
             await using (var audit = new NpgsqlCommand("""
-                SELECT flow.audit(@admin, 'SLOT_SENSOR_CAPABILITY_UPDATED', 'slots', @slot,
+                SELECT flow.audit(@actor, 'SLOT_SENSOR_CAPABILITY_UPDATED', 'slots', @slot,
                     jsonb_build_object('enabled', @enabled, 'doorVerified', @doorVerified, 'presenceVerified', @presenceVerified));
                 """, connection, transaction))
             {
-                audit.Parameters.AddWithValue("admin", adminId);
+                audit.Parameters.AddWithValue("actor", actorId);
                 audit.Parameters.AddWithValue("slot", slotId);
                 audit.Parameters.AddWithValue("enabled", input.Enabled);
                 audit.Parameters.AddWithValue("doorVerified", input.DoorVerified);
@@ -1241,7 +1268,7 @@ public sealed partial class SlotMaintenanceService(NpgsqlDataSource data, ICapPu
 
             return Results.Ok(new SlotSensorCapabilityResponse(
                 slotId, kioskId, relay, input.Enabled, input.DoorVerified, input.PresenceVerified,
-                false, adminId, DateTime.UtcNow));
+                false, actorId, DateTime.UtcNow));
         }
         catch (PostgresException ex) when (ex.SqlState is "55P03" or "40P01")
         {
@@ -1803,6 +1830,23 @@ public static class SellerSlotMaintenanceEndpoints
         .WithTags("KioskOps")
         .WithSummary("Báo lỗi trong phiên bảo trì để chuyển sang NeedsInspection")
         .Produces<SlotMaintenanceSessionResponse>()
+        .ProducesProblem(400).ProducesProblem(409)
+        .Produces(401).Produces(403).Produces(404);
+
+        app.MapPut("/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities", async (
+            Guid kioskId, Guid slotId, [FromBody] UpdateSensorCapabilityRequest input,
+            HttpContext http, SlotMaintenanceService service, CancellationToken ct) =>
+        {
+            http.Response.Headers.CacheControl = "no-store";
+            if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId) ||
+                !Guid.TryParse(http.User.FindFirstValue("seller_id"), out var sellerId))
+                return Results.Unauthorized();
+            return await service.UpdateSensorCapabilityAsync(kioskId, slotId, actorId, input, ct, sellerId);
+        })
+        .RequireAuthorization("Seller")
+        .WithTags("KioskOps")
+        .WithSummary("Bật cấu hình cảm biến cho ô tủ được phân bổ cho shop")
+        .Produces<SlotSensorCapabilityResponse>()
         .ProducesProblem(400).ProducesProblem(409)
         .Produces(401).Produces(403).Produces(404);
 

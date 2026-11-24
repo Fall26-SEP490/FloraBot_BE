@@ -230,6 +230,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         Add(["SELLER"], "POST", maintenance, session + "/check", session + "/open-next",
             session + "/open-for-check", session + "/report-issue", session + "/retry-unlock");
         Add(["SELLER"], "GET", session, maintenance + "/active");
+        Add(["SELLER"], "PUT", "/api/me/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities");
         Add(["ADMIN"], "GET", "/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities");
         Add(["ADMIN"], "PUT", "/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/sensor-capabilities",
             "/api/admin/kiosks/{kioskId:guid}/slots/{slotId:guid}/manual-unlock-retry");
