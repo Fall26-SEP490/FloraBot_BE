@@ -109,6 +109,23 @@ public sealed class DeviceCommandDispatcher(NpgsqlDataSource data, ICapPublisher
         if (attempts >= maximum)
         {
             if (!previouslyDispatched) return null;
+            // Exhaust the command, while keeping an in-window walk-in order eligible for receipt recovery.
+            await using var stopWalkIn = new NpgsqlCommand("""
+                UPDATE kiosk_ops.unlock_tokens t SET status='FAILED'
+                FROM ordering.orders o, kiosk_ops.slots s
+                WHERE t.cmd_id=@cmd AND t.purpose='CUSTOMER_PICKUP'
+                  AND t.status IN ('ISSUED','SENT') AND o.id=t.order_id AND s.id=t.slot_id
+                  AND o.status IN ('PAID','DISPENSING')
+                  AND s.status='HELD' AND s.hold_order_id=o.id AND s.hold_until>clock_timestamp()
+                  AND NOT EXISTS (SELECT 1 FROM ordering.web_requests r WHERE r.order_id=o.id)
+                  AND NOT EXISTS (SELECT 1 FROM kiosk_ops.quality_pickup_commands q WHERE q.cmd_id=t.cmd_id)
+                """, connection, transaction);
+            stopWalkIn.Parameters.AddWithValue("cmd", cmd);
+            if (await stopWalkIn.ExecuteNonQueryAsync(ct) == 1)
+            {
+                await outbox.CommitAsync(ct);
+                return null;
+            }
             var watermark = await TransactionChanges.WatermarkAsync(connection, transaction, ct);
             await using var failed = new NpgsqlCommand("SELECT flow.device_event(@cmd,'FAILED')", connection, transaction);
             failed.Parameters.AddWithValue("cmd", cmd);
