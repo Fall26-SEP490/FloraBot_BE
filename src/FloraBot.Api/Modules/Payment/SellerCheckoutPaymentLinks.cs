@@ -138,7 +138,8 @@ internal static class SellerCheckoutPaymentLinks
 
         try
         {
-            var link = await gateway.CreateForVerifiedSellerAsync(orderCode, amount, ct, new DateTimeOffset(deadline).ToUnixTimeSeconds(), virtualReady);
+            var link = await gateway.CreateForVerifiedSellerAsync(orderCode, amount, ct, new DateTimeOffset(deadline).ToUnixTimeSeconds(),
+                virtualReady, walkIn: kioskDeadline.HasValue);
             // Payment or cancellation may have won while the gateway was creating the link.
             await using var save = new NpgsqlCommand("""
                 UPDATE payment.gateway_orders g SET checkout_url=@url, qr_code=@qr, verified_seller_channel_id=@channel,

@@ -77,6 +77,19 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
         await Assert.ThrowsAsync<PaymentGatewayException>(() => gateway.CreateAsync(123, 400000, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(123, "123")]
+    [InlineData(999999999, "999999999")]
+    [InlineData(1000000000, "FloraBot")]
+    public async Task WalkInLinkSignsThePublicPaymentReference(long orderCode, string expectedDescription)
+    {
+        using var http = new HttpClient(new Gateway(expectedDescription: expectedDescription));
+        var gateway = new PayOsClient(http, new ConfigurationBuilder().AddInMemoryCollection(Settings).Build());
+        var result = await gateway.CreateForVerifiedSellerAsync(orderCode, 400000, CancellationToken.None,
+            null, verifiedVirtualAccounts: false, walkIn: true);
+        Assert.Equal(orderCode, result.OrderCode);
+    }
+
     [Fact]
     public void TransactionArraysHaveCanonicalSortedJsonForGatewaySignatures()
     {
@@ -86,7 +99,7 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
         Assert.Equal(expected, PayOsChecksum.Sign(data, "key"));
     }
 
-    private sealed class Gateway(string? defect = null) : HttpMessageHandler
+    private sealed class Gateway(string? defect = null, string expectedDescription = "FloraBot") : HttpMessageHandler
     {
         public int Posts { get; private set; }
         public int Gets { get; private set; }
@@ -101,8 +114,8 @@ public sealed class PaymentLinkTests(ApiFactory factory) : IClassFixture<ApiFact
                 Posts++;
                 var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 var code = body.GetProperty("orderCode").GetInt64();
-                Assert.Equal("FloraBot", body.GetProperty("description").GetString());
-                var canonical = $"amount=400000&cancelUrl=https://example.invalid/cancel&description=FloraBot&orderCode={code}&returnUrl=https://example.invalid/return";
+                Assert.Equal(expectedDescription, body.GetProperty("description").GetString());
+                var canonical = $"amount=400000&cancelUrl=https://example.invalid/cancel&description={expectedDescription}&orderCode={code}&returnUrl=https://example.invalid/return";
                 var expected = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(Settings["PAYOS_CHECKSUM_KEY"]!), Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
                 Assert.Equal(expected, body.GetProperty("signature").GetString());
                 Assert.Equal(400000, body.GetProperty("amount").GetInt64());
