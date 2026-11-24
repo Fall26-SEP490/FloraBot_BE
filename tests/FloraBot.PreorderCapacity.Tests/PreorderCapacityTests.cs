@@ -322,6 +322,39 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
         return reqId;
     }
 
+    private async Task AddOccupiedWalkInSlotsAsync(CapacityFixture f, int count)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await data.OpenConnectionAsync();
+
+        for (var i = 0; i < count; i++)
+        {
+            var slotId = Guid.CreateVersion7();
+            var bouquetId = Guid.CreateVersion7();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO kiosk_ops.bouquets(id, product_id, seller_id, qr_code, price_snapshot, status, stocked_at, sellable_until)
+                VALUES(@bouquet, @product, @seller, @bouquet::text, 50000, 'STOCKED', public.app_now(), public.app_now() + interval '48 hours');
+
+                INSERT INTO kiosk_ops.slots(id, kiosk_id, slot_code, relay_channel, status, current_seller_id, bouquet_id, zone, row_version, created_at, updated_at)
+                VALUES(@slot, @kiosk, @slotCode, @relay, 'STOCKED', @seller, @bouquet, 'WALK_IN', 1, public.app_now(), public.app_now());
+
+                INSERT INTO kiosk_ops.slot_assignments(slot_id, seller_id, assigned_by, assigned_at, status)
+                VALUES(@slot, @seller, @sellerUser, public.app_now(), 'ACTIVE');
+                """;
+            cmd.Parameters.AddWithValue("bouquet", bouquetId);
+            cmd.Parameters.AddWithValue("product", f.ProductId);
+            cmd.Parameters.AddWithValue("seller", f.SellerId);
+            cmd.Parameters.AddWithValue("slot", slotId);
+            cmd.Parameters.AddWithValue("slotCode", $"W{i + 1:D2}");
+            cmd.Parameters.AddWithValue("relay", i == 0 ? 0 : 3);
+            cmd.Parameters.AddWithValue("kiosk", f.KioskId);
+            cmd.Parameters.AddWithValue("sellerUser", f.SellerUserId);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
     #region Discovery API Tests
 
     [Fact]
@@ -384,6 +417,36 @@ public sealed class PreorderCapacityIntegrationTests : IClassFixture<PreorderCap
         Assert.Equal(0, body.OccupiedPreorderCount);
         Assert.Equal(3, body.AvailablePreorderCapacity);
         Assert.Equal("AVAILABLE", body.Status);
+    }
+
+    [Fact]
+    public async Task WebAccept_OccupiedWalkInSlotsDoNotConsumePreorderCapacity()
+    {
+        var f = await SeedCapacityFixtureAsync(preorderSlotsCount: 2);
+        await AddOccupiedWalkInSlotsAsync(f, count: 2);
+        var pickupAt = DateTimeOffset.UtcNow.AddDays(1);
+        var requestId = await CreateQuotedPreorderAsync(f, pickupAt);
+
+        var availability = await _client.GetFromJsonAsync<KioskPreorderAvailabilityResponse>(
+            $"/api/kiosks/{f.KioskId}/preorder-availability?pickupAt={Uri.EscapeDataString(pickupAt.ToString("O"))}");
+        Assert.NotNull(availability);
+        Assert.True(availability.Available);
+        Assert.Equal(2, availability.TotalPreorderCapacity);
+        Assert.Equal(0, availability.OccupiedPreorderCount);
+        Assert.Equal(2, availability.AvailablePreorderCapacity);
+
+        using var scope = _factory.Services.CreateScope();
+        var data = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await data.OpenConnectionAsync();
+        await using var accept = conn.CreateCommand();
+        accept.CommandText = "SELECT flow.web_accept(@id, @customer, @price, @pickup, @note)";
+        accept.Parameters.AddWithValue("id", requestId);
+        accept.Parameters.AddWithValue("customer", f.CustomerUserId);
+        accept.Parameters.AddWithValue("price", 50000L);
+        accept.Parameters.AddWithValue("pickup", pickupAt.UtcDateTime);
+        accept.Parameters.AddWithValue("note", "Ready for you");
+
+        Assert.IsType<Guid>(await accept.ExecuteScalarAsync());
     }
 
     #endregion
