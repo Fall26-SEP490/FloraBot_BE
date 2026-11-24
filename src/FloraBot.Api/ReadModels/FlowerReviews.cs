@@ -10,6 +10,10 @@ public sealed record FlowerReview(Guid Id, short Stars, string? Comment, string?
     string ReviewerName);
 public sealed record FlowerReviewPage(decimal? ProductAverage, long ProductCount, decimal? ShopAverage,
     long ShopCount, List<FlowerReview> Items, bool HasMore);
+public sealed record ShopFlowerReview(Guid Id, Guid ProductId, string ProductName, short Stars,
+    string? Comment, string? PhotoUrl, DateTime CreatedAt, string ReviewerName);
+public sealed record ShopFlowerReviewPage(Guid SellerId, string ShopName, decimal? ShopAverage,
+    long ShopCount, List<ShopFlowerReview> Items, int Page, bool HasMore);
 public sealed record FlowerReviewEligibility(bool Eligible);
 public sealed record FlowerReviewInput(int Stars, string? Comment, string? PhotoBase64);
 public sealed record FlowerReviewCreated(Guid Id);
@@ -47,6 +51,9 @@ public static class FlowerReviews
             .Produces<FlowerReviewCreated>(201).ProducesProblem(400).ProducesProblem(409);
         products.MapGet("/reviews/{reviewId:guid}/photo", PhotoAsync).AllowAnonymous()
             .Produces(200, contentType: "image/jpeg", additionalContentTypes: ["image/png", "image/webp"]);
+        app.MapGet("/api/shop/sellers/{sellerId:guid}/reviews", ReadShopAsync)
+            .WithTags("Flower reviews").AllowAnonymous()
+            .Produces<ShopFlowerReviewPage>().Produces(400).Produces(404);
     }
 
     private static async Task<IResult> ReadAsync(Guid productId, int? page, NpgsqlDataSource source,
@@ -102,7 +109,7 @@ public static class FlowerReviews
             {
                 var id = reader.GetGuid(0);
                 items.Add(new(id, reader.GetInt16(1), reader.IsDBNull(2) ? null : reader.GetString(2),
-                    reader.GetBoolean(3) ? $"/api/shop/products/{productId}/reviews/{id}/photo" : null,
+                    reader.GetBoolean(3) ? PhotoPath(productId, id) : null,
                     reader.GetDateTime(4), reader.GetString(5)));
             }
         }
@@ -110,6 +117,70 @@ public static class FlowerReviews
         return Results.Ok(new FlowerReviewPage(productAverage, productCount, shopAverage, shopCount,
             items.Take(PageSize).ToList(), items.Count > PageSize));
     }
+
+    private static async Task<IResult> ReadShopAsync(Guid sellerId, int? page, NpgsqlDataSource source,
+        HttpContext http, CancellationToken ct)
+    {
+        var number = page ?? 1;
+        if (number is < 1 or > 10000) return Results.BadRequest();
+
+        http.Response.Headers.CacheControl = "no-store";
+        await using var connection = await source.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
+        await using var totals = new NpgsqlCommand("""
+            SELECT s.shop_name, avg(r.stars), count(r.id)
+            FROM identity.sellers s
+            LEFT JOIN catalog.flower_products p ON p.seller_id = s.id
+            LEFT JOIN catalog.flower_product_reviews r ON r.product_id = p.id
+            WHERE s.id = @seller AND s.status = 'ACTIVE'
+            GROUP BY s.id, s.shop_name
+            """, connection, transaction);
+        totals.Parameters.AddWithValue("seller", sellerId);
+
+        string shopName;
+        decimal? shopAverage;
+        long shopCount;
+        await using (var reader = await totals.ExecuteReaderAsync(ct))
+        {
+            if (!await reader.ReadAsync(ct)) return Results.NotFound();
+            shopName = reader.GetString(0);
+            shopAverage = reader.IsDBNull(1) ? null : reader.GetDecimal(1);
+            shopCount = reader.GetInt64(2);
+        }
+
+        await using var list = new NpgsqlCommand("""
+            SELECT r.id, p.id, p.name, r.stars, r.comment, r.photo_type IS NOT NULL, r.created_at,
+                   COALESCE(NULLIF(btrim(u.full_name), ''), 'Khách hàng')
+            FROM catalog.flower_products p
+            JOIN catalog.flower_product_reviews r ON r.product_id = p.id
+            LEFT JOIN identity.users u ON u.id = r.customer_id
+            WHERE p.seller_id = @seller
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT @limit OFFSET @offset
+            """, connection, transaction);
+        list.Parameters.AddWithValue("seller", sellerId);
+        list.Parameters.AddWithValue("limit", PageSize + 1);
+        list.Parameters.AddWithValue("offset", (number - 1) * PageSize);
+        var items = new List<ShopFlowerReview>();
+        await using (var reader = await list.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                var id = reader.GetGuid(0);
+                var productId = reader.GetGuid(1);
+                items.Add(new(id, productId, reader.GetString(2), reader.GetInt16(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.GetBoolean(5) ? PhotoPath(productId, id) : null,
+                    reader.GetDateTime(6), reader.GetString(7)));
+            }
+        }
+        await transaction.CommitAsync(ct);
+        return Results.Ok(new ShopFlowerReviewPage(sellerId, shopName, shopAverage, shopCount,
+            items.Take(PageSize).ToList(), number, items.Count > PageSize));
+    }
+
+    private static string PhotoPath(Guid productId, Guid reviewId) =>
+        $"/api/shop/products/{productId}/reviews/{reviewId}/photo";
 
     private static async Task<IResult> EligibilityAsync(Guid productId, NpgsqlDataSource source,
         HttpContext http, CancellationToken ct)

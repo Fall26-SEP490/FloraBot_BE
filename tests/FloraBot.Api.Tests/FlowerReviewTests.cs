@@ -14,11 +14,12 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
     public async Task OnlyCompletedPreordersCanReviewAndShopAverageUsesIndividualReviews()
     {
         var data = factory.Services.GetRequiredService<NpgsqlDataSource>();
-        var ids = new[] { "seller", "kiosk", "slot", "first", "second", "buyer", "preorder", "other", "stranger", "firstReviewer", "bouquet", "walkOrder", "preOrder", "firstReviewOrder", "otherOrder", "unpaid" }
+        var ids = new[] { "seller", "emptySeller", "kiosk", "slot", "first", "second", "buyer", "preorder", "other", "stranger", "firstReviewer", "bouquet", "walkOrder", "preOrder", "firstReviewOrder", "otherOrder", "unpaid" }
             .ToDictionary(key => key, _ => Guid.NewGuid());
         await using var seed = data.CreateCommand("""
             INSERT INTO identity.sellers(id,shop_name,phone,status,package_id,package_expires_at)
-            VALUES(@seller,'Shop review','0901234567','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
+            VALUES(@seller,'Shop review','0901234567','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30),
+                  (@emptySeller,'Shop with no reviews','0901234568','ACTIVE','20000000-0000-0000-0000-00000000000a',CURRENT_DATE+30);
             INSERT INTO identity.users(id,email,password_hash,full_name,role)
             SELECT x,x::text||'@example.invalid','!test',
                    CASE WHEN x = @firstReviewer THEN 'Nguyễn Minh Anh'
@@ -102,6 +103,48 @@ public sealed class FlowerReviewTests(ApiFactory factory) : IClassFixture<ApiFac
         Assert.Equal(Convert.FromBase64String(image), await photo.Content.ReadAsByteArrayAsync());
         using var wrongProduct = await anonymous.GetAsync($"{secondPath}/reviews/{photoReview.Id}/photo");
         Assert.Equal(HttpStatusCode.NotFound, wrongProduct.StatusCode);
+
+        await using var hideSecond = data.CreateCommand("UPDATE catalog.flower_products SET status = 'INACTIVE' WHERE id = @id");
+        hideSecond.Parameters.AddWithValue("id", ids["second"]);
+        await hideSecond.ExecuteNonQueryAsync();
+
+        var shopPath = $"/api/shop/sellers/{ids["seller"]}/reviews";
+        var shop = await anonymous.GetFromJsonAsync<ShopFlowerReviewPage>(shopPath);
+        Assert.NotNull(shop);
+        Assert.Equal(ids["seller"], shop.SellerId);
+        Assert.Equal("Shop review", shop.ShopName);
+        Assert.Equal(page.ShopAverage, shop.ShopAverage);
+        Assert.Equal(page.ShopCount, shop.ShopCount);
+        Assert.Equal(1, shop.Page);
+        Assert.False(shop.HasMore);
+        Assert.Collection(shop.Items.OrderBy(row => row.ProductName).ThenBy(row => row.Stars),
+            row =>
+            {
+                Assert.Equal(ids["first"], row.ProductId);
+                Assert.Equal(photoReview.PhotoUrl, row.PhotoUrl);
+                Assert.Equal("Nguyễn Minh Anh", row.ReviewerName);
+            },
+            row => Assert.Equal(ids["first"], row.ProductId),
+            row =>
+            {
+                Assert.Equal(ids["second"], row.ProductId);
+                Assert.Equal("Second flower", row.ProductName);
+            });
+
+        var next = await anonymous.GetFromJsonAsync<ShopFlowerReviewPage>(shopPath + "?page=2");
+        Assert.NotNull(next);
+        Assert.Empty(next.Items);
+        Assert.False(next.HasMore);
+        Assert.Equal(shop.ShopCount, next.ShopCount);
+        var emptyShop = await anonymous.GetFromJsonAsync<ShopFlowerReviewPage>($"/api/shop/sellers/{ids["emptySeller"]}/reviews");
+        Assert.NotNull(emptyShop);
+        Assert.Equal(0, emptyShop.ShopCount);
+        Assert.Null(emptyShop.ShopAverage);
+        Assert.Empty(emptyShop.Items);
+        using var invalidPage = await anonymous.GetAsync(shopPath + "?page=0");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidPage.StatusCode);
+        using var unknownShop = await anonymous.GetAsync($"/api/shop/sellers/{Guid.NewGuid()}/reviews");
+        Assert.Equal(HttpStatusCode.NotFound, unknownShop.StatusCode);
     }
 
     private HttpClient Member(Guid id)
