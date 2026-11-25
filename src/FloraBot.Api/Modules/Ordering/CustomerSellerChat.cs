@@ -54,6 +54,15 @@ public static partial class CustomerSellerChatEndpoints
             .Produces<CustomerSellerChatItem>()
             .ProducesProblem(400).ProducesProblem(401).ProducesProblem(404).ProducesProblem(429);
 
+        app.MapPost("/api/sellers/{sellerId:guid}/preorders/{requestId:guid}/chat/open", OpenFromPreorderAsync)
+            .WithTags("Customer Seller Chat")
+            .WithSummary("Seller mở chat với khách từ chi tiết preorder")
+            .WithDescription("BE tự lấy Customer và sản phẩm từ preorder thuộc Seller đang đăng nhập, tạo hoặc tiếp tục hội thoại shop-khách hiện có, cập nhật ngữ cảnh mẫu hoa và trả chatId để mở màn hình chat.")
+            .RequireAuthorization("Seller", "SameSeller")
+            .RequireRateLimiting("chat")
+            .Produces<CustomerSellerChatItem>()
+            .ProducesProblem(401).ProducesProblem(404).ProducesProblem(429);
+
         app.MapGet("/api/member/chats", (int? page, HttpContext http, NpgsqlDataSource source, CancellationToken ct) =>
             {
                 http.Response.Headers.CacheControl = "no-store";
@@ -188,6 +197,79 @@ public static partial class CustomerSellerChatEndpoints
             await context.ExecuteNonQueryAsync(ct);
         }
         var summary = await ReadOpenedChatAsync(connection, transaction, chatId, actor.UserId, shopName, ct);
+        await transaction.CommitAsync(ct);
+        return Results.Ok(summary);
+    }
+
+    private static async Task<IResult> OpenFromPreorderAsync(Guid sellerId, Guid requestId, HttpContext http,
+        NpgsqlDataSource source, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        var actor = Actor(http);
+        if (actor is null || actor.Role != "SELLER" || actor.SellerId != sellerId) return Results.NotFound();
+
+        await using var connection = await source.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        Guid customerId;
+        Guid productId;
+        string productName;
+        string customerName;
+        await using (var request = new NpgsqlCommand("""
+            SELECT r.customer_id,r.product_id,p.name,customer.full_name
+            FROM ordering.web_requests r
+            JOIN identity.sellers s ON s.id=r.seller_id
+            JOIN identity.users customer ON customer.id=r.customer_id
+            JOIN catalog.flower_products p ON p.id=r.product_id AND p.seller_id=r.seller_id
+            WHERE r.id=@request AND r.seller_id=@seller AND r.kind='CUSTOM'
+            """, connection, transaction))
+        {
+            request.Parameters.AddWithValue("request", requestId);
+            request.Parameters.AddWithValue("seller", sellerId);
+            await using var reader = await request.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return Results.NotFound();
+            customerId = reader.GetGuid(0);
+            productId = reader.GetGuid(1);
+            productName = reader.GetString(2);
+            customerName = reader.GetString(3);
+        }
+
+        await using (var create = new NpgsqlCommand("""
+            INSERT INTO ordering.customer_seller_chats(customer_id,seller_id)
+            VALUES(@customer,@seller)
+            ON CONFLICT (customer_id,seller_id) DO NOTHING
+            """, connection, transaction))
+        {
+            create.Parameters.AddWithValue("customer", customerId);
+            create.Parameters.AddWithValue("seller", sellerId);
+            await create.ExecuteNonQueryAsync(ct);
+        }
+
+        Guid chatId;
+        await using (var find = new NpgsqlCommand("""
+            SELECT id FROM ordering.customer_seller_chats
+            WHERE customer_id=@customer AND seller_id=@seller
+            """, connection, transaction))
+        {
+            find.Parameters.AddWithValue("customer", customerId);
+            find.Parameters.AddWithValue("seller", sellerId);
+            chatId = (Guid)(await find.ExecuteScalarAsync(ct))!;
+        }
+
+        await using (var context = new NpgsqlCommand("""
+            INSERT INTO ordering.customer_seller_chat_products(chat_id,product_id,product_name_snapshot)
+            VALUES(@chat,@product,@name)
+            ON CONFLICT (chat_id,product_id) DO UPDATE
+              SET product_name_snapshot=EXCLUDED.product_name_snapshot,first_opened_at=public.app_now()
+            """, connection, transaction))
+        {
+            context.Parameters.AddWithValue("chat", chatId);
+            context.Parameters.AddWithValue("product", productId);
+            context.Parameters.AddWithValue("name", productName);
+            await context.ExecuteNonQueryAsync(ct);
+        }
+
+        var summary = await ReadOpenedSellerChatAsync(connection, transaction, chatId, sellerId, customerName, ct);
         await transaction.CommitAsync(ct);
         return Results.Ok(summary);
     }
@@ -557,6 +639,35 @@ public static partial class CustomerSellerChatEndpoints
         await using var reader = await command.ExecuteReaderAsync(ct);
         await reader.ReadAsync(ct);
         return new(chatId, shopName, reader.GetFieldValue<DateTimeOffset>(0),
+            reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetBoolean(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5));
+    }
+
+    private static async Task<CustomerSellerChatItem> ReadOpenedSellerChatAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, Guid chatId, Guid sellerId, string customerName, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT c.created_at,c.last_message_at,last.content,COALESCE(last.has_image,false),context.product_name,
+              (SELECT count(*)::bigint FROM ordering.customer_seller_chat_messages unread
+               WHERE unread.chat_id=c.id AND unread.read_at IS NULL AND unread.sender_user_id=c.customer_id)
+            FROM ordering.customer_seller_chats c
+            LEFT JOIN LATERAL (
+              SELECT m.content,EXISTS(SELECT 1 FROM ordering.customer_seller_chat_images i WHERE i.message_id=m.id) AS has_image
+              FROM ordering.customer_seller_chat_messages m WHERE m.chat_id=c.id
+              ORDER BY m.created_at DESC,m.id DESC LIMIT 1
+            ) last ON true
+            LEFT JOIN LATERAL (
+              SELECT p.product_name_snapshot AS product_name FROM ordering.customer_seller_chat_products p
+              WHERE p.chat_id=c.id ORDER BY p.first_opened_at DESC,p.product_id DESC LIMIT 1
+            ) context ON true
+            WHERE c.id=@chat AND c.seller_id=@seller
+            """, connection, transaction);
+        command.Parameters.AddWithValue("chat", chatId);
+        command.Parameters.AddWithValue("seller", sellerId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        return new(chatId, customerName, reader.GetFieldValue<DateTimeOffset>(0),
             reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1),
             reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetBoolean(3),
             reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5));
