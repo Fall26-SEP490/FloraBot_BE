@@ -11,19 +11,23 @@ The existing FAULT/door-repair path remains authoritative. A LOCKED slot still
 requires maintenance-session recovery; reporting a repair does not unlock it.
 The task readiness endpoints expose the blocking reason, session and command IDs
 without unlock credentials. Conflicts return HTTP 409 with a machine-readable
-`code` and a Vietnamese explanation.
+`code` and a Vietnamese explanation. Migration
+`20261125_technical_repair_review_snapshot.sql` supersedes the review-time
+telemetry behavior described below.
 
 After recovery, an assigned technician can submit a report for an OPEN incident
-without fabricating another door cycle. This requires a matching recovered
+without fabricating another door cycle. Submission requires a matching recovered
 session since task creation, a task-bound evidence attachment uploaded by that
 technician after recovery, verified sensor capabilities, a current heartbeat,
 fresh presence matching the slot contents, and no competing session or command.
 Both the observation time and receipt time must follow recovery (or door closure
 for the door-repair path); a delayed pre-recovery packet cannot prove recovery.
-The assigned kiosk manager must review and accept the submitted report. The
-acceptance checks readiness again, closes the incident and completes the task.
-Returned reports can be resubmitted with a new operation ID; old retries remain
-idempotent. Refund processing remains separate.
+The submission-time sensor and slot evidence is captured. Manager acceptance
+may happen later without a new 45-second telemetry sample, provided the slot
+state and other safety conditions remain valid. The assigned kiosk manager must
+review and accept the submitted report, which closes the incident and completes
+the task. Returned reports can be resubmitted with a new operation ID; old
+retries remain idempotent. Refund processing remains separate.
 
 ## Revenue
 
