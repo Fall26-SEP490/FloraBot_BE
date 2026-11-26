@@ -850,7 +850,7 @@ public sealed class SellerRefundsIntegrationTests : IClassFixture<SellerRefundsT
     }
 
     [Fact]
-    public async Task AdminConfirm_MakerChecker_SubmitterOrApproverCannotConfirm()
+    public async Task AdminConfirm_SellerTransfer_ApproverCanConfirmButSubmitterCannot()
     {
         await using var conn = await OpenDbConnectionAsync();
 
@@ -924,16 +924,6 @@ public sealed class SellerRefundsIntegrationTests : IClassFixture<SellerRefundsT
             await cmd.ExecuteNonQueryAsync();
         }
 
-        // Attempt 1: Approver (Admin 1) tries to confirm -> rejected
-        await using (var failApproverCmd = conn.CreateCommand())
-        {
-            failApproverCmd.CommandText = "SELECT flow.confirm_refund(@refundId, '10000000-0000-0000-0000-000000000001'::uuid, 'proof');";
-            failApproverCmd.Parameters.AddWithValue("refundId", refundId);
-            var ex = await Assert.ThrowsAsync<PostgresException>(() => failApproverCmd.ExecuteNonQueryAsync());
-            Assert.Contains("khác người duyệt", ex.MessageText);
-        }
-
-        // Attempt 2: Submitter (ownerAdminId) tries to confirm -> rejected
         await using (var failSubmitterCmd = conn.CreateCommand())
         {
             failSubmitterCmd.CommandText = "SELECT flow.confirm_refund(@refundId, @submitterId, 'proof');";
@@ -942,5 +932,13 @@ public sealed class SellerRefundsIntegrationTests : IClassFixture<SellerRefundsT
             var ex = await Assert.ThrowsAsync<PostgresException>(() => failSubmitterCmd.ExecuteNonQueryAsync());
             Assert.Contains("khác người bán", ex.MessageText);
         }
+
+        await using var confirm = conn.CreateCommand();
+        confirm.CommandText = "SELECT flow.confirm_refund(@refundId, '10000000-0000-0000-0000-000000000001'::uuid, NULL);";
+        confirm.Parameters.AddWithValue("refundId", refundId);
+        await confirm.ExecuteNonQueryAsync();
+
+        confirm.CommandText = "SELECT status FROM payment.seller_refund_transfers WHERE refund_id=@refundId;";
+        Assert.Equal("CONFIRMED", await confirm.ExecuteScalarAsync());
     }
 }
