@@ -89,7 +89,12 @@ public sealed class FlowExecutor(NpgsqlDataSource dataSource, IDataProtectionPro
             }
         }
         VerifiedMedia? verifiedEvidence = null;
-        if (name is "return_to_seller" or "report_device_fault" or "open_dispute" or "confirm_refund" or "pay_withdrawal")
+        // The database accepts an empty proof only when confirming an existing seller transfer.
+        var usesSellerProof = name == "confirm_refund" &&
+            args.TryGetValue("p_proof_url", out var proof) && proof.ValueKind == JsonValueKind.String &&
+            proof.GetString() == "";
+        if (!usesSellerProof &&
+            name is ("return_to_seller" or "report_device_fault" or "open_dispute" or "confirm_refund" or "pay_withdrawal"))
         {
             var financial = name is "confirm_refund" or "pay_withdrawal";
             var field = financial ? "p_proof_url" : name == "return_to_seller" ? "p_photo_url" : "p_photo";
