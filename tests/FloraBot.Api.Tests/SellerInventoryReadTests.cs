@@ -89,6 +89,55 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
         Assert.Equal("AWAITING_PAYMENT", row.OrderStatus);
     }
 
+    [Theory]
+    [InlineData("ISSUED")]
+    [InlineData("SENT")]
+    [InlineData("ACKED")]
+    [InlineData("EXPIRED")]
+    [InlineData("OPENED")]
+    public async Task WalkInRecoveryPreservesExistingCommand(string state)
+    {
+        var f = await Setup(); var order = Guid.NewGuid();
+        await AddOrder(f, order, "AWAITING_PAYMENT", "PENDING");
+        await Execute(f, """
+            UPDATE kiosk_ops.bouquets SET status='HELD' WHERE id=@bouquet;
+            UPDATE kiosk_ops.slots SET status='HELD',hold_order_id=@order,
+              hold_until=public.app_now()+interval '10 minutes' WHERE id=@slot;
+            SELECT flow.checkout_paid(@order,@order::text,true,350000);
+            UPDATE kiosk_ops.kiosks SET status='ONLINE' WHERE id=@kiosk;
+            SELECT flow.request_pickup(@order,left(replace(@order::text,'-',''),8),@kiosk);
+            """, order);
+        if (state is "SENT" or "ACKED" or "OPENED")
+            await Execute(f, "SELECT flow.device_event((SELECT cmd_id FROM kiosk_ops.unlock_tokens WHERE order_id=@order),'SENT')", order);
+        if (state is "ACKED" or "OPENED")
+            await Execute(f, "SELECT flow.device_event((SELECT cmd_id FROM kiosk_ops.unlock_tokens WHERE order_id=@order),'ACK')", order);
+        if (state == "OPENED")
+            await Execute(f, "SELECT flow.device_event((SELECT cmd_id FROM kiosk_ops.unlock_tokens WHERE order_id=@order),'OPENED')", order);
+        if (state == "EXPIRED")
+            await Execute(f, "UPDATE kiosk_ops.unlock_tokens SET status='EXPIRED' WHERE order_id=@order", order);
+        if (state is "EXPIRED" or "OPENED")
+        {
+            var error = await Assert.ThrowsAsync<PostgresException>(() => Execute(f,
+                "SELECT flow.request_pickup(@order,left(replace(@order::text,'-',''),8),@kiosk)", order));
+            Assert.Equal("22023", error.SqlState);
+        }
+        else
+        {
+            // Concurrent recovery of a lost HTTP response must reuse the same dispatch.
+            await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Execute(f, """
+                SELECT flow.request_pickup(@order,left(replace(@order::text,'-',''),8),@kiosk);
+                """, order)));
+        }
+        using var scope = factory.Services.CreateScope();
+        await using var cmd = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>().CreateCommand(
+            "SELECT status FROM kiosk_ops.unlock_tokens WHERE order_id=@order");
+        cmd.Parameters.AddWithValue("order", order);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(state, reader.GetString(0));
+        Assert.False(await reader.ReadAsync());
+    }
+
     [Fact]
     public async Task VerifiedLegacyPaymentChangesBouquetAndOrderReadWhileProductStaysActiveAndPickupClearsSlot()
     {

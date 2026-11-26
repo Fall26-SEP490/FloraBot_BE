@@ -212,12 +212,10 @@ public sealed class KioskPaymentTests(ApiFactory factory) : IClassFixture<ApiFac
             var accepted = await client.PostAsJsonAsync(pickupPath, pickup); accepted.EnsureSuccessStatusCode();
             var firstCommand = (await accepted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetGuid();
             Assert.Equal(1L, await commands.ExecuteScalarAsync());
-            // Emulate the terminal expiry state for only this fixture, not a global job sweep.
-            await using var expireCommand = source.CreateCommand("UPDATE kiosk_ops.unlock_tokens SET status='EXPIRED' WHERE cmd_id=@cmd");
-            expireCommand.Parameters.AddWithValue("cmd", firstCommand); await expireCommand.ExecuteNonQueryAsync();
+            // Recover a missing response without replacing a command already sent to the device.
             var replacement = await client.PostAsJsonAsync(pickupPath, pickup); replacement.EnsureSuccessStatusCode();
             var replacementCommand = (await replacement.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("result").GetGuid();
-            Assert.NotEqual(firstCommand, replacementCommand); Assert.Equal(2L, await commands.ExecuteScalarAsync());
+            Assert.Equal(firstCommand, replacementCommand); Assert.Equal(1L, await commands.ExecuteScalarAsync());
             paid = await client.GetFromJsonAsync<CheckoutResponse>(path);
         }
         Assert.Equal("SUCCEEDED", paid!.PaymentStatus); Assert.Equal("DISPENSING", paid.Orders[0].Status);
