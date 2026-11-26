@@ -13,7 +13,7 @@ public sealed record AdminRefundResponse(Guid Id, Guid? OrderId, string? OrderCo
     string Status, string? Reason, DateTime CreatedAt, Guid? ApprovedBy, bool RequiresApproval,
     Guid? PaidBy, DateTime? PaidAt);
 public sealed record AdminRefundPage(List<AdminRefundResponse> Items, int Page, bool HasMore);
-public sealed record AdminRefundDetail(AdminRefundResponse Refund, string BankStatus, bool CanApprove, bool CanAccessBank);
+public sealed record AdminRefundDetail(AdminRefundResponse Refund, string BankStatus, bool CanApprove, bool CanAccessBank, bool CanReviewSellerTransfer);
 
 public static class AdminRefundsRead
 {
@@ -29,7 +29,7 @@ public static class AdminRefundsRead
                 return Results.BadRequest();
             var query = db.Payments.AsNoTracking().Where(x => x.Kind == "REFUND" && x.Status == status);
             if (orderId.HasValue) query = query.Where(x => x.OrderId == orderId);
-            query = status == "PENDING" ? query.OrderBy(x => x.CreatedAt).ThenBy(x => x.Id)
+            query = status == "PENDING" ? query.OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id)
                 : query.OrderByDescending(x => x.UpdatedAt).ThenByDescending(x => x.Id);
             var rows = await query.Skip((number - 1) * 25).Take(26).ToListAsync(ct);
             var orders = await RefundDestinations.OrdersAsync(db, rows.Where(x => x.OrderId.HasValue).Select(x => x.OrderId!.Value).Distinct().ToArray(), ct);
@@ -50,9 +50,19 @@ public static class AdminRefundsRead
             var pending = row.Status == "PENDING";
             var destination = pending ? await RefundDestinations.ReadAsync(db, row.OrderId, protection, false, ct) : null;
             var canAccess = pending && !mapped.RequiresApproval && row.ApprovedBy.ToString() != http.User.FindFirstValue("sub") && destination is not null;
+            var canReviewSellerTransfer = pending && !mapped.RequiresApproval &&
+                Guid.TryParse(http.User.FindFirstValue("sub"), out var reviewerId) &&
+                await db.Database.SqlQuery<int>($"""
+                    SELECT 1 AS "Value"
+                    FROM payment.seller_refund_transfers transfer
+                    JOIN payment.payments refund ON refund.id=transfer.refund_id
+                    WHERE refund.id={refundId} AND transfer.status='PENDING_REVIEW'
+                      AND transfer.submitted_by<>{reviewerId}
+                      AND (refund.funding_provenance='SELLER_DIRECT' OR refund.is_direct_receipt=true)
+                    """).AnyAsync(ct);
             await transaction.CommitAsync(ct);
             return Results.Ok(new AdminRefundDetail(mapped, pending ? destination is null ? "NEEDS_UPDATE" : "READY" : "NOT_APPLICABLE",
-                pending && mapped.RequiresApproval, canAccess));
+                pending && mapped.RequiresApproval, canAccess, canReviewSellerTransfer));
         }).RequireAuthorization("Admin").Produces<AdminRefundDetail>();
 
         app.MapPost("/api/admin/refunds/{refundId:guid}/bank-details", async (Guid refundId, FloraDbContext db,
