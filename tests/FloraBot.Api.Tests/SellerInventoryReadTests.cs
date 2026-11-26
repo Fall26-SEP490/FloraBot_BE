@@ -69,6 +69,26 @@ public sealed class SellerInventoryReadTests(ApiFactory factory) : IClassFixture
     }
 
     [Fact]
+    public async Task FaultTimestampComesFromLatestOpenReportAndClearsForNonFaultSlot()
+    {
+        var f = await Setup();
+        await Execute(f, """
+            UPDATE kiosk_ops.slots SET status='FAULT' WHERE id=@slot;
+            INSERT INTO ordering.disputes(kind,kiosk_id,slot_id,reason,status,created_at)
+            VALUES ('DEVICE_FAULT',@kiosk,@slot,'Older open report','OPEN','2026-11-25T01:00:00Z'),
+                   ('DEVICE_FAULT',@kiosk,@slot,'Latest open report','OPEN','2026-11-26T03:00:00Z'),
+                   ('DEVICE_FAULT',@kiosk,@slot,'Resolved report','OPEN','2026-11-26T04:00:00Z');
+            UPDATE ordering.disputes SET status='RESOLVED_FIXED', decision='Fixed',
+                decided_by='10000000-0000-0000-0000-000000000001', resolved_at=public.app_now()
+            WHERE kiosk_id=@kiosk AND reason='Resolved report';
+            """);
+        using var client = Client(f);
+        Assert.Equal(new DateTime(2026, 11, 26, 3, 0, 0, DateTimeKind.Utc), (await Read(client, f)).FaultReportedAt);
+        await Execute(f, "UPDATE kiosk_ops.slots SET status='STOCKED' WHERE id=@slot;");
+        Assert.Null((await Read(client, f)).FaultReportedAt);
+    }
+
+    [Fact]
     public async Task UnboundNewSaleCannotBePaidThroughLegacySqlPath()
     {
         var f = await Setup();

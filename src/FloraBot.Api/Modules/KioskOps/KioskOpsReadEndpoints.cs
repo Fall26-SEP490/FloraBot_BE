@@ -64,6 +64,13 @@ public static class KioskOpsReadEndpoints
                 }
             }
             var bouquetIds = slots.Where(x => x.BouquetId.HasValue).Select(x => x.BouquetId!.Value).ToArray();
+            var faultSlotIds = slots.Where(x => x.Status == "FAULT").Select(x => x.Id).ToArray();
+            var faultReports = await db.Disputes.AsNoTracking()
+                .Where(x => x.KioskId == kioskId && x.SlotId.HasValue && faultSlotIds.Contains(x.SlotId.Value)
+                    && x.Kind == "DEVICE_FAULT" && x.Status == "OPEN")
+                .GroupBy(x => x.SlotId!.Value)
+                .Select(group => new { SlotId = group.Key, ReportedAt = group.Max(x => x.CreatedAt) })
+                .ToDictionaryAsync(x => x.SlotId, x => (DateTime?)x.ReportedAt, ct);
             var bouquets = await db.Bouquets.AsNoTracking().Where(x => bouquetIds.Contains(x.Id))
                 .Select(x => new { x.Id, x.ProductId, x.QrCode, x.PriceSnapshot, x.SellableUntil, x.Status })
                 .ToDictionaryAsync(x => x.Id, ct);
@@ -112,7 +119,7 @@ public static class KioskOpsReadEndpoints
                     bouquet?.PriceSnapshot, bouquet?.SellableUntil, bouquet?.Status,
                     order?.OrderId, order?.OrderCode, order?.Status,
                     order is null ? null : charges.GetValueOrDefault(order.CheckoutId),
-                    sensor.Enabled, sensor.Ready, sensor.ManualRetry);
+                    sensor.Enabled, sensor.Ready, sensor.ManualRetry, faultReports.GetValueOrDefault(slot.Id));
             }).ToList();
             await snapshot.CommitAsync(ct);
             return Results.Ok(response);

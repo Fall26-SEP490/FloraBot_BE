@@ -38,7 +38,8 @@ public sealed record AdminSlotResponse(Guid Id, Guid KioskId, string SlotCode, s
 public sealed record SellerSlotResponse(Guid Id, Guid KioskId, string SlotCode, string Status, string? Zone, Guid? BouquetId, string KioskCode, string KioskName, string KioskAddress, Guid? ProductId, string? QrCode, long? PriceSnapshot, DateTime? SellableUntil,
     string? BouquetStatus = null, Guid? OrderId = null, string? OrderCode = null,
     string? OrderStatus = null, string? PaymentStatus = null,
-    bool SensorEnabled = false, bool SensorReady = false, bool ManualRetryEnabled = false);
+    bool SensorEnabled = false, bool SensorReady = false, bool ManualRetryEnabled = false,
+    DateTime? FaultReportedAt = null);
 
 public static class ReadEndpoints
 {
