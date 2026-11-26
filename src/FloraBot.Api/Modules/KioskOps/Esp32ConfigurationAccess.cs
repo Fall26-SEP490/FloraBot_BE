@@ -4,7 +4,7 @@ using Npgsql;
 
 namespace FloraBot.Api.Modules.KioskOps;
 
-public sealed record Esp32Kiosk(Guid Id, string Code, string Status, string HardwareId, string MqttClientId);
+public sealed record Esp32Kiosk(Guid Id, string Code, string Status, string HardwareId, string MqttClientId, DateTimeOffset? LastHeartbeatAt = null);
 public sealed record Esp32KioskAccess(Esp32Kiosk? Kiosk, Guid? AuditKioskId, bool ActorActive = true);
 
 public interface IEsp32ConfigurationSession : IAsyncDisposable
@@ -63,14 +63,15 @@ public sealed class Esp32ConfigurationSessions(NpgsqlDataSource data) : IEsp32Co
 
             Esp32Kiosk? kiosk;
             await using (var command = new NpgsqlCommand("""
-                SELECT id,code,status,hardware_id,mqtt_client_id FROM kiosk_ops.kiosks
+                SELECT id,code,status,hardware_id,mqtt_client_id,last_heartbeat_at FROM kiosk_ops.kiosks
                 WHERE id=@id FOR SHARE
                 """, connection, transaction))
             {
                 command.Parameters.AddWithValue("id", kioskId);
                 await using var reader = await command.ExecuteReaderAsync(ct);
                 kiosk = await reader.ReadAsync(ct)
-                    ? new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4))
+                    ? new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+                        reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset>(5))
                     : null;
             }
             if (kiosk is null) return new(null, kioskId);

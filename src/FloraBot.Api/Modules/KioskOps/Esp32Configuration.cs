@@ -14,7 +14,7 @@ public sealed record Esp32ConfigMetadata(Guid KioskId, string KioskCode, string 
     string HardwareId, string MqttClientId, string FirmwareMqttClientId, bool MqttClientIdsMatch,
     string? MqttHost, int? MqttTlsPort, string? CaCertificatePem,
     bool CanDownload, bool RequiresReauthentication, string? DownloadUnavailableCode,
-    Esp32ProvisioningStatus? Provisioning = null);
+    Esp32ProvisioningStatus? Provisioning = null, DateTimeOffset? LastHeartbeatAt = null);
 
 public sealed class Esp32ConfigurationService(IEsp32ConfigurationSessions sessions, IEsp32ConfigurationSource source,
     IServiceProvider services)
@@ -68,7 +68,7 @@ public sealed class Esp32ConfigurationService(IEsp32ConfigurationSessions sessio
             var metadata = new Esp32ConfigMetadata(kiosk.Id, kiosk.Code, kiosk.Status, kiosk.HardwareId,
                 kiosk.MqttClientId, firmwareClientId, kiosk.MqttClientId == firmwareClientId,
                 broker?.Host, broker?.TlsPort, broker?.CaCertificatePem,
-                downloadableRole && unavailable is null, downloadableRole, unavailable, provisioning);
+                downloadableRole && unavailable is null, downloadableRole, unavailable, provisioning, kiosk.LastHeartbeatAt);
             await session.AuditAndCommitAsync(actor, kiosk.Id, installation, false, "SUCCESS", ct);
             return Results.Ok(metadata);
         }

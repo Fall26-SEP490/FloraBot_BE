@@ -18,6 +18,7 @@ public sealed class Esp32ConfigurationTests
 {
     private static readonly Guid KioskId = Guid.Parse("40000000-0000-0000-0000-000000000099");
     private static readonly Guid InstallationId = Guid.Parse("70000000-0000-0000-0000-000000000099");
+    private static readonly DateTimeOffset TestHeartbeat = new(2026, 11, 27, 1, 2, 3, TimeSpan.Zero);
     private const string TestPassword = "test-only-mqtt-secret\"\\\n?F";
     private const string TestKey = "abababababababababababababababababababababababababababababababab";
 
@@ -143,6 +144,8 @@ public sealed class Esp32ConfigurationTests
         var url = $"/api/staff/kiosk-installations/{InstallationId}/esp32-config";
         using var read = await client.SendAsync(Request("GET", url, "TECHNICIAN"));
         Assert.Equal(200, (int)read.StatusCode);
+        using var metadata = JsonDocument.Parse(await read.Content.ReadAsStringAsync());
+        Assert.Equal(TestHeartbeat, metadata.RootElement.GetProperty("lastHeartbeatAt").GetDateTimeOffset());
         sessions.InScope = false;
         using var download = await client.SendAsync(Request("POST", url + "/download", "TECHNICIAN", "password"));
         Assert.Equal(404, (int)download.StatusCode);
@@ -257,15 +260,15 @@ public sealed class Esp32ConfigurationTests
                 ["florabot-backend"] = new { password = "backend-must-never-be-exported" }
             }));
             using var services = new ServiceCollection().AddSingleton(new DeviceKeyRing(new Dictionary<string, byte[]>
-                { ["ESP32-TEST"] = Convert.FromHexString(TestKey) })).BuildServiceProvider();
+            { ["ESP32-TEST"] = Convert.FromHexString(TestKey) })).BuildServiceProvider();
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-                { ["MQTT_CREDENTIALS_FILE"] = path }).Build();
+            { ["MQTT_CREDENTIALS_FILE"] = path }).Build();
             var source = new Esp32ConfigurationSource(configuration, services);
             Assert.NotNull((await source.ReadSecretsAsync("ESP32-TEST", default)).Secrets);
             Assert.Equal("ESP32_CONFIG_NOT_PROVISIONED", (await source.ReadSecretsAsync("ESP32-OTHER", default)).ErrorCode);
             Assert.Equal("ESP32_CONFIG_NOT_PROVISIONED", (await source.ReadSecretsAsync("florabot-backend", default)).ErrorCode);
             await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new Dictionary<string, object>
-                { ["ESP32-TEST"] = new { password = TestPassword, hmacKey = new string('c', 64) } }));
+            { ["ESP32-TEST"] = new { password = TestPassword, hmacKey = new string('c', 64) } }));
             Assert.Equal("ESP32_CONFIG_HMAC_MISMATCH", (await source.ReadSecretsAsync("ESP32-TEST", default)).ErrorCode);
             await File.WriteAllTextAsync(path, "{invalid-json");
             Assert.Equal("ESP32_CONFIG_NOT_PROVISIONED", (await source.ReadSecretsAsync("ESP32-TEST", default)).ErrorCode);
@@ -357,7 +360,7 @@ public sealed class Esp32ConfigurationTests
         public Task<Esp32KioskAccess> ResolveAsync(Guid resource, Guid actor, string role, CancellationToken ct)
         {
             ScopeChecks++;
-            return Task.FromResult(new Esp32KioskAccess(InScope ? new(KioskId, "K-TEST", "OFFLINE", "ESP32-TEST", "registered-client") : null, KioskId, ActorActive));
+            return Task.FromResult(new Esp32KioskAccess(InScope ? new(KioskId, "K-TEST", "OFFLINE", "ESP32-TEST", "registered-client", TestHeartbeat) : null, KioskId, ActorActive));
         }
         public Task<bool> ReauthenticateAsync(Guid actor, string role, string? password, CancellationToken ct)
         {
