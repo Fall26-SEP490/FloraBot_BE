@@ -13,6 +13,30 @@ namespace FloraBot.Api.Tests;
 
 public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
+    [Theory]
+    [InlineData(59)]
+    [InlineData(43201)]
+    public async Task NewRequestRejectsPickupOutsideOneHourToThirtyDays(int minutes)
+    {
+        using var f = await Setup();
+        var id = Guid.NewGuid();
+        var response = await f.CustomerClient.PostAsJsonAsync("/api/member/preorders",
+            RequestBody(f, id, Selection(f), pickup: DateTimeOffset.UtcNow.AddMinutes(minutes)));
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Contains("1 giờ", await response.Content.ReadAsStringAsync());
+        Assert.Equal(5, await Stock(f));
+        Assert.Equal(0L, await Sql(f, "SELECT count(*) FROM ordering.web_requests WHERE id=@request", ("request", id)));
+    }
+
+    [Fact]
+    public async Task NewRequestAcceptsPickupWithOneHourLeadTimeAndKeepsRetryIdempotent()
+    {
+        using var f = await Setup();
+        f.Pickup = DateTimeOffset.UtcNow.AddMinutes(61);
+        var id = await Request(f);
+        Assert.Equal(f.Pickup.ToUnixTimeSeconds(), (await Row(f, id)).PickupAt.ToUnixTimeSeconds());
+        Assert.Equal(5, await Stock(f));
+    }
     [Fact]
     public async Task SellerPaymentLinkAndWebhookChargeTheFlowerAndAccessoriesTotal()
     {
@@ -364,7 +388,7 @@ public sealed class PreorderAccessoryTests(ApiFactory factory) : IClassFixture<A
     }
 
     private static object Selection(Fixture f) => new[] { new { accessoryId = f.Accessory, quantity = 2 } };
-    private static object RequestBody(Fixture f, Guid id, object selection, Guid? kiosk = null) => new { id, kind = "CUSTOM", productId = f.Product, kioskId = kiosk ?? f.Kiosk, pickupAt = f.Pickup, instructions = "Birthday bouquet with requested accessories", accessories = selection };
+    private static object RequestBody(Fixture f, Guid id, object selection, Guid? kiosk = null, DateTimeOffset? pickup = null) => new { id, kind = "CUSTOM", productId = f.Product, kioskId = kiosk ?? f.Kiosk, pickupAt = pickup ?? f.Pickup, instructions = "Birthday bouquet with requested accessories", accessories = selection };
     private static async Task<Guid> Request(Fixture f, object? selection = null, Guid? kiosk = null)
     {
         var id = Guid.NewGuid();
