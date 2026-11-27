@@ -33,6 +33,16 @@ public static class SeasonalSalesEndpoints
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status404NotFound);
 
+        app.MapGet("/api/sellers/{sellerId:guid}/ai/seasonal-advice", GetSeasonalAdviceAsync)
+            .RequireAuthorization("Merchant", "SameSeller")
+            .WithTags("Ai")
+            .WithSummary("Gợi ý bán hoa theo tháng và danh mục của cửa hàng")
+            .Produces<List<SeasonalSellingSuggestion>>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
         // 3. POST /api/sellers/{sellerId}/ai/seasonal-forecast
         app.MapPost("/api/sellers/{sellerId:guid}/ai/seasonal-forecast", PostSeasonalForecastAsync)
             .RequireAuthorization("Merchant", "SameSeller")
@@ -142,6 +152,44 @@ public static class SeasonalSalesEndpoints
         return Results.Ok(new SeasonalSalesResponse(
             sellerId, resolvedFrom, resolvedTo, normSeason, normHoliday, totalInvoices, totalUnits, productItems
         ));
+    }
+
+    private static async Task<IResult> GetSeasonalAdviceAsync(
+        Guid sellerId, int year, int month, DateOnly? historyFrom, DateOnly? historyTo,
+        HttpContext http, NpgsqlDataSource data, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        if (!Guid.TryParse(http.User.FindFirstValue("sub"), out var actorId))
+            return Results.Unauthorized();
+
+        if (year is < 2000 or > 2100 || month is < 1 or > 12)
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Tháng xem gợi ý không hợp lệ.");
+
+        await using var conn = await data.OpenConnectionAsync(ct);
+        var (scopeOk, scopeError) = await CheckScopeAsync(conn, actorId, sellerId, ct);
+        if (!scopeOk) return scopeError!;
+
+        var forecastStart = new DateOnly(year, month, 1);
+        var today = SeasonalCalendar.TodayVn();
+        var recentEnd = historyTo ?? today;
+        if (recentEnd > today) recentEnd = today;
+        if (recentEnd >= forecastStart) recentEnd = forecastStart.AddDays(-1);
+
+        var earliest = recentEnd.DayNumber < 29 ? DateOnly.MinValue : recentEnd.AddDays(-29);
+        var recentStart = historyFrom is { } from && from > earliest ? from : earliest;
+        var products = await LoadProductsAsync(conn, actorId, sellerId, activeOnly: true, ct);
+        var recentInvoices = new Dictionary<Guid, int>();
+        if (products.Count > 0 && recentStart <= recentEnd)
+        {
+            var (ok, _, observations) = await LoadObservationsAsync(conn, actorId, sellerId, recentStart, recentEnd, ct);
+            if (ok)
+                recentInvoices = observations.GroupBy(o => o.ProductId)
+                    .ToDictionary(g => g.Key, g => g.Sum(o => o.InvoiceCount));
+        }
+
+        return Results.Ok(SeasonalSellingAdvice.Build(forecastStart,
+            SeasonalCalendar.GetHolidaysInMonth(year, month),
+            products.Select(p => (p.Name, p.Tags, recentInvoices.GetValueOrDefault(p.Id)))));
     }
 
     private static async Task<IResult> GetSalesCsvAsync(
@@ -255,7 +303,7 @@ public static class SeasonalSalesEndpoints
                 sellerId, "seasonal-v1", "PRODUCT", "DATABASE",
                 historyFrom, historyTo, forecastStart, forecastEnd,
                 targetSeason, targetHolidays,
-                ["Không có sản phẩm nào đang hoạt động để dự báo."],
+                ["Chưa có mẫu hoa đang bán để tính số bó dự kiến."],
                 []));
         }
 
@@ -333,7 +381,7 @@ public static class SeasonalSalesEndpoints
                 sellerId, "seasonal-v1", "PRODUCT", "DATABASE",
                 historyFrom, historyTo, forecastStart, forecastEnd,
                 targetSeason, targetHolidays,
-                ["Dịch vụ dự báo AI tạm thời không khả dụng; hệ thống chuyển sang dữ liệu thực tế dự phòng."],
+                ["Dịch vụ dự báo AI tạm thời không khả dụng. Bạn vẫn có thể xem số đã bán và gợi ý theo dịp."],
                 fallbackItems
             ));
         }

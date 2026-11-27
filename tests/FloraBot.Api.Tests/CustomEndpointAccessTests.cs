@@ -410,7 +410,7 @@ public sealed class CustomEndpointAccessTests(ApiFactory factory) : IClassFixtur
         // Flower presence is a portal Account read, not a kiosk-scoped customer session.
         Add(["ADMIN", "SELLER", "CUSTOMER", "OPERATIONS_MANAGER", "TECHNICIAN", "SELLER_STAFF"], "GET", "/api/kiosks/{id:guid}/flower-presence");
         // Seller seasonal analytics remain portal-only and tenant-scoped.
-        Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/ai/seasonal-sales", "/api/sellers/{sellerId:guid}/ai/sales.csv");
+        Add(["ADMIN", "SELLER"], "GET", "/api/sellers/{sellerId:guid}/ai/seasonal-sales", "/api/sellers/{sellerId:guid}/ai/sales.csv", "/api/sellers/{sellerId:guid}/ai/seasonal-advice");
         Add(["ADMIN", "SELLER"], "POST", "/api/sellers/{sellerId:guid}/ai/seasonal-forecast");
         return entries.ToArray();
 

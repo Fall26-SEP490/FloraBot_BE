@@ -1,7 +1,12 @@
 using System.Net;
 using System.Text.Json;
 using FloraBot.Api.Modules.Ai;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace FloraBot.Api.Tests;
 
@@ -60,6 +65,58 @@ public sealed class SeasonalSalesTests
 
         // New Year Jan 1
         Assert.True(SeasonalCalendar.IsDateInHolidayWindow(new DateOnly(2027, 1, 1), "NEW_YEAR"));
+    }
+
+    [Fact]
+    public async Task AdviceRouteRequiresSellerScope()
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Services.AddSingleton<NpgsqlDataSource>(_ => throw new InvalidOperationException("No database is expected."));
+        builder.Services.AddSingleton<SeasonalForecastClient>(_ => throw new InvalidOperationException("No AI client is expected."));
+        await using var app = builder.Build();
+        app.MapSeasonalSales();
+
+        var route = Assert.Single(((IEndpointRouteBuilder)app).DataSources.SelectMany(s => s.Endpoints)
+            .OfType<RouteEndpoint>(),
+            e => e.RoutePattern.RawText?.EndsWith("/seasonal-advice", StringComparison.Ordinal) == true);
+        Assert.Equal("GET", Assert.Single(route.Metadata.GetMetadata<IHttpMethodMetadata>()!.HttpMethods));
+        Assert.Equal(new[] { "Merchant", "SameSeller" },
+            route.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(a => a.Policy));
+        Assert.Null(route.Metadata.GetMetadata<IAllowAnonymous>());
+    }
+
+    [Fact]
+    public void SellingAdviceUsesHolidayAndRecentOrdersWithoutRequiringSales()
+    {
+        var month = new DateOnly(2027, 2, 1);
+        var holidays = SeasonalCalendar.GetHolidaysInMonth(month.Year, month.Month);
+        var ideas = SeasonalSellingAdvice.Build(month, holidays,
+        [
+            ("Bó hồng mới", ["flower:rose"], 0),
+            ("Bó hồng đã có đơn", ["ROSE"], 3),
+            ("Bó hướng dương", ["flower:sunflower"], 50),
+            ("Hồng chỉ ghi ở màu", ["color:rose"], 12),
+        ]);
+
+        var valentine = Assert.Single(ideas);
+        Assert.Equal(new DateOnly(2027, 2, 14), valentine.Date);
+        Assert.Equal(new[] { "Bó hồng đã có đơn", "Bó hồng mới" }, valentine.MatchingProducts);
+        Assert.Contains("đặt trước", valentine.NextStep);
+
+        var forNewShop = Assert.Single(SeasonalSellingAdvice.Build(month, holidays, []));
+        Assert.Empty(forNewShop.MatchingProducts);
+        Assert.Contains("hồng", forNewShop.Offer);
+    }
+
+    [Fact]
+    public void SellingAdviceStillProvidesAnActionInMonthsWithoutKnownHolidays()
+    {
+        var month = new DateOnly(2027, 6, 1);
+        var idea = Assert.Single(SeasonalSellingAdvice.Build(month,
+            SeasonalCalendar.GetHolidaysInMonth(month.Year, month.Month), []));
+        Assert.Equal("Quà tốt nghiệp", idea.Occasion);
+        Assert.Null(idea.Date);
+        Assert.Contains("gần kiosk", idea.NextStep);
     }
 
     [Fact]
